@@ -1,0 +1,60 @@
+{
+  "expo": {
+    "name": "Delivery Rider",
+    "slug": "delivery-rider",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "androidStatusBar": {
+      "barStyle": "dark-content",
+      "backgroundColor": "#f4f6f9"
+    },
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "ios": {
+      "supportsTablet": true,
+      "infoPlist": {
+        "NSCameraUsageDescription": "Delivery Rider uses the camera to capture proof-of-delivery photos.",
+        "NSPhotoLibraryUsageDescription": "Delivery Rider needs photo library access to attach a delivery proof photo.",
+        "ITSAppUsesNonExemptEncryption": false
+      },
+      "bundleIdentifier": "com.azaan890.deliveryrider"
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#E6F4FE",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "predictiveBackGestureEnabled": false,
+      "permissions": [
+        "android.permission.CAMERA",
+        "android.permission.ACCESS_COARSE_LOCATION",
+        "android.permission.ACCESS_FINE_LOCATION",
+        "android.permission.RECORD_AUDIO"
+      ]
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "Delivery Rider uses your location to show your position and directions on an active route."
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "cameraPermission": "Delivery Rider uses the camera to capture proof-of-delivery photos."
+        }
+      ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "222e0ed9-09b1-412e-a590-4e0fe41cd3b9"
+      }
+    }
+  }
+}
