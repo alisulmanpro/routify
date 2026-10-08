@@ -20,6 +20,7 @@
       "bundleIdentifier": "com.azaan890.deliveryrider"
     },
     "android": {
+      "package": "com.azaan890.routify",
       "adaptiveIcon": {
         "backgroundColor": "#0A0D3A",
         "foregroundImage": "./assets/android-icon-foreground.png",
