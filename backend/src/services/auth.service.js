@@ -7,6 +7,7 @@ import { Subscription } from '../models/subscription.js';
 import { RefreshToken } from '../models/refresh-token.js';
 import { getSettings } from './settings.service.js';
 import { createTrial } from './subscription.service.js';
+import { detectServiceArea, findServiceArea } from './geocoding.service.js';
 import { audit } from './audit.service.js';
 import { AppError, conflict, forbidden, unauthorized, unprocessable, validationError } from '../utils/errors.js';
 import { generateRefreshToken, hashToken, signAccessToken } from '../utils/tokens.js';
@@ -15,9 +16,12 @@ const DUMMY_HASH = bcrypt.hashSync('not-a-real-password', 4);
 
 export const hashPassword = (password) => bcrypt.hash(password, env.BCRYPT_ROUNDS);
 
+export const serializeServiceArea = (a) => (a ? { city: a.city, country: a.country || null, countryCode: a.countryCode, latitude: a.latitude, longitude: a.longitude, source: a.source, confirmedAt: a.confirmedAt || null } : null);
+
 export const serializeUser = (u) => ({
   id: String(u._id), fullName: u.fullName, phone: u.phone, email: u.email, role: u.role,
   currency: u.currency, routePreference: u.routePreference, notificationsEnabled: u.notificationsEnabled, status: u.status,
+  serviceArea: serializeServiceArea(u.serviceArea),
   createdAt: u.createdAt,
 });
 
@@ -142,12 +146,34 @@ export async function getProfile(userId) {
   return serializeUser(user);
 }
 
-export async function updateProfile(userId, patch) {
+export async function updateProfile(userId, { city, ...patch }) {
+  if (city !== undefined) {
+    if (!city) patch.serviceArea = null;
+    else {
+      const area = await findServiceArea(city);
+      if (!area) throw validationError([{ path: 'city', message: 'We could not find that city. Try adding the country, e.g. "Lahore, Pakistan".' }]);
+      patch.serviceArea = { ...area, source: 'manual', confirmedAt: new Date() };
+    }
+  }
   if (patch.currency) {
     const { currencies } = await getSettings();
     if (!currencies.includes(patch.currency)) throw validationError([{ path: 'currency', message: 'Currency is not enabled' }]);
   }
   const user = await User.findByIdAndUpdate(userId, patch, { new: true, runValidators: true });
+  return serializeUser(user);
+}
+
+/** Looks up the city at a GPS point without saving it, so the app can ask the rider first. */
+export async function previewServiceArea(point) {
+  const area = await detectServiceArea(point);
+  if (!area) throw unprocessable('We could not detect a city at your location', 'AREA_NOT_FOUND');
+  return area;
+}
+
+/** Saves the city detected at a GPS point as the rider's service area. */
+export async function confirmServiceArea(userId, point) {
+  const area = await previewServiceArea(point);
+  const user = await User.findByIdAndUpdate(userId, { serviceArea: { ...area, source: 'gps', confirmedAt: new Date() } }, { new: true, runValidators: true });
   return serializeUser(user);
 }
 

@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { get, patch, ApiRequestError } from '../lib/api';
 import type { Rider } from '../lib/types';
-import { dateShort, money } from '../lib/format';
+import { dateShort } from '../lib/format';
 import StatusBadge from '../components/StatusBadge';
 import Pagination from '../components/Pagination';
 import { useToast } from '../components/Toast';
@@ -53,14 +53,13 @@ export default function Riders() {
         {loading ? <div className="loading-state">Loading…</div> : rows.length === 0 ? <div className="module-empty-copy">No riders found.</div> : (
           <div className="table-wrap">
             <table>
-              <thead><tr><th>Rider</th><th>Subscription</th><th>Deliveries</th><th>Prepaid / COD</th><th>COD collected</th><th>Last active</th><th>Status</th><th></th></tr></thead>
+              <thead><tr><th>Rider</th><th>Subscription</th><th>Deliveries</th><th>Last active</th><th>Status</th><th></th></tr></thead>
               <tbody>
                 {rows.map((r) => (
                   <tr key={r.id}>
                     <td><strong>{r.fullName}</strong><br /><small className="muted-small">{r.email}</small></td>
                     <td>{r.subscriptionStatus ? <StatusBadge value={r.subscriptionStatus} /> : '—'}</td>
-                    <td>{r.deliveries}</td><td>{r.prepaid} / {r.cod}</td>
-                    <td>{r.codCollected.length ? r.codCollected.map((c) => money(c.amount, c.currency)).join(', ') : '—'}</td>
+                    <td>{r.deliveries}</td>
                     <td>{r.lastActiveAt ? dateShort(r.lastActiveAt) : 'Never'}</td>
                     <td><StatusBadge value={r.status} /></td>
                     <td><button className="text-button" disabled={busyId === r.id} onClick={() => toggle(r)}>{r.status === 'active' ? 'Suspend' : 'Reactivate'}</button></td>

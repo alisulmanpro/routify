@@ -91,8 +91,16 @@ function extractTableRows(lines) {
   });
 }
 
+const PAYMENT_FLAGS = new Set(['payment_needs_review', 'missing_cod_amount']);
+/** Deliveries carry no payment details; payment columns are still parsed so they don't leak into addresses. */
+const withoutPayment = ({ paymentType, orderValue, codAmount, ...item }) => ({ ...item, flags: item.flags.filter((flag) => !PAYMENT_FLAGS.has(flag)) });
+
 /** Pure function (unit-tested): text of a courier manifest → reviewable drafts. */
 export function extractDeliveriesFromText(text) {
+  return extractWithPayment(text).map(withoutPayment);
+}
+
+function extractWithPayment(text) {
   const lines = normalize(text);
   const tableItems = extractTableRows(lines);
   if (tableItems) return tableItems;

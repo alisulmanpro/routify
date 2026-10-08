@@ -4,26 +4,32 @@ import { Pressable, StatusBar as NativeStatusBar, Text, View } from 'react-nativ
 import { useEffect, useState } from 'react';
 import { AuthProvider, useAuth } from './src/lib/auth';
 import { NavProvider, useNav, type TabName } from './src/lib/nav';
-import { colors, spacing } from './src/lib/theme';
+import { ServiceAreaProvider } from './src/lib/serviceArea';
+import { Ionicons } from '@expo/vector-icons';
+import { colors, premium, spacing } from './src/lib/theme';
 import Login from './src/screens/Login';
 import Register from './src/screens/Register';
 import Dashboard from './src/screens/Dashboard';
 import DeliveriesList from './src/screens/DeliveriesList';
 import RouteNavigation from './src/screens/RouteNavigation';
 import DeliveryDetail from './src/screens/DeliveryDetail';
+import AddDelivery from './src/screens/AddDelivery';
 import AddManual from './src/screens/AddManual';
-import ImportPdf from './src/screens/ImportPdf';
+import ImportFile from './src/screens/ImportFile';
+import ScanDelivery from './src/screens/ScanDelivery';
+import VoiceEntry from './src/screens/VoiceEntry';
 import History from './src/screens/History';
 import Reports from './src/screens/Reports';
 import SubscriptionScreen from './src/screens/Subscription';
 import Account from './src/screens/Account';
 
-const TABS: { key: TabName; label: string; icon: string }[] = [
-  { key: 'home', label: 'Home', icon: '🏠' },
-  { key: 'deliveries', label: 'Deliveries', icon: '📦' },
-  { key: 'history', label: 'History', icon: '🕘' },
-  { key: 'reports', label: 'Reports', icon: '📄' },
-  { key: 'account', label: 'Account', icon: '👤' },
+type IconName = React.ComponentProps<typeof Ionicons>['name'];
+const TABS: { key: TabName; label: string; icon: IconName; activeIcon: IconName }[] = [
+  { key: 'home', label: 'Home', icon: 'home-outline', activeIcon: 'home' },
+  { key: 'deliveries', label: 'Deliveries', icon: 'cube-outline', activeIcon: 'cube' },
+  { key: 'history', label: 'History', icon: 'time-outline', activeIcon: 'time' },
+  { key: 'reports', label: 'Reports', icon: 'reader-outline', activeIcon: 'reader' },
+  { key: 'account', label: 'Account', icon: 'person-outline', activeIcon: 'person' },
 ];
 
 function ScreenRouter() {
@@ -35,8 +41,11 @@ function ScreenRouter() {
     case 'DeliveriesList': return <DeliveriesList />;
     case 'RouteNavigation': return <RouteNavigation />;
     case 'DeliveryDetail': return <DeliveryDetail id={current.params!.id as string} onDone={() => { goBack(); refresh(); }} />;
+    case 'AddDelivery': return <AddDelivery />;
     case 'AddManual': return <AddManual onCreated={refresh} />;
-    case 'ImportPdf': return <ImportPdf onCreated={refresh} />;
+    case 'ImportFile': return <ImportFile onCreated={refresh} />;
+    case 'ScanDelivery': return <ScanDelivery onCreated={refresh} />;
+    case 'VoiceEntry': return <VoiceEntry onCreated={refresh} />;
     case 'History': return <History />;
     case 'Reports': return <Reports />;
     case 'SubscriptionScreen': return <SubscriptionScreen />;
@@ -50,7 +59,7 @@ function BackBar() {
   if (!canGoBack) return null;
   return (
     <View style={{ paddingHorizontal: spacing(5), paddingTop: spacing(3), backgroundColor: colors.bg }}>
-      <Pressable onPress={goBack} hitSlop={10}><Text style={{ color: colors.primary, fontWeight: '600', fontSize: 15 }}>← Back</Text></Pressable>
+      <Pressable onPress={goBack} hitSlop={10} style={{ alignSelf: 'flex-start', backgroundColor: colors.surfaceRaised, paddingHorizontal: 12, paddingVertical: 8, borderRadius: 99 }}><Text style={{ color: '#CFC5FF', fontWeight: '800', fontSize: 13 }}>‹  Back</Text></Pressable>
     </View>
   );
 }
@@ -58,18 +67,20 @@ function BackBar() {
 function TabBar() {
   const { tab, switchTab, resetTab } = useNav();
   return (
-    <View style={{ flexDirection: 'row', borderTopWidth: 1, borderTopColor: colors.border, backgroundColor: '#fff', paddingBottom: 4, paddingTop: 6 }}>
-      {TABS.map((t) => (
-        <Pressable
-          key={t.key}
-          onPress={() => { if (tab === t.key) resetTab(t.key); else switchTab(t.key); }}
-          style={{ flex: 1, alignItems: 'center', paddingVertical: 6, gap: 2 }}
-        >
-          <View style={{ width: 22, height: 3, borderRadius: 2, backgroundColor: tab === t.key ? colors.primary : 'transparent' }} />
-          <Text style={{ fontSize: 19 }}>{t.icon}</Text>
-          <Text style={{ fontSize: 11, marginTop: 2, color: tab === t.key ? colors.primary : colors.muted, fontWeight: tab === t.key ? '700' : '500' }}>{t.label}</Text>
-        </Pressable>
-      ))}
+    <View style={{ flexDirection: 'row', borderTopWidth: 1, borderTopColor: premium.border, backgroundColor: premium.surface, paddingHorizontal: 8, paddingVertical: 8 }}>
+      {TABS.map((t) => {
+        const active = tab === t.key;
+        return (
+          <Pressable
+            key={t.key}
+            onPress={() => { if (active) resetTab(t.key); else switchTab(t.key); }}
+            style={{ flex: 1, alignItems: 'center', paddingVertical: 8, marginHorizontal: 3, borderRadius: 18, backgroundColor: active ? 'rgba(255,170,50,0.16)' : 'transparent' }}
+          >
+            <Ionicons name={active ? t.activeIcon : t.icon} size={21} color={active ? premium.primary : premium.textSecondary} />
+            <Text numberOfLines={1} style={{ fontSize: 10, marginTop: 2, color: active ? premium.primary : premium.textSecondary, fontWeight: active ? '800' : '600' }}>{t.label}</Text>
+          </Pressable>
+        );
+      })}
     </View>
   );
 }
@@ -79,13 +90,15 @@ function AuthedApp() {
 
   return (
     <NavProvider>
-      <SafeAreaView style={{ flex: 1, backgroundColor: colors.bg, paddingTop: insets.top }}>
-        <BackBar />
-        <View style={{ flex: 1 }}>
-          <ScreenRouter />
-        </View>
-        <TabBar />
-      </SafeAreaView>
+      <ServiceAreaProvider>
+        <SafeAreaView style={{ flex: 1, backgroundColor: colors.bg, paddingTop: insets.top }}>
+          <BackBar />
+          <View style={{ flex: 1 }}>
+            <ScreenRouter />
+          </View>
+          <TabBar />
+        </SafeAreaView>
+      </ServiceAreaProvider>
     </NavProvider>
   );
 }
@@ -102,14 +115,14 @@ function Gate() {
 
 export default function App() {
   useEffect(() => {
-    NativeStatusBar.setBarStyle('dark-content');
+    NativeStatusBar.setBarStyle('light-content');
     NativeStatusBar.setBackgroundColor(colors.bg);
   }, []);
 
   return (
     <SafeAreaProvider>
       <AuthProvider>
-        <StatusBar style="dark" />
+        <StatusBar style="light" />
         <Gate />
       </AuthProvider>
     </SafeAreaProvider>

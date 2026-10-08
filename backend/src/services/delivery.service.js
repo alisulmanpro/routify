@@ -3,31 +3,18 @@ import { Route } from '../models/route.js';
 import { assertCanCreateDeliveries } from './subscription.service.js';
 import * as storage from './storage.service.js';
 import { detectFileType } from '../middleware/upload.js';
-import { conflict, forbidden, notFound, unprocessable, validationError } from '../utils/errors.js';
-import { escapeRegex, paginate, pageMeta, round2, todayKey } from '../utils/http.js';
+import { conflict, forbidden, notFound } from '../utils/errors.js';
+import { escapeRegex, paginate, pageMeta, todayKey } from '../utils/http.js';
 import { normalizeAddress } from '../utils/geo.js';
 import { serializeDelivery } from './serializers.js';
 import { onStopFinished } from './route.service.js';
-import { User } from '../models/user.js';
 
-const paymentDoc = (payment, currency) => ({
-  type: payment.type, currency,
-  orderValue: payment.orderValue ?? null,
-  codAmount: payment.type === 'cod' ? payment.codAmount : null,
-  codCollectedAmount: null,
-  collectionStatus: payment.type === 'cod' ? 'pending' : 'not_required',
-});
-
-const toDoc = (actor, currency, item, serviceDate) => ({
+const toDoc = (actor, item, serviceDate) => ({
   riderId: actor.id, trackingId: item.trackingId,
-  customer: { name: item.customer.name, phone: item.customer.phone },
+  customer: { name: item.customer?.name || '', phone: item.customer?.phone || '' },
   address: { raw: item.address.raw, normalized: null, latitude: null, longitude: null, geocoded: false, approximate: false, geocodeStatus: 'pending' },
-  payment: paymentDoc(item.payment, currency), note: item.note || undefined, serviceDate: item.serviceDate || serviceDate || todayKey(),
+  note: item.note || undefined, serviceDate: item.serviceDate || serviceDate || todayKey(),
 });
-
-async function riderCurrency(actor) {
-  return (await User.findById(actor.id).select('currency').lean())?.currency || 'USD';
-}
 
 export async function createMany(actor, items) {
   if (actor.role !== 'rider') throw forbidden('Only riders create deliveries');
@@ -38,14 +25,13 @@ export async function createMany(actor, items) {
   const details = [];
   const existing = new Set((await Delivery.find({ riderId: actor.id, trackingId: { $in: ids } }).select('trackingId').lean()).map((d) => d.trackingId));
   items.forEach((item, index) => {
-    if (existing.has(item.trackingId)) details.push({ index, path: 'trackingId', code: 'DUPLICATE', message: `Tracking ID ${item.trackingId} already exists` });
-    else if (inBatch.has(item.trackingId)) details.push({ index, path: 'trackingId', code: 'DUPLICATE', message: `Tracking ID ${item.trackingId} appears more than once` });
+    if (existing.has(item.trackingId)) details.push({ index, path: 'trackingId', code: 'DUPLICATE', message: `Parcel ID ${item.trackingId} already exists` });
+    else if (inBatch.has(item.trackingId)) details.push({ index, path: 'trackingId', code: 'DUPLICATE', message: `Parcel ID ${item.trackingId} appears more than once` });
     inBatch.add(item.trackingId);
   });
   if (details.length) throw conflict('Some deliveries are duplicates', 'DUPLICATE_TRACKING_ID', details);
 
-  const currency = await riderCurrency(actor);
-  const docs = await Delivery.create(items.map((item) => toDoc(actor, currency, item)), { ordered: true });
+  const docs = await Delivery.create(items.map((item) => toDoc(actor, item)), { ordered: true });
   return docs.map(serializeDelivery);
 }
 
@@ -66,7 +52,6 @@ export async function list(actor, q) {
   if (actor.role === 'rider') filter.riderId = actor.id;
   else if (q.riderId) filter.riderId = q.riderId;
   if (q.status) filter.status = q.status;
-  if (q.paymentType) filter['payment.type'] = q.paymentType;
   if (q.date) filter.serviceDate = q.date;
   if (q.dateFrom || q.dateTo) filter.serviceDate = { ...(q.dateFrom && { $gte: q.dateFrom }), ...(q.dateTo && { $lte: q.dateTo }) };
   if (q.search) {
@@ -86,18 +71,13 @@ export async function update(actor, id, patch) {
   if (delivery.status !== 'pending') throw conflict('Only pending deliveries can be edited', 'INVALID_STATE');
 
   if (patch.trackingId && patch.trackingId !== delivery.trackingId) {
-    if (await Delivery.exists({ riderId: delivery.riderId, trackingId: patch.trackingId, _id: { $ne: delivery._id } })) throw conflict(`Tracking ID ${patch.trackingId} already exists`, 'DUPLICATE_TRACKING_ID');
+    if (await Delivery.exists({ riderId: delivery.riderId, trackingId: patch.trackingId, _id: { $ne: delivery._id } })) throw conflict(`Parcel ID ${patch.trackingId} already exists`, 'DUPLICATE_TRACKING_ID');
     delivery.trackingId = patch.trackingId;
   }
   if (patch.customer) delivery.customer = { ...delivery.customer.toObject(), ...patch.customer };
   if (patch.note !== undefined) delivery.note = patch.note || undefined;
   if (patch.address?.raw && normalizeAddress(patch.address.raw) !== normalizeAddress(delivery.address.raw)) {
     delivery.address = { raw: patch.address.raw, normalized: null, latitude: null, longitude: null, geocoded: false, approximate: false, geocodeStatus: 'pending' };
-  }
-  if (patch.payment) {
-    const merged = { type: patch.payment.type ?? delivery.payment.type, orderValue: patch.payment.orderValue !== undefined ? patch.payment.orderValue : delivery.payment.orderValue, codAmount: patch.payment.codAmount !== undefined ? patch.payment.codAmount : delivery.payment.codAmount };
-    if (merged.type === 'cod' && !(merged.codAmount > 0)) throw validationError([{ path: 'payment.codAmount', message: 'COD requires a positive Amount to Collect' }]);
-    delivery.payment = paymentDoc(merged, delivery.payment.currency);
   }
   await delivery.save();
   return serializeDelivery(delivery);
@@ -110,6 +90,15 @@ export async function remove(actor, id) {
   await delivery.deleteOne();
   if (delivery.routeId) await Route.updateOne({ _id: delivery.routeId, status: 'planned' }, { $pull: { stops: { deliveryId: delivery._id } } });
   if (delivery.routeId) await onStopFinished(delivery.routeId);
+}
+
+/** Removes the rider's unstarted delivery queue and any route that has not begun. */
+export async function clearOpen(actor) {
+  if (actor.role !== 'rider') throw forbidden('Only riders delete deliveries');
+  const plannedRoutes = await Route.find({ riderId: actor.id, status: 'planned' }).select('_id').lean();
+  const result = await Delivery.deleteMany({ riderId: actor.id, status: 'pending' });
+  if (plannedRoutes.length) await Route.deleteMany({ _id: { $in: plannedRoutes.map((route) => route._id) } });
+  return { deleted: result.deletedCount, plannedRoutesDeleted: plannedRoutes.length };
 }
 
 async function activeRouteFor(delivery) {
@@ -142,7 +131,7 @@ export async function attachProof(actor, id, file) {
   return serializeDelivery(delivery);
 }
 
-export async function deliver(actor, id, { note, cashCollected, collectedAmount, allowSkip = false }) {
+export async function deliver(actor, id, { note, allowSkip = false }) {
   if (actor.role !== 'rider') throw forbidden('Only riders can do this');
   const delivery = await findVisible(actor, id);
   if (delivery.status !== 'in_progress') throw conflict('Mark the delivery as Arrived first', 'INVALID_STATE');
@@ -156,15 +145,6 @@ export async function deliver(actor, id, { note, cashCollected, collectedAmount,
     }
   }
 
-  if (delivery.payment.type === 'cod') {
-    if (!cashCollected) throw unprocessable('Confirm that you collected the COD amount', 'COD_CONFIRMATION_REQUIRED');
-    const expected = round2(delivery.payment.codAmount);
-    if (collectedAmount !== undefined && round2(collectedAmount) !== expected) {
-      throw unprocessable(`Collected amount must equal the amount due (${expected}). Use Delivery Failed with "Payment issue" if the customer could not pay in full.`, 'COD_AMOUNT_MISMATCH');
-    }
-    delivery.payment.codCollectedAmount = expected;
-    delivery.payment.collectionStatus = 'collected';
-  }
   delivery.status = 'delivered';
   delivery.deliveredAt = new Date();
   if (note) delivery.note = note;

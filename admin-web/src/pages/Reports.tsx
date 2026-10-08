@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { get } from '../lib/api';
 import type { ReportRow } from '../lib/types';
-import { dateShort, money } from '../lib/format';
+import { dateShort } from '../lib/format';
 import Pagination from '../components/Pagination';
 import { useToast } from '../components/Toast';
 import { API_URL, getAccessToken } from '../lib/api';
@@ -48,13 +48,12 @@ export default function Reports() {
         {loading ? <div className="loading-state">Loading…</div> : rows.length === 0 ? <div className="module-empty-copy">No reports have been generated yet.</div> : (
           <div className="table-wrap">
             <table>
-              <thead><tr><th>Date</th><th>Rider</th><th>Total</th><th>Delivered / Failed</th><th>COD collected</th><th></th></tr></thead>
+              <thead><tr><th>Date</th><th>Rider</th><th>Total</th><th>Delivered / Failed</th><th></th></tr></thead>
               <tbody>
                 {rows.map((r) => (
                   <tr key={r.id}>
                     <td>{dateShort(r.date)}</td><td>{r.riderName || '—'}</td>
                     <td>{r.summary.total}</td><td>{r.summary.delivered} / {r.summary.failed}</td>
-                    <td>{money(Number(r.summary.codCollected || 0), String(r.summary.currency || 'USD'))}</td>
                     <td><button className="text-button" onClick={() => openReport(r.downloadUrl)}>Download PDF</button></td>
                   </tr>
                 ))}

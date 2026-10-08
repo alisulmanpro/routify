@@ -27,9 +27,11 @@
 - **PDF parsing:** `pdf-parse` for reading a manifest's text content.
 - **PDF generation:** `pdfkit` for daily reports, with embedded proof photos.
 - **Geocoding:** Nominatim (OpenStreetMap, free/rate-limited) by default, or Google
-  Geocoding with an API key; results are cached. Nominatim includes configurable
-  country context (`GEOCODING_COUNTRY`, default `Pakistan`) before broader locality
-  fallbacks, which remain marked approximate. Provider errors degrade to a "location
+  Geocoding with an API key; results are cached per rider city. Each rider has a
+  service area (their delivery city, detected from GPS or typed in Account) and every
+  lookup is scoped to it: the full address is searched inside a 35 km radius first,
+  then anywhere in the rider's country (flagged approximate if it lands outside the
+  city), and short locality fallbacks only ever match inside the city. Provider errors degrade to a "location
   not found" flag rather than blocking route building.
 - **Logging:** `pino` / `pino-http`, structured JSON, secrets redacted.
 - Email/SMS and a payment provider are **not wired up** - see Section 1.
@@ -63,19 +65,17 @@ were considered in an earlier draft of this platform and explicitly removed. A
 anything else.
 
 ## 6. Delivery Requirements
-Payment fields: `type` (`prepaid`|`cod`), `orderValue`, `codAmount`,
-`codCollectedAmount`, `collectionStatus` (`not_required`|`pending`|`collected`).
+A delivery needs a **parcel ID** (stored as `trackingId`) and an **address**. Customer
+name, phone and note are optional - a scanned label often has only the address and
+parcel ID. Deliveries carry **no payment details**: prepaid/COD was removed in Oct 2026.
+Older records may still hold a legacy `payment` object; it is ignored and never
+returned by the API.
 
 Rules (enforced in the `Delivery` model's own validation, not just in the API layer):
-- Payment type is required.
-- COD requires a positive COD amount; its collection status starts `pending`.
-- Prepaid clears any COD amount fields and sets collection status to `not_required`.
-- Marking a delivery `delivered` requires a proof photo, and if it's COD, requires
-  `collectionStatus` to already be `collected`.
 - Marking a delivery `failed` requires a failure reason; reason `other` requires a
-  note. A failed COD delivery cannot also be marked `collected`.
-- Tracking IDs are unique per rider (`{ riderId, trackingId }`), not globally - two
-  unrelated riders can use the same tracking ID without conflict.
+  note.
+- Parcel IDs are unique per rider (`{ riderId, trackingId }`), not globally - two
+  unrelated riders can use the same parcel ID without conflict.
 
 ## 7. API Reference (as implemented)
 All routes are mounted under `/api/v1`. `authenticate` requires a valid bearer
@@ -89,7 +89,8 @@ POST   /auth/login                { email, password, client: 'mobile' | 'web' }
 POST   /auth/refresh
 POST   /auth/logout
 GET    /auth/me                   auth required
-PATCH  /auth/me                   auth required - profile/currency/route-preference/notifications
+PATCH  /auth/me                   auth required - profile/currency/route-preference/notifications;
+                                  `city` sets the delivery city by name, `null` clears it
 POST   /auth/change-password      auth required
 ```
 
@@ -103,7 +104,7 @@ GET    /config                    currencies, default currency, min password len
 POST   /deliveries/import/pdf     multipart 'file' - returns a reviewable draft, never auto-creates
 POST   /deliveries/manual
 POST   /deliveries/bulk           create many at once (used after PDF review)
-GET    /deliveries                filters: status, paymentType, date, dateFrom/dateTo, search, sort
+GET    /deliveries                filters: status, date, dateFrom/dateTo, search, sort
 GET    /deliveries/:id
 PATCH  /deliveries/:id            only while status = pending
 DELETE /deliveries/:id            only while status = pending
@@ -126,6 +127,8 @@ POST   /routes/:id/start
 ```
 GET    /rider/dashboard           ?date=YYYY-MM-DD (defaults to today)
 GET    /rider/history             per-day rollup across all history
+GET    /rider/service-area/detect ?latitude&longitude - city at a GPS point (not saved)
+PUT    /rider/service-area        {latitude, longitude} - save the detected city as the delivery city
 ```
 
 **Reports** (`/reports`) - rider only
@@ -169,10 +172,10 @@ GET    /ready                     readiness (checks the DB connection), no auth
 
 ## 8. PDF Import Pipeline
 Upload -> validate file type by magic bytes (not just the declared MIME type) ->
-extract text (`pdf-parse`) -> parse into per-delivery blocks -> detect tracking ID,
-customer, phone, address, payment type and amounts with regex heuristics -> flag
-anything ambiguous (`payment_needs_review`, `missing_address`, `missing_cod_amount`,
-`duplicate`, etc.) -> return the full draft to the client for review -> the rider
+extract text (`pdf-parse`) -> parse into per-delivery blocks -> detect parcel ID,
+customer, phone and address with regex heuristics (payment columns are recognised
+only so they don't leak into addresses) -> flag anything ambiguous
+(`missing_address`, `duplicate`, etc.) -> return the full draft to the client for review -> the rider
 edits/deselects rows in-app -> confirmed rows are submitted to `POST /deliveries/bulk`
 to actually create them. Nothing is ever silently guessed or auto-imported.
 
@@ -192,7 +195,7 @@ signed URL (`/files/...`) - never a public/static path.
 
 ## 11. Report Generation
 Generated server-side per rider per calendar day (`report.service.js`), containing the
-route summary, and per-delivery payment type, COD amounts, collection status,
+route summary, and per-delivery parcel ID, customer (when known), address,
 delivery status, failure reason, notes, timestamps and the embedded proof photo.
 Stored as a PDF file and referenced by a signed download/view URL.
 
@@ -205,7 +208,7 @@ there's no intermediate ownership boundary to also check.
 
 ## 13. Validation
 Zod schemas validate params, query and body on every route (`middleware/validate.js`).
-Payment-type/amount rules and delivery state transitions are additionally enforced at
+Delivery state transitions are additionally enforced at
 the Mongoose model level so they hold even for code paths that bypass the route layer
 (e.g. background jobs).
 
@@ -251,10 +254,7 @@ See `backend/.env.example` for the authoritative list with descriptions. Summary
 
 Never commit a real `.env` file - only `.env.example` belongs in source control.
 
-## 18. Financial Separation
-Kept as separate concepts everywhere - schema, API responses, admin UI, and the PDF
-report: (a) SaaS **subscription** payments a rider pays the platform (`Payment` /
-`Subscription`, always billed to `userId`), versus (b) a rider's own customer
-**order value** (prepaid) or **COD amount / COD amount actually collected**, which
-lives only on the `Delivery` document and is never aggregated into subscription
-revenue figures.
+## 18. Payments
+The only money the platform tracks is SaaS **subscription** billing a rider pays the
+platform (`Payment` / `Subscription`, always billed to `userId`). Customer payment
+(prepaid order value / cash on delivery) is not part of the product.

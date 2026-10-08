@@ -14,7 +14,7 @@ type OsrmResponse = {
   }[];
 };
 
-export default function OpenStreetMapNavigation({ destination }: { destination: Coordinates; currentStopId: string; stops: Stop[]; onError: (message: string) => void }) {
+export default function OpenStreetMapNavigation({ destination }: { destination: Coordinates; approximate?: boolean; currentStopId: string; stops: Stop[]; onError: (message: string) => void }) {
   const [origin, setOrigin] = useState<Coordinates | null>(null);
   const [instructions, setInstructions] = useState<string[]>([]);
   const [trip, setTrip] = useState<{ distance: number; duration: number } | null>(null);

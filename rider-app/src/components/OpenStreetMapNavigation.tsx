@@ -1,9 +1,10 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Text, View } from 'react-native';
 import * as Location from 'expo-location';
 import type { Route } from '../lib/types';
 import { titleCase } from '../lib/format';
-import { colors, spacing } from '../lib/theme';
+import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
+import { premium as c, premiumRadius as r } from '../lib/theme';
 import RouteMap from './RouteMap';
 
 type Stop = Route['stops'][number];
@@ -18,7 +19,7 @@ type OsrmResponse = {
   }[];
 };
 
-export default function OpenStreetMapNavigation({ destination, currentStopId, stops, onError }: { destination: Coordinates; currentStopId: string; stops: Stop[]; onError: (message: string) => void }) {
+export default function OpenStreetMapNavigation({ destination, approximate = false, currentStopId, stops, onError }: { destination: Coordinates; approximate?: boolean; currentStopId: string; stops: Stop[]; onError: (message: string) => void }) {
   const [position, setPosition] = useState<Coordinates | null>(null);
   const [routePosition, setRoutePosition] = useState<Coordinates | null>(null);
   const [path, setPath] = useState<Coordinates[]>([]);
@@ -102,26 +103,39 @@ export default function OpenStreetMapNavigation({ destination, currentStopId, st
     return () => controller.abort();
   }, [destination.latitude, destination.longitude, onError, routePosition]);
 
-  const mapStops = stops.flatMap((stop) => {
+  // Approximate matches still carry coordinates, so they are shown on the map (with a warning).
+  const mapStops = useMemo(() => stops.flatMap((stop) => {
     const address = stop.delivery.address;
-    if (!address.geocoded || address.latitude == null || address.longitude == null) return [];
-    return [{ latitude: address.latitude, longitude: address.longitude, current: stop.delivery.id === currentStopId, name: `Delivery ${stop.order}: ${stop.delivery.customer.name}` }];
-  });
+    if (address.latitude == null || address.longitude == null) return [];
+    return [{ latitude: address.latitude, longitude: address.longitude, current: stop.delivery.id === currentStopId, name: `Delivery ${stop.order}: ${stop.delivery.customer.name || `Parcel ${stop.delivery.trackingId}`}`, order: stop.order, approximate: !address.geocoded }];
+  }), [stops, currentStopId]);
+  const mapDestination = useMemo(() => ({ latitude: destination.latitude, longitude: destination.longitude, approximate }), [destination.latitude, destination.longitude, approximate]);
   const nextInstruction = instructions[0];
 
   return (
-    <View style={{ gap: spacing(3) }}>
-      <RouteMap destination={destination} position={position} path={path} stops={mapStops} />
-      <Text style={{ color: colors.muted, fontSize: 11, textAlign: 'right' }}>Map data © OpenStreetMap contributors · Routing by OSRM</Text>
+    <View style={{ gap: 10 }}>
+      <RouteMap destination={mapDestination} position={position} path={path} stops={mapStops} />
+      {approximate ? (
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: 'rgba(255,179,64,0.12)', borderRadius: r.small, paddingHorizontal: 12, paddingVertical: 8 }}>
+          <MaterialCommunityIcons name="map-marker-question-outline" size={16} color={c.warning} />
+          <Text style={{ flex: 1, color: c.warning, fontSize: 11, lineHeight: 15 }}>Approximate location: only the general area was found. Confirm the exact address with the customer.</Text>
+        </View>
+      ) : null}
       {nextInstruction ? (
-        <View style={{ backgroundColor: colors.blueBg, borderRadius: 8, padding: spacing(4) }}>
-          <Text style={{ color: colors.primary, fontSize: 11, fontWeight: '800', textTransform: 'uppercase' }}>Next direction</Text>
-          <Text style={{ color: colors.text, fontSize: 16, fontWeight: '700', marginTop: spacing(2) }}>{nextInstruction}</Text>
-          {trip ? <Text style={{ color: colors.muted, fontSize: 12, marginTop: spacing(2) }}>{(trip.distance / 1000).toFixed(1)} km · {Math.max(1, Math.round(trip.duration / 60))} min remaining</Text> : null}
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: c.surfaceSoft, borderRadius: r.medium, borderWidth: 1, borderColor: c.border, padding: 14 }}>
+          <View style={{ width: 40, height: 40, borderRadius: 20, backgroundColor: 'rgba(255,170,50,0.16)', alignItems: 'center', justifyContent: 'center' }}>
+            <Ionicons name="navigate" size={20} color={c.primary} />
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={{ color: c.primary, fontSize: 10, fontWeight: '800', letterSpacing: 1, textTransform: 'uppercase' }}>Next direction</Text>
+            <Text style={{ color: c.text, fontSize: 14, fontWeight: '700', marginTop: 3 }}>{nextInstruction}</Text>
+            {trip ? <Text style={{ color: c.textSecondary, fontSize: 12, marginTop: 3 }}>{(trip.distance / 1000).toFixed(1)} km · {Math.max(1, Math.round(trip.duration / 60))} min remaining</Text> : null}
+          </View>
         </View>
       ) : (
-        <Text style={{ color: colors.muted, fontSize: 13 }}>{position ? 'Loading route directions…' : 'Waiting for your location…'}</Text>
+        <Text style={{ color: c.textSecondary, fontSize: 12 }}>{position ? 'Loading route directions…' : 'Waiting for your location…'}</Text>
       )}
+      <Text style={{ color: c.textMuted, fontSize: 10, textAlign: 'right' }}>Map © OpenFreeMap · OpenMapTiles · OpenStreetMap contributors · Routing by OSRM</Text>
     </View>
   );
 }

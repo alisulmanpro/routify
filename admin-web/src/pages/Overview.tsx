@@ -16,8 +16,10 @@ export default function Overview() {
   if (!data) return <div className="loading-state">Loading network overview…</div>;
 
   const maxVolume = Math.max(1, ...data.volume.map((v) => v.total));
-  const totalMix = data.paymentMix.total || 1;
-  const prepaidPct = Math.round((data.paymentMix.prepaid / totalMix) * 100);
+  const delivered = data.volume.reduce((n, v) => n + v.delivered, 0);
+  const failed = data.volume.reduce((n, v) => n + v.failed, 0);
+  const finished = delivered + failed;
+  const deliveredPct = finished ? Math.round((delivered / finished) * 100) : 0;
 
   return (
     <>
@@ -29,7 +31,7 @@ export default function Overview() {
         <Metric title="Riders" value={data.metrics.riders.toLocaleString()} change={`${data.metrics.ridersChangePct >= 0 ? '+' : ''}${data.metrics.ridersChangePct}% this week`} icon="♙" tone="blue" />
         <Metric title="Active riders (24h)" value={`${data.metrics.activeRiders24h} / ${data.metrics.riders}`} change={`${data.metrics.activeRoutes} routes live`} icon="⚡" tone="green" />
         <Metric title="Deliveries today" value={data.metrics.deliveriesToday.toLocaleString()} change={`${data.metrics.deliveriesChangePct >= 0 ? '+' : ''}${data.metrics.deliveriesChangePct}% vs last week`} icon="▤" tone="amber" />
-        <Metric title="COD collected today" value={data.metrics.codCollectedToday.map((c) => money(c.amount, c.currency)).join(', ') || money(0)} change={`Subscription revenue: ${data.metrics.subscriptionRevenueMonth.map((c) => money(c.amount, c.currency)).join(', ') || money(0)} this month`} icon="◈" tone="violet" />
+        <Metric title="Subscription revenue" value={data.metrics.subscriptionRevenueMonth.map((c) => money(c.amount, c.currency)).join(', ') || money(0)} change="This month" icon="◈" tone="violet" />
       </section>
 
       <section className="dashboard-grid">
@@ -40,14 +42,14 @@ export default function Overview() {
           </div></div></div>
         </article>
         <article className="panel payment-panel">
-          <div className="panel-heading"><div><h2>Payment mix</h2><p>Orders by collection type (30d)</p></div></div>
+          <div className="panel-heading"><div><h2>Delivery outcomes</h2><p>Delivered vs failed, last {data.volume.length} days</p></div></div>
           <div className="donut-wrap">
-            <div className="donut" style={{ background: `conic-gradient(#277ce0 0 ${prepaidPct}%, #f0b74d ${prepaidPct}% 100%)` }}>
-              <div className="donut-hole"><strong>{data.paymentMix.total.toLocaleString()}</strong><span>orders</span></div>
+            <div className="donut" style={{ background: finished ? `conic-gradient(#277ce0 0 ${deliveredPct}%, #f0b74d ${deliveredPct}% 100%)` : '#e5e9f0' }}>
+              <div className="donut-hole"><strong>{finished.toLocaleString()}</strong><span>finished</span></div>
             </div>
             <div className="legend">
-              <span><i className="legend-dot prepaid" />Prepaid <b>{prepaidPct}%</b></span>
-              <span><i className="legend-dot cod" />COD <b>{100 - prepaidPct}%</b></span>
+              <span><i className="legend-dot prepaid" />Delivered <b>{deliveredPct}%</b></span>
+              <span><i className="legend-dot cod" />Failed <b>{finished ? 100 - deliveredPct : 0}%</b></span>
             </div>
           </div>
         </article>
@@ -85,13 +87,11 @@ export default function Overview() {
         <div className="panel-heading"><div><h2>Recent deliveries</h2><p>Latest delivery activity across your network</p></div></div>
         <div className="table-wrap">
           <table>
-            <thead><tr><th>Tracking ID</th><th>Customer</th><th>Rider</th><th>Payment</th><th>Amount</th><th>Status</th><th>Date</th></tr></thead>
+            <thead><tr><th>Parcel ID</th><th>Customer</th><th>Rider</th><th>Status</th><th>Date</th></tr></thead>
             <tbody>
               {data.recentDeliveries.map((d) => (
                 <tr key={d.id}>
-                  <td><strong>{d.trackingId}</strong></td><td>{d.customer.name}</td><td>{d.riderName || 'Unknown'}</td>
-                  <td><span className={`payment-tag ${d.payment.type}`}>{d.payment.type.toUpperCase()}</span></td>
-                  <td>{money(d.payment.type === 'cod' ? d.payment.codAmount : d.payment.orderValue, d.payment.currency)}</td>
+                  <td><strong>{d.trackingId}</strong></td><td>{d.customer.name || '—'}</td><td>{d.riderName || 'Unknown'}</td>
                   <td><StatusBadge value={d.status} /></td><td>{dateShort(d.createdAt)}</td>
                 </tr>
               ))}

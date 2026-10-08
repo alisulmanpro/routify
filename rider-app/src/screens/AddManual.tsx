@@ -1,25 +1,27 @@
 import { useState } from 'react';
-import { Pressable, ScrollView, Text, View } from 'react-native';
+import { ScrollView, View } from 'react-native';
 import { post, ApiRequestError } from '../lib/api';
-import { Banner, Button, Field, Screen } from '../components/Kit';
-import { colors, radius, spacing } from '../lib/theme';
+import { Screen } from '../components/Kit';
+import { ErrorBanner, Header, PButton, PCard, PInput, SectionLabel } from '../components/Premium';
+import { premium as c } from '../lib/theme';
 import { useNav } from '../lib/nav';
 
 export default function AddManual({ onCreated }: { onCreated: () => void }) {
   const { goBack } = useNav();
-  const [paymentType, setPaymentType] = useState<'prepaid' | 'cod'>('prepaid');
-  const [form, setForm] = useState({ trackingId: '', customerName: '', phone: '', address: '', orderValue: '', codAmount: '', note: '' });
+  const [form, setForm] = useState({ trackingId: '', address: '', customerName: '', phone: '', note: '' });
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const set = (key: keyof typeof form) => (value: string) => setForm((f) => ({ ...f, [key]: value }));
 
   const submit = async () => {
     setBusy(true);
     setError('');
     try {
       await post('/deliveries/manual', {
-        trackingId: form.trackingId.trim(), customer: { name: form.customerName.trim(), phone: form.phone.trim() },
-        address: { raw: form.address.trim() }, note: form.note.trim() || undefined,
-        payment: paymentType === 'prepaid' ? { type: 'prepaid', orderValue: form.orderValue ? Number(form.orderValue) : undefined } : { type: 'cod', codAmount: Number(form.codAmount) },
+        trackingId: form.trackingId.trim(),
+        customer: { name: form.customerName.trim(), phone: form.phone.trim() },
+        address: { raw: form.address.trim() },
+        note: form.note.trim() || undefined,
       });
       onCreated();
       goBack();
@@ -28,35 +30,41 @@ export default function AddManual({ onCreated }: { onCreated: () => void }) {
     } finally { setBusy(false); }
   };
 
-  const valid = form.trackingId && form.customerName && form.phone && form.address && (paymentType === 'prepaid' || Number(form.codAmount) > 0);
+  const valid = form.trackingId.trim().length >= 3 && form.address.trim().length >= 5;
 
   return (
-    <Screen>
-      <ScrollView contentContainerStyle={{ padding: spacing(5) }} keyboardShouldPersistTaps="handled">
-        <Text style={{ fontSize: 20, fontWeight: '800', color: colors.text, marginBottom: spacing(4) }}>Add delivery</Text>
-        {error ? <Banner text={error} /> : null}
-        <Field label="Tracking ID" value={form.trackingId} onChangeText={(v) => setForm({ ...form, trackingId: v })} placeholder="PK-1001" autoCapitalize="characters" />
-        <Field label="Customer name" value={form.customerName} onChangeText={(v) => setForm({ ...form, customerName: v })} placeholder="Nadia Khan" />
-        <Field label="Phone" keyboardType="phone-pad" value={form.phone} onChangeText={(v) => setForm({ ...form, phone: v })} placeholder="0300-1111111" />
-        <Field label="Address" value={form.address} onChangeText={(v) => setForm({ ...form, address: v })} placeholder="House 12, Street 4, Karachi" multiline />
+    <Screen style={{ backgroundColor: c.background }}>
+      <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 32, gap: 14 }} keyboardShouldPersistTaps="handled">
+        <Header eyebrow="New stop" eyebrowIcon="file-document-edit-outline" title="Manual entry" subtitle="Only the parcel ID and address are required." />
+        <ErrorBanner text={error} />
 
-        <Text style={{ fontSize: 13, fontWeight: '600', color: colors.text, marginBottom: 8 }}>Payment</Text>
-        <View style={{ flexDirection: 'row', gap: 8, marginBottom: spacing(4) }}>
-          {(['prepaid', 'cod'] as const).map((t) => (
-            <Pressable key={t} onPress={() => setPaymentType(t)} style={{ flex: 1, paddingVertical: 10, borderRadius: radius.sm, borderWidth: 1, alignItems: 'center', borderColor: paymentType === t ? colors.primary : colors.border, backgroundColor: paymentType === t ? colors.blueBg : '#fff' }}>
-              <Text style={{ fontWeight: '700', color: paymentType === t ? colors.primary : colors.text }}>{t === 'prepaid' ? 'Prepaid' : 'Cash on delivery'}</Text>
-            </Pressable>
-          ))}
-        </View>
+        <PCard style={{ gap: 14 }}>
+          <View>
+            <SectionLabel>Parcel ID</SectionLabel>
+            <PInput icon="barcode-outline" value={form.trackingId} onChangeText={(v) => set('trackingId')(v.toUpperCase())} placeholder="e.g. PK-1001" autoCapitalize="characters" />
+          </View>
+          <View>
+            <SectionLabel>Delivery address</SectionLabel>
+            <PInput icon="location-outline" value={form.address} onChangeText={set('address')} placeholder="House 12, Street 4, City" multiline />
+          </View>
+        </PCard>
 
-        {paymentType === 'prepaid' ? (
-          <Field label="Order value (optional)" keyboardType="decimal-pad" value={form.orderValue} onChangeText={(v) => setForm({ ...form, orderValue: v })} placeholder="0.00" />
-        ) : (
-          <Field label="Amount to collect" keyboardType="decimal-pad" value={form.codAmount} onChangeText={(v) => setForm({ ...form, codAmount: v })} placeholder="0.00" />
-        )}
-        <Field label="Note (optional)" value={form.note} onChangeText={(v) => setForm({ ...form, note: v })} placeholder="Fragile, call before arriving…" multiline />
+        <PCard style={{ gap: 14 }}>
+          <View>
+            <SectionLabel>Customer name (optional)</SectionLabel>
+            <PInput icon="person-outline" value={form.customerName} onChangeText={set('customerName')} placeholder="e.g. Nadia Khan" autoCapitalize="words" />
+          </View>
+          <View>
+            <SectionLabel>Phone (optional)</SectionLabel>
+            <PInput icon="call-outline" value={form.phone} onChangeText={set('phone')} placeholder="e.g. 0300-1111111" keyboardType="phone-pad" />
+          </View>
+          <View>
+            <SectionLabel>Note (optional)</SectionLabel>
+            <PInput icon="document-text-outline" value={form.note} onChangeText={set('note')} placeholder="Fragile, call before arriving…" multiline />
+          </View>
+        </PCard>
 
-        <Button title="Add delivery" onPress={submit} loading={busy} disabled={!valid} />
+        <PButton title="Add delivery" icon="add-circle-outline" onPress={submit} loading={busy} disabled={!valid} chevron />
       </ScrollView>
     </Screen>
   );

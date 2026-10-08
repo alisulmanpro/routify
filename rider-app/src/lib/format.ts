@@ -8,5 +8,5 @@ export const todayKey = () => new Date().toISOString().slice(0, 10);
 
 export const FAILURE_LABELS: Record<string, string> = {
   customer_unavailable: 'Customer unavailable', customer_refused: 'Customer refused', wrong_address: 'Wrong address',
-  phone_unreachable: 'Phone unreachable', business_closed: 'Business closed', payment_issue: 'Payment issue', other: 'Other',
+  phone_unreachable: 'Phone unreachable', business_closed: 'Business closed', other: 'Other',
 };

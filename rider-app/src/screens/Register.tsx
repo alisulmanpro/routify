@@ -1,10 +1,12 @@
 import { useEffect, useState } from 'react';
-import { KeyboardAvoidingView, Platform, Pressable, ScrollView, Text, View } from 'react-native';
+import { KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useAuth } from '../lib/auth';
 import { ApiRequestError, get } from '../lib/api';
 import type { Currency, PublicConfig } from '../lib/types';
-import { Banner, Button, Field, Screen } from '../components/Kit';
-import { colors, radius, spacing } from '../lib/theme';
+import { Screen } from '../components/Kit';
+import { ErrorBanner, PButton, PCard, PInput, SectionLabel } from '../components/Premium';
+import { BrandMark } from './Login';
+import { premium as c, premiumRadius as r } from '../lib/theme';
 
 const ALL_CURRENCIES: Currency[] = ['USD', 'GBP', 'EUR', 'PKR', 'INR'];
 
@@ -14,8 +16,9 @@ export default function Register({ onGoLogin }: { onGoLogin: () => void }) {
   const [form, setForm] = useState({ fullName: '', phone: '', email: '', password: '', confirmPassword: '', currency: 'USD' as Currency });
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const set = (key: keyof typeof form) => (value: string) => setForm((f) => ({ ...f, [key]: value }));
 
-  useEffect(() => { get<PublicConfig>('/config').then((r) => { setConfig(r.data); setForm((f) => ({ ...f, currency: r.data.defaultCurrency })); }).catch(() => {}); }, []);
+  useEffect(() => { get<PublicConfig>('/config').then((res) => { setConfig(res.data); setForm((f) => ({ ...f, currency: res.data.defaultCurrency })); }).catch(() => {}); }, []);
 
   const submit = async () => {
     if (form.password !== form.confirmPassword) { setError('Passwords do not match'); return; }
@@ -33,30 +36,53 @@ export default function Register({ onGoLogin }: { onGoLogin: () => void }) {
   const currencies = config?.currencies || ALL_CURRENCIES;
 
   return (
-    <Screen>
+    <Screen style={{ backgroundColor: c.background }}>
       <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-        <ScrollView contentContainerStyle={{ padding: spacing(6) }} keyboardShouldPersistTaps="handled">
-          <Text style={{ fontSize: 26, fontWeight: '800', color: colors.text, marginBottom: 4 }}>Create your account</Text>
-          <Text style={{ fontSize: 14, color: colors.muted, marginBottom: spacing(6) }}>Sets you up with a {config?.platformName || 'Delivery Planner'} organization and a free trial.</Text>
-          {error ? <Banner text={error} /> : null}
-          <Field label="Full name" value={form.fullName} onChangeText={(v) => setForm({ ...form, fullName: v })} placeholder="Ali Hassan" />
-          <Field label="Phone" keyboardType="phone-pad" value={form.phone} onChangeText={(v) => setForm({ ...form, phone: v })} placeholder="+92 300 1234567" />
-          <Field label="Email" autoCapitalize="none" keyboardType="email-address" value={form.email} onChangeText={(v) => setForm({ ...form, email: v })} placeholder="you@example.com" />
-          <Field label={`Password (min ${config?.minPasswordLength || 8} characters)`} secureTextEntry value={form.password} onChangeText={(v) => setForm({ ...form, password: v })} placeholder="••••••••" />
-          <Field label="Confirm password" secureTextEntry value={form.confirmPassword} onChangeText={(v) => setForm({ ...form, confirmPassword: v })} placeholder="••••••••" />
-          <Text style={{ fontSize: 13, fontWeight: '600', color: colors.text, marginBottom: 8 }}>Currency</Text>
-          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: spacing(4) }}>
-            {currencies.map((c) => (
-              <Pressable key={c} onPress={() => setForm({ ...form, currency: c })} style={{ paddingHorizontal: 14, paddingVertical: 8, borderRadius: radius.pill, borderWidth: 1, borderColor: form.currency === c ? colors.primary : colors.border, backgroundColor: form.currency === c ? colors.blueBg : '#fff' }}>
-                <Text style={{ color: form.currency === c ? colors.primary : colors.text, fontWeight: '600' }}>{c}</Text>
-              </Pressable>
-            ))}
-          </View>
-          <Button title="Create account" onPress={submit} loading={busy} disabled={!form.fullName || !form.phone || !form.email || !form.password} />
-          <View style={{ height: spacing(4) }} />
-          <Button title="Already have an account? Sign in" variant="ghost" onPress={onGoLogin} />
+        <ScrollView contentContainerStyle={{ padding: 24, paddingTop: 36 }} keyboardShouldPersistTaps="handled">
+          <BrandMark />
+          <Text style={s.eyebrow}>Get started</Text>
+          <Text style={s.title}>Create your rider account.</Text>
+          <Text style={s.subtitle}>Your own {config?.platformName || 'Delivery Planner'} account with a free trial.</Text>
+
+          <ErrorBanner text={error} />
+          <PCard style={{ gap: 14 }}>
+            <View><SectionLabel>Full name</SectionLabel><PInput icon="person-outline" value={form.fullName} onChangeText={set('fullName')} placeholder="Ali Hassan" autoCapitalize="words" /></View>
+            <View><SectionLabel>Phone</SectionLabel><PInput icon="call-outline" keyboardType="phone-pad" value={form.phone} onChangeText={set('phone')} placeholder="+92 300 1234567" /></View>
+            <View><SectionLabel>Email</SectionLabel><PInput icon="mail-outline" autoCapitalize="none" keyboardType="email-address" value={form.email} onChangeText={set('email')} placeholder="you@example.com" /></View>
+          </PCard>
+
+          <PCard style={{ gap: 14, marginTop: 14 }}>
+            <View><SectionLabel>{`Password (min ${config?.minPasswordLength || 8} characters)`}</SectionLabel><PInput icon="lock-closed-outline" secureTextEntry value={form.password} onChangeText={set('password')} placeholder="••••••••" /></View>
+            <View><SectionLabel>Confirm password</SectionLabel><PInput icon="shield-checkmark-outline" secureTextEntry value={form.confirmPassword} onChangeText={set('confirmPassword')} placeholder="••••••••" /></View>
+            <View>
+              <SectionLabel>Currency</SectionLabel>
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
+                {currencies.map((cur) => {
+                  const on = form.currency === cur;
+                  return (
+                    <Pressable key={cur} onPress={() => setForm((f) => ({ ...f, currency: cur }))} style={[s.chip, on && s.chipOn]}>
+                      <Text style={{ color: on ? c.primary : c.text, fontWeight: '700', fontSize: 13 }}>{cur}</Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+            </View>
+          </PCard>
+
+          <PButton title="Create account" icon="person-add-outline" onPress={submit} loading={busy} disabled={!form.fullName || !form.phone || !form.email || !form.password} chevron style={{ marginTop: 20 }} />
+          <Pressable onPress={onGoLogin} style={{ alignItems: 'center', paddingVertical: 18 }}>
+            <Text style={{ color: c.textSecondary, fontSize: 14 }}>Already have an account? <Text style={{ color: c.primary, fontWeight: '800' }}>Sign in</Text></Text>
+          </Pressable>
         </ScrollView>
       </KeyboardAvoidingView>
     </Screen>
   );
 }
+
+const s = StyleSheet.create({
+  eyebrow: { color: c.primary, fontSize: 12, fontWeight: '800', letterSpacing: 1.2, textTransform: 'uppercase', marginBottom: 6 },
+  title: { color: c.text, fontSize: 26, fontWeight: '800', marginBottom: 6 },
+  subtitle: { color: c.textSecondary, fontSize: 14, lineHeight: 20, marginBottom: 22 },
+  chip: { paddingHorizontal: 16, paddingVertical: 9, borderRadius: r.pill, borderWidth: 1, borderColor: c.border, backgroundColor: c.surfaceSoft },
+  chipOn: { borderColor: c.primary, backgroundColor: 'rgba(255,170,50,0.14)' },
+});

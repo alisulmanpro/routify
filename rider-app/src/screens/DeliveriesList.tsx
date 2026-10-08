@@ -1,21 +1,27 @@
 import { useCallback, useState } from 'react';
-import { FlatList, Pressable, RefreshControl, Text, View } from 'react-native';
+import { Alert, FlatList, Platform, Pressable, RefreshControl, StyleSheet, Text, View } from 'react-native';
+import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useFocusEffect } from '../lib/useFocusEffect';
-import { get, post, ApiRequestError } from '../lib/api';
+import { del, get, post, ApiRequestError } from '../lib/api';
 import type { Delivery, Route } from '../lib/types';
-import { money } from '../lib/format';
+import { titleCase } from '../lib/format';
 import { getRouteOrigin } from '../lib/location';
-import { Badge, Banner, Button, Card, EmptyState, Screen } from '../components/Kit';
-import { colors, spacing } from '../lib/theme';
+import { Screen } from '../components/Kit';
+import { DARK_ON_PRIMARY, Empty, ErrorBanner, Header, PButton, PCard, Pill, gradient, type PillTone } from '../components/Premium';
+import { premium as c } from '../lib/theme';
 import { useNav } from '../lib/nav';
 
-const STATUS_TONE: Record<Delivery['status'], 'blue' | 'green' | 'red' | 'amber'> = { pending: 'amber', in_progress: 'blue', delivered: 'green', failed: 'red' };
+const STATUS: Record<Delivery['status'], { label: string; tone: PillTone }> = {
+  pending: { label: 'Pending', tone: 'amber' },
+  in_progress: { label: 'Arrived', tone: 'blue' },
+  delivered: { label: 'Delivered', tone: 'green' },
+  failed: { label: 'Failed', tone: 'red' },
+};
 
 export default function DeliveriesList() {
   const { navigate } = useNav();
   const [route, setRoute] = useState<Route | null>(null);
   const [deliveries, setDeliveries] = useState<Delivery[]>([]);
-  const [filter, setFilter] = useState<'all' | 'open' | 'completed'>('all');
   const [error, setError] = useState('');
   const [refreshing, setRefreshing] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -43,8 +49,7 @@ export default function DeliveriesList() {
     try {
       const origin = await getRouteOrigin();
       const planned = await post<Route>('/routes/build', origin ? { origin } : {});
-      const active = await post<Route>(`/routes/${planned.data.id}/start`);
-      setRoute(active.data);
+      setRoute((await post<Route>(`/routes/${planned.data.id}/start`)).data);
     } catch (err) {
       setError(err instanceof ApiRequestError ? err.message : 'Could not start a delivery route');
     } finally { setBusy(false); }
@@ -55,100 +60,151 @@ export default function DeliveriesList() {
     setBusy(true);
     setError('');
     try {
-      const r = await post<Route>(`/routes/${route.id}/start`);
-      setRoute(r.data);
+      setRoute((await post<Route>(`/routes/${route.id}/start`)).data);
     } catch (err) {
       setError(err instanceof ApiRequestError ? err.message : 'Could not start the route');
     } finally { setBusy(false); }
   };
 
-  const isRouteMode = route && route.status !== 'completed';
-  const pendingCount = deliveries.filter((delivery) => delivery.status === 'pending' && !delivery.routeId).length;
+  const clearDeliveries = async () => {
+    setBusy(true);
+    setError('');
+    try {
+      await del('/deliveries');
+      await load();
+    } catch (err) {
+      setError(err instanceof ApiRequestError ? err.message : 'Could not clear deliveries');
+    } finally { setBusy(false); }
+  };
+
+  const confirmClearDeliveries = () => {
+    const message = 'This permanently removes all open deliveries and any route that has not started. Completed deliveries stay in History.';
+    if (Platform.OS === 'web') {
+      if (globalThis.confirm(message)) void clearDeliveries();
+      return;
+    }
+    Alert.alert('Clear open deliveries?', message, [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Clear deliveries', style: 'destructive', onPress: () => void clearDeliveries() },
+    ]);
+  };
+
+  const isRouteMode = !!route && route.status !== 'completed';
+  const pendingCount = deliveries.filter((d) => d.status === 'pending' && !d.routeId).length;
   const unmappedCount = route?.stops.filter((stop) => !stop.delivery.address.geocoded).length || 0;
   const approximateCount = route?.stops.filter((stop) => stop.delivery.address.approximate).length || 0;
-  const visibleDeliveries = deliveries.filter((delivery) => {
-    if (filter === 'open') return delivery.status === 'pending' || delivery.status === 'in_progress';
-    if (filter === 'completed') return delivery.status === 'delivered' || delivery.status === 'failed';
-    return true;
-  });
-  const items: { delivery: Delivery; leg?: { legDistanceKm: number }; order?: number }[] = isRouteMode
-    ? route!.stops.map((s) => ({ delivery: s.delivery, leg: s, order: s.order }))
-    : visibleDeliveries.map((d) => ({ delivery: d }));
+  const openDeliveries = deliveries.filter((d) => d.status === 'pending' || d.status === 'in_progress');
+  const items: { delivery: Delivery; order?: number }[] = isRouteMode
+    ? route!.stops.filter((stop) => stop.delivery.status === 'pending' || stop.delivery.status === 'in_progress').map((stop) => ({ delivery: stop.delivery, order: stop.order }))
+    : openDeliveries.map((d) => ({ delivery: d }));
+  const progress = route?.progress.total ? Math.round((route.progress.done / route.progress.total) * 100) : 0;
 
   return (
-    <Screen>
-      <View style={{ padding: spacing(5), paddingBottom: 0 }}>
-        <Text style={{ fontSize: 22, fontWeight: '800', color: colors.text }}>{isRouteMode ? "Today's route" : 'Deliveries'}</Text>
-        {error ? <Banner text={error} /> : null}
-      </View>
-
-      {!isRouteMode && pendingCount > 0 && (
-        <View style={{ paddingHorizontal: spacing(5), marginTop: spacing(3) }}>
-          <Button title={`Start delivery (${pendingCount} stops)`} onPress={startDelivery} loading={busy} />
-        </View>
-      )}
-      {route?.status === 'planned' && (
-        <View style={{ paddingHorizontal: spacing(5), marginTop: spacing(3) }}>
-          <Button title="Start delivery" onPress={startRoute} loading={busy} />
-          <Text style={{ color: colors.muted, fontSize: 12, marginTop: spacing(2), textAlign: 'center' }}>Route preference: {route.preference.replace(/_/g, ' ')}</Text>
-        </View>
-      )}
-      {route?.status === 'active' && (
-        <View style={{ paddingHorizontal: spacing(5), marginTop: spacing(3) }}>
-          <Card>
-            <Text style={{ fontSize: 13, color: colors.muted }}>{route.progress.done} of {route.progress.total} stops done · {route.distanceKm} km planned</Text>
-            <Text style={{ fontSize: 12, color: unmappedCount ? colors.amber : colors.muted, marginTop: spacing(2) }}>{route.stops.length - unmappedCount} of {route.stops.length} destinations mapped and optimized{approximateCount ? ` · ${approximateCount} approximate` : ''}{unmappedCount > approximateCount ? ` · ${unmappedCount - approximateCount} need address review` : ''}</Text>
-            <View style={{ marginTop: spacing(3) }}><Button title="Live navigation" variant="secondary" onPress={() => navigate('RouteNavigation')} /></View>
-          </Card>
-        </View>
-      )}
-
+    <Screen style={{ backgroundColor: c.background }}>
       <FlatList
         data={items}
         keyExtractor={(item) => item.delivery.id}
-        contentContainerStyle={{ padding: spacing(5), gap: spacing(3) }}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
-        ListHeaderComponent={!isRouteMode ? (
-          <View style={{ flexDirection: 'row', gap: spacing(2), marginBottom: spacing(2) }}>
-            {(['all', 'open', 'completed'] as const).map((value) => (
-              <Pressable key={value} onPress={() => setFilter(value)} style={{ flex: 1, paddingVertical: spacing(2), borderRadius: 8, alignItems: 'center', backgroundColor: filter === value ? colors.blueBg : colors.card, borderWidth: 1, borderColor: filter === value ? colors.primary : colors.border }}>
-                <Text style={{ color: filter === value ? colors.primary : colors.muted, fontSize: 12, fontWeight: '700', textTransform: 'capitalize' }}>{value}</Text>
-              </Pressable>
-            ))}
+        contentContainerStyle={{ padding: 16, paddingBottom: 100, gap: 12 }}
+        refreshControl={<RefreshControl tintColor={c.primary} colors={[c.primary]} refreshing={refreshing} onRefresh={onRefresh} />}
+        ListHeaderComponent={(
+          <View style={{ gap: 12, marginBottom: 2 }}>
+            <Header
+              eyebrow="Delivery desk"
+              eyebrowIcon="truck-fast-outline"
+              title={isRouteMode ? "Today's route" : 'Deliveries'}
+              subtitle={isRouteMode ? undefined : `${openDeliveries.length} open stop${openDeliveries.length === 1 ? '' : 's'}`}
+              right={!isRouteMode && deliveries.some((d) => d.status === 'pending') ? (
+                <Pressable onPress={confirmClearDeliveries} disabled={busy} hitSlop={8} style={s.clear}>
+                  <Text style={{ color: c.danger, fontWeight: '800', fontSize: 12 }}>Clear</Text>
+                </Pressable>
+              ) : null}
+            />
+            <ErrorBanner text={error} />
+
+            {!isRouteMode && pendingCount > 0 ? (
+              <PButton title={`Start delivery · ${pendingCount} stop${pendingCount === 1 ? '' : 's'}`} icon="navigate-outline" onPress={startDelivery} loading={busy} chevron />
+            ) : null}
+
+            {route?.status === 'planned' ? (
+              <PCard accent>
+                <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <Text style={s.cardTitle}>Route planned</Text>
+                  <Pill text={titleCase(route.preference)} tone="orange" icon="git-network-outline" />
+                </View>
+                <Text style={s.meta}>{route.stops.length} stops · {route.distanceKm} km · about {route.durationMin} min</Text>
+                <PButton title="Start delivery" icon="play" onPress={startRoute} loading={busy} chevron style={{ marginTop: 14 }} />
+              </PCard>
+            ) : null}
+
+            {route?.status === 'active' ? (
+              <PCard accent>
+                <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <Text style={s.cardTitle}>{route.progress.done} of {route.progress.total} stops done</Text>
+                  <Text style={{ color: c.primary, fontWeight: '800' }}>{progress}%</Text>
+                </View>
+                <View style={s.track}><View style={[s.fill, { width: `${progress}%` }]} /></View>
+                <Text style={s.meta}>{route.distanceKm} km planned</Text>
+                <Text style={[s.meta, unmappedCount ? { color: c.warning } : null]}>
+                  {route.stops.length - unmappedCount} of {route.stops.length} destinations mapped
+                  {approximateCount ? ` · ${approximateCount} approximate` : ''}
+                  {unmappedCount > approximateCount ? ` · ${unmappedCount - approximateCount} need address review` : ''}
+                </Text>
+                <PButton title="Live navigation" icon="navigate" variant="secondary" onPress={() => navigate('RouteNavigation')} chevron style={{ marginTop: 14 }} />
+              </PCard>
+            ) : null}
+
+            {items.length > 0 ? <Text style={s.section}>{isRouteMode ? 'Remaining stops' : 'Open deliveries'}</Text> : null}
           </View>
-        ) : null}
-        ListEmptyComponent={<EmptyState title={filter === 'all' ? 'Nothing here yet' : `No ${filter} deliveries`} subtitle={filter === 'all' ? 'Add deliveries manually or import a courier manifest from the + button below.' : undefined} />}
-        renderItem={({ item, index }) => (
-          <Pressable onPress={() => navigate('DeliveryDetail', { id: item.delivery.id })}>
-            <Card>
-              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-                <View style={{ flex: 1, marginRight: spacing(2) }}>
-                  <Text style={{ fontWeight: '700', color: colors.text, fontSize: 15 }}>{item.order ? `Delivery no. ${item.order} · ` : ''}{item.delivery.trackingId}</Text>
-                  <Text style={{ color: colors.muted, fontSize: 13, marginTop: 2 }}>{item.delivery.customer.name}</Text>
-                  <Text style={{ color: colors.faint, fontSize: 12, marginTop: 2 }} numberOfLines={1}>{item.delivery.address.raw}</Text>
-                </View>
-                <View style={{ alignItems: 'flex-end', gap: 6 }}>
-                  <Badge text={item.delivery.status} tone={STATUS_TONE[item.delivery.status]} />
-                  <Text style={{ fontSize: 12, fontWeight: '700', color: item.delivery.payment.type === 'cod' ? colors.amber : colors.primary }}>{item.delivery.payment.type.toUpperCase()}</Text>
-                </View>
-              </View>
-              <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: spacing(2) }}>
-                <Text style={{ fontSize: 12, color: colors.muted }}>{money(item.delivery.payment.type === 'cod' ? item.delivery.payment.codAmount : item.delivery.payment.orderValue, item.delivery.payment.currency)}</Text>
-                {!item.delivery.address.geocoded && <Text style={{ fontSize: 11, color: colors.amber }}>{item.delivery.address.approximate ? 'Approximate area' : 'Location not found'}</Text>}
-              </View>
-            </Card>
-          </Pressable>
         )}
+        ListEmptyComponent={<Empty icon="package-variant" title="No open deliveries" subtitle="Tap + to scan, speak, type or import your stops. Finished stops are in History." />}
+        renderItem={({ item }) => {
+          const d = item.delivery;
+          const st = STATUS[d.status];
+          return (
+            <Pressable onPress={() => navigate('DeliveryDetail', { id: d.id })} style={({ pressed }) => [pressed && { opacity: 0.88 }]}>
+              <PCard style={{ flexDirection: 'row', gap: 12, paddingVertical: 14 }}>
+                <View style={[s.num, item.order === route?.stops.find((stop) => stop.delivery.id === route.currentStopId)?.order && s.numCurrent]}>
+                  {item.order ? <Text style={s.numText}>{item.order}</Text> : <MaterialCommunityIcons name="package-variant-closed" size={16} color={c.primary} />}
+                </View>
+                <View style={{ flex: 1 }}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                    <Text style={s.parcel} numberOfLines={1}>{d.trackingId}</Text>
+                    <Pill text={st.label} tone={st.tone} />
+                  </View>
+                  {d.customer.name ? <Text style={s.customer} numberOfLines={1}>{d.customer.name}</Text> : null}
+                  <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 4, marginTop: 4 }}>
+                    <Ionicons name="location-outline" size={13} color={c.textMuted} style={{ marginTop: 2 }} />
+                    <Text style={s.address} numberOfLines={2}>{d.address.raw}</Text>
+                  </View>
+                  {!d.address.geocoded && d.address.geocodeStatus !== 'pending' ? (
+                    <Text style={{ color: c.warning, fontSize: 11, marginTop: 4, fontWeight: '600' }}>{d.address.approximate ? 'Approximate area' : 'Location not found'}</Text>
+                  ) : null}
+                </View>
+              </PCard>
+            </Pressable>
+          );
+        }}
       />
 
-      <View style={{ position: 'absolute', bottom: spacing(5), right: spacing(5), flexDirection: 'row', gap: spacing(2) }}>
-        <Pressable onPress={() => navigate('ImportPdf')} style={{ backgroundColor: '#fff', borderWidth: 1, borderColor: colors.primary, borderRadius: 28, width: 52, height: 52, alignItems: 'center', justifyContent: 'center' }}>
-          <Text style={{ fontSize: 20 }}>📄</Text>
-        </Pressable>
-        <Pressable onPress={() => navigate('AddManual')} style={{ backgroundColor: colors.primary, borderRadius: 28, width: 52, height: 52, alignItems: 'center', justifyContent: 'center' }}>
-          <Text style={{ fontSize: 26, color: '#fff', marginTop: -2 }}>+</Text>
-        </Pressable>
-      </View>
+      <Pressable onPress={() => navigate('AddDelivery')} accessibilityLabel="Add deliveries" style={({ pressed }) => [s.fab, gradient('linear-gradient(135deg, #FFC56B 0%, #FFAA32 50%, #C97812 100%)'), pressed && { opacity: 0.9 }]}>
+        <Ionicons name="add" size={30} color={DARK_ON_PRIMARY} />
+      </Pressable>
     </Screen>
   );
 }
+
+const s = StyleSheet.create({
+  clear: { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 99, backgroundColor: 'rgba(255,83,104,0.12)' },
+  cardTitle: { color: c.text, fontSize: 15, fontWeight: '800' },
+  meta: { color: c.textSecondary, fontSize: 12, marginTop: 6 },
+  section: { color: c.textSecondary, fontSize: 11, fontWeight: '800', letterSpacing: 1, textTransform: 'uppercase', marginTop: 6 },
+  track: { height: 8, borderRadius: 99, backgroundColor: '#22314F', overflow: 'hidden', marginTop: 10 },
+  fill: { height: '100%', borderRadius: 99, backgroundColor: c.primary },
+  num: { width: 34, height: 34, borderRadius: 17, backgroundColor: c.surfaceSoft, borderWidth: 1, borderColor: c.border, alignItems: 'center', justifyContent: 'center' },
+  numCurrent: { backgroundColor: c.primary, borderColor: c.primary },
+  numText: { color: c.text, fontSize: 13, fontWeight: '800' },
+  parcel: { flex: 1, color: c.text, fontSize: 15, fontWeight: '800' },
+  customer: { color: c.textSecondary, fontSize: 13, marginTop: 2 },
+  address: { flex: 1, color: c.textMuted, fontSize: 12, lineHeight: 17 },
+  fab: { position: 'absolute', right: 20, bottom: 20, width: 60, height: 60, borderRadius: 30, backgroundColor: c.primary, alignItems: 'center', justifyContent: 'center', shadowColor: c.primary, shadowOpacity: 0.45, shadowRadius: 14, shadowOffset: { width: 0, height: 6 }, elevation: 10 },
+});

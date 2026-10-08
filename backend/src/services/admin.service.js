@@ -29,7 +29,7 @@ export async function overview({ days = 7 } = {}) {
   const day30 = new Date(Date.now() - 29 * DAY);
 
   const [riderCount, newRiders7, newRidersPrev7, activeRiders24h, activeRoutes, deliveriesToday, del7, delPrev7,
-    subGroups, mixGroups, codToday, volumeRows, subsRecent, paymentsRecent, revenueMonth, recent, liveRoutes] = await Promise.all([
+    subGroups, volumeRows, subsRecent, paymentsRecent, revenueMonth, recent, liveRoutes] = await Promise.all([
     User.countDocuments({ role: 'rider' }),
     User.countDocuments({ role: 'rider', createdAt: { $gte: new Date(Date.now() - 7 * DAY) } }),
     User.countDocuments({ role: 'rider', createdAt: { $gte: new Date(Date.now() - 14 * DAY), $lt: new Date(Date.now() - 7 * DAY) } }),
@@ -39,8 +39,6 @@ export async function overview({ days = 7 } = {}) {
     Delivery.countDocuments({ serviceDate: { $gte: dayKey(-6), $lte: today } }),
     Delivery.countDocuments({ serviceDate: { $gte: dayKey(-13), $lt: dayKey(-6) } }),
     Subscription.aggregate([{ $group: { _id: { plan: '$planKey', status: '$status', cycle: '$billingCycle' }, count: { $sum: 1 } } }]),
-    Delivery.aggregate([{ $match: { serviceDate: { $gte: dayKey(-29) } } }, { $group: { _id: '$payment.type', count: { $sum: 1 } } }]),
-    Delivery.aggregate([{ $match: { serviceDate: today, 'payment.collectionStatus': 'collected' } }, { $group: { _id: '$payment.currency', amount: { $sum: '$payment.codCollectedAmount' } } }]),
     Delivery.aggregate([{ $match: { serviceDate: { $gte: since, $lte: today } } }, { $group: { _id: { d: '$serviceDate', s: '$status' }, count: { $sum: 1 } } }]),
     Subscription.find({ createdAt: { $gte: day30 } }).select('createdAt').lean(),
     Payment.find({ status: 'succeeded', paidAt: { $gte: day30 } }).select('paidAt amount currency').lean(),
@@ -75,9 +73,6 @@ export async function overview({ days = 7 } = {}) {
   const revenueByDay = new Map();
   paymentsRecent.forEach((p) => { const k = p.paidAt.toISOString().slice(0, 10); const m = revenueByDay.get(k) || {}; m[p.currency] = round2((m[p.currency] || 0) + p.amount); revenueByDay.set(k, m); });
 
-  const mix = { prepaid: 0, cod: 0 };
-  mixGroups.forEach((g) => { mix[g._id] = g.count; });
-
   const [riders, routeProgress] = await Promise.all([
     userNames([...recent.map((d) => d.riderId), ...liveRoutes.map((r) => r.riderId)]),
     liveRoutes.length ? Delivery.aggregate([{ $match: { routeId: { $in: liveRoutes.map((r) => r._id) } } }, { $group: { _id: { r: '$routeId', s: '$status' }, count: { $sum: 1 } } }]) : [],
@@ -88,11 +83,9 @@ export async function overview({ days = 7 } = {}) {
       riders: riderCount, ridersChangePct: pct(newRiders7, newRidersPrev7),
       activeRiders24h, activeRoutes,
       deliveriesToday, deliveriesWeek: del7, deliveriesChangePct: pct(del7, delPrev7),
-      codCollectedToday: codToday.map((c) => ({ currency: c._id, amount: round2(c.amount) })),
       subscriptionRevenueMonth: revenueMonth.map((c) => ({ currency: c._id, amount: round2(c.amount) })),
     },
     subscriptions: subs,
-    paymentMix: { total: mix.prepaid + mix.cod, prepaid: mix.prepaid, cod: mix.cod, windowDays: 30 },
     volume,
     subscriptionGrowth: trendDays.map((date) => ({ date, newSubscriptions: newSubsByDay.get(date) || 0 })),
     revenueTrend: trendDays.map((date) => ({ date, byCurrency: revenueByDay.get(date) || {} })),
@@ -116,18 +109,15 @@ export async function listRiders(q) {
   const ids = users.map((u) => u._id);
   const [subs, groups] = await Promise.all([
     Subscription.find({ userId: { $in: ids } }).lean(),
-    Delivery.aggregate([{ $match: { riderId: { $in: ids } } }, { $group: { _id: { r: '$riderId', t: '$payment.type', c: '$payment.currency' }, count: { $sum: 1 }, collected: { $sum: '$payment.codCollectedAmount' } } }]),
+    Delivery.aggregate([{ $match: { riderId: { $in: ids } } }, { $group: { _id: '$riderId', count: { $sum: 1 } } }]),
   ]);
   const subByUser = new Map(subs.map((s) => [String(s.userId), s]));
   const items = users.map((u) => {
-    const mine = groups.filter((g) => String(g._id.r) === String(u._id));
-    const sum = (t) => mine.filter((g) => g._id.t === t).reduce((n, g) => n + g.count, 0);
     const sub = subByUser.get(String(u._id));
     return {
       id: String(u._id), fullName: u.fullName, email: u.email, phone: u.phone, status: u.status,
       subscriptionStatus: sub ? effectiveStatus(sub) : null,
-      deliveries: sum('prepaid') + sum('cod'), prepaid: sum('prepaid'), cod: sum('cod'),
-      codCollected: mine.filter((g) => g._id.t === 'cod' && g.collected).map((g) => ({ currency: g._id.c, amount: round2(g.collected) })),
+      deliveries: groups.find((g) => String(g._id) === String(u._id))?.count || 0,
       lastActiveAt: u.lastActiveAt, registeredAt: u.createdAt,
     };
   });

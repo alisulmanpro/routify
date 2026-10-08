@@ -49,6 +49,20 @@
         {
           "cameraPermission": "Delivery Rider uses the camera to capture proof-of-delivery photos."
         }
+      ],
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Delivery Rider uses the camera to scan barcodes on packages."
+        }
+      ],
+      "expo-font",
+      [
+        "expo-speech-recognition",
+        {
+          "microphonePermission": "Delivery Rider uses the microphone so you can add deliveries by voice.",
+          "speechRecognitionPermission": "Delivery Rider converts your speech to text to fill in delivery details."
+        }
       ]
     ],
     "extra": {

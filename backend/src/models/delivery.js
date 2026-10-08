@@ -10,8 +10,8 @@ const deliverySchema = new mongoose.Schema(
     riderId: { type: ObjectId, ref: 'User', required: true, index: true },
     trackingId: { type: String, required: true, trim: true, maxlength: 80 },
     customer: {
-      name: { type: String, required: true, trim: true, maxlength: 160 },
-      phone: { type: String, required: true, trim: true, maxlength: 32 },
+      name: { type: String, trim: true, maxlength: 160, default: '' },
+      phone: { type: String, trim: true, maxlength: 32, default: '' },
     },
     address: {
       raw: { type: String, required: true, trim: true, maxlength: 400 },
@@ -22,13 +22,14 @@ const deliverySchema = new mongoose.Schema(
       approximate: { type: Boolean, default: false },
       geocodeStatus: { type: String, enum: ['pending', 'found', 'approximate', 'not_found'], default: 'pending' },
     },
+    // Legacy: deliveries no longer carry payment details. Kept optional so older records still load.
     payment: {
-      type: { type: String, enum: ['prepaid', 'cod'], required: true },
-      currency: { type: String, default: 'USD' },
-      orderValue: { type: Number, min: 0, default: null },
-      codAmount: { type: Number, min: 0, default: null },
-      codCollectedAmount: { type: Number, min: 0, default: null },
-      collectionStatus: { type: String, enum: ['not_required', 'pending', 'collected'], required: true },
+      type: { type: String, enum: ['prepaid', 'cod'] },
+      currency: String,
+      orderValue: { type: Number, min: 0 },
+      codAmount: { type: Number, min: 0 },
+      codCollectedAmount: { type: Number, min: 0 },
+      collectionStatus: { type: String, enum: ['not_required', 'pending', 'collected'] },
     },
     status: { type: String, enum: DELIVERY_STATUSES, default: 'pending' },
     proof: { photoUrl: String, photoKey: String, capturedAt: Date },
@@ -52,21 +53,9 @@ deliverySchema.index({ serviceDate: 1, status: 1 });
 deliverySchema.index({ createdAt: -1 });
 
 deliverySchema.pre('validate', function enforceBusinessRules() {
-  const p = this.payment;
-  if (p.type === 'cod') {
-    if (!p.codAmount || p.codAmount <= 0) this.invalidate('payment.codAmount', 'COD requires a positive Amount to Collect');
-    if (p.collectionStatus !== 'collected') p.collectionStatus = 'pending';
-  } else if (p.type === 'prepaid') {
-    p.codAmount = null;
-    p.codCollectedAmount = null;
-    p.collectionStatus = 'not_required';
-  }
-
-  if (this.status === 'delivered' && p.type === 'cod' && p.collectionStatus !== 'collected') this.invalidate('payment.collectionStatus', 'COD must be collected before delivery is confirmed');
   if (this.status === 'failed') {
     if (!this.failure?.reason) this.invalidate('failure.reason', 'A failure reason is required');
     if (this.failure?.reason === 'other' && !this.failure?.note?.trim()) this.invalidate('failure.note', 'Please describe the reason for "Other"');
-    if (p.type === 'cod' && p.collectionStatus === 'collected') this.invalidate('payment.collectionStatus', 'A failed COD delivery cannot be marked collected');
   }
 });
 

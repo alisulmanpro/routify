@@ -9,7 +9,7 @@ import { adminUpdateSubscription, serializeSubscription } from '../../services/s
 import { getSettings, updateSettings } from '../../services/settings.service.js';
 import { audit } from '../../services/audit.service.js';
 import { ok } from '../../utils/http.js';
-import { currency, dateKey, idParams, money, objectId, pagination, paymentTypeParam, preference, trimmed } from '../common/schemas.js';
+import { currency, dateKey, idParams, money, objectId, pagination, preference, trimmed } from '../common/schemas.js';
 
 const router = Router();
 router.use(authenticate, authorize('owner_admin'));
@@ -32,7 +32,7 @@ router.patch('/riders/:id', validate({ params: idParams, body: z.object({ status
 });
 
 /* Deliveries */
-router.get('/deliveries', validate({ query: z.object({ ...pagination, ...range, search, date: dateKey.optional(), status: z.enum(['pending', 'in_progress', 'delivered', 'failed']).optional(), paymentType: paymentTypeParam.optional(), riderId: objectId.optional() }) }), async (req, res) => {
+router.get('/deliveries', validate({ query: z.object({ ...pagination, ...range, search, date: dateKey.optional(), status: z.enum(['pending', 'in_progress', 'delivered', 'failed']).optional(), riderId: objectId.optional() }) }), async (req, res) => {
   const { items, meta } = await deliveries.list(req.user, req.valid.query);
   res.json(ok(await admin.decorateDeliveries(items), meta));
 });

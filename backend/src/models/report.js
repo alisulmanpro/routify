@@ -8,8 +8,7 @@ const reportSchema = new mongoose.Schema(
     date: { type: String, required: true },
     summary: {
       total: Number, delivered: Number, failed: Number, pending: Number,
-      prepaid: Number, cod: Number, codExpected: Number, codCollected: Number,
-      currency: String, distanceKm: Number, routeMinutes: Number,
+      distanceKm: Number, routeMinutes: Number,
     },
     fileKey: { type: String, required: true },
     fileSize: Number,

@@ -28,7 +28,6 @@ const schema = z.object({
 
   GEOCODING_PROVIDER: z.enum(['nominatim', 'google', 'none']).default('nominatim'),
   GEOCODING_USER_AGENT: z.string().optional(),
-  GEOCODING_COUNTRY: z.string().trim().default('Pakistan'),
   GOOGLE_MAPS_API_KEY: z.string().optional(),
 
   ADMIN_EMAIL: z.string().email().optional(),

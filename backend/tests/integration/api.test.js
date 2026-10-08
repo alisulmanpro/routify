@@ -13,7 +13,7 @@ process.env.STORAGE_DIR = './tests/tmp-uploads';
 const { createApp } = await import('../../src/app.js');
 const { connectDatabase, disconnectDatabase } = await import('../../src/config/database.js');
 const { ensureDefaultPlans } = await import('../../src/services/subscription.service.js');
-const { setGeocoderForTests } = await import('../../src/services/geocoding.service.js');
+const { setGeocoderForTests, setAreaResolverForTests } = await import('../../src/services/geocoding.service.js');
 
 let app;
 
@@ -40,16 +40,22 @@ test('rejects weak passwords and enforces email uniqueness', async () => {
   assert.equal(dup.body.error.code, 'EMAIL_TAKEN');
 });
 
-test('rejects a COD delivery with no amount, and a prepaid delivery cannot claim a collection', async () => {
+test('a delivery needs only a parcel ID and address; payment details are no longer stored', async () => {
   const reg = await supertest(app).post('/api/v1/auth/register').send({ fullName: 'Rider One', phone: '+92 300 1112224', email: 'rider1@example.com', password: 'longenough1', confirmPassword: 'longenough1', currency: 'PKR' });
   const auth = `Bearer ${reg.body.data.accessToken}`;
 
-  const badCod = await supertest(app).post('/api/v1/deliveries/manual').set('Authorization', auth).send({ trackingId: 'T-1', customer: { name: 'C', phone: '03001112223' }, address: { raw: 'Somewhere real enough' }, payment: { type: 'cod' } });
-  assert.equal(badCod.status, 400);
+  const minimal = await supertest(app).post('/api/v1/deliveries/manual').set('Authorization', auth).send({ trackingId: 'T-1', address: { raw: 'Somewhere real enough' } });
+  assert.equal(minimal.status, 201);
+  assert.equal(minimal.body.data.customer.name, '');
+  assert.equal(minimal.body.data.customer.phone, '');
 
-  const good = await supertest(app).post('/api/v1/deliveries/manual').set('Authorization', auth).send({ trackingId: 'T-2', customer: { name: 'C', phone: '03001112223' }, address: { raw: 'Somewhere real enough' }, payment: { type: 'cod', codAmount: 500 } });
-  assert.equal(good.status, 201);
-  assert.equal(good.body.data.payment.collectionStatus, 'pending');
+  // Older clients may still send payment; it is ignored rather than rejected.
+  const legacy = await supertest(app).post('/api/v1/deliveries/manual').set('Authorization', auth).send({ trackingId: 'T-2', customer: { name: 'C', phone: '03001112223' }, address: { raw: 'Somewhere real enough' }, payment: { type: 'cod' } });
+  assert.equal(legacy.status, 201);
+  assert.equal(legacy.body.data.payment, undefined);
+
+  const noAddress = await supertest(app).post('/api/v1/deliveries/manual').set('Authorization', auth).send({ trackingId: 'T-3' });
+  assert.equal(noAddress.status, 400);
 });
 
 test('a rider cannot see another organization delivery; duplicate tracking IDs are rejected', async () => {
@@ -58,20 +64,20 @@ test('a rider cannot see another organization delivery; duplicate tracking IDs a
   const auth1 = `Bearer ${r1.body.data.accessToken}`;
   const auth2 = `Bearer ${r2.body.data.accessToken}`;
 
-  const created = await supertest(app).post('/api/v1/deliveries/manual').set('Authorization', auth1).send({ trackingId: 'ISO-1', customer: { name: 'C', phone: '03001112223' }, address: { raw: 'Real address here' }, payment: { type: 'prepaid', orderValue: 100 } });
+  const created = await supertest(app).post('/api/v1/deliveries/manual').set('Authorization', auth1).send({ trackingId: 'ISO-1', customer: { name: 'C', phone: '03001112223' }, address: { raw: 'Real address here' } });
   assert.equal(created.status, 201);
 
   const cross = await supertest(app).get(`/api/v1/deliveries/${created.body.data.id}`).set('Authorization', auth2);
   assert.equal(cross.status, 404);
 
-  const dup = await supertest(app).post('/api/v1/deliveries/manual').set('Authorization', auth1).send({ trackingId: 'ISO-1', customer: { name: 'C', phone: '03001112223' }, address: { raw: 'Real address here' }, payment: { type: 'prepaid', orderValue: 100 } });
+  const dup = await supertest(app).post('/api/v1/deliveries/manual').set('Authorization', auth1).send({ trackingId: 'ISO-1', customer: { name: 'C', phone: '03001112223' }, address: { raw: 'Real address here' } });
   assert.equal(dup.status, 409);
 });
 
 test('delivery can be marked delivered without a proof photo, and route lifecycle gates work', async () => {
   const r = await supertest(app).post('/api/v1/auth/register').send({ fullName: 'Flow Rider', phone: '+92 300 7778888', email: 'flow@example.com', password: 'longenough1', confirmPassword: 'longenough1', currency: 'USD' });
   const auth = `Bearer ${r.body.data.accessToken}`;
-  const d = await supertest(app).post('/api/v1/deliveries/manual').set('Authorization', auth).send({ trackingId: 'FLOW-1', customer: { name: 'C', phone: '03001112223' }, address: { raw: 'Real address here' }, payment: { type: 'prepaid', orderValue: 100 } });
+  const d = await supertest(app).post('/api/v1/deliveries/manual').set('Authorization', auth).send({ trackingId: 'FLOW-1', customer: { name: 'C', phone: '03001112223' }, address: { raw: 'Real address here' } });
   const id = d.body.data.id;
 
   const arriveBeforeRoute = await supertest(app).post(`/api/v1/deliveries/${id}/arrive`).set('Authorization', auth);
@@ -92,7 +98,7 @@ test('delivery can be marked delivered without a proof photo, and route lifecycl
 test('delivery order guard requires explicit confirmation to complete a later route stop first', async () => {
   const rider = await supertest(app).post('/api/v1/auth/register').send({ fullName: 'Order Rider', phone: '+92 300 1112233', email: 'order-rider@example.com', password: 'longenough1', confirmPassword: 'longenough1', currency: 'USD' });
   const auth = `Bearer ${rider.body.data.accessToken}`;
-  const items = ['ORDER-1', 'ORDER-2'].map((trackingId) => ({ trackingId, customer: { name: 'C', phone: '03001112223' }, address: { raw: `Real address for ${trackingId}` }, payment: { type: 'prepaid', orderValue: 10 } }));
+  const items = ['ORDER-1', 'ORDER-2'].map((trackingId) => ({ trackingId, customer: { name: 'C', phone: '03001112223' }, address: { raw: `Real address for ${trackingId}` } }));
   const created = await supertest(app).post('/api/v1/deliveries/bulk').set('Authorization', auth).send({ items });
   assert.equal(created.status, 201);
 
@@ -114,7 +120,7 @@ test('delivery order guard requires explicit confirmation to complete a later ro
 test('planned route refresh retries unresolved addresses and updates stop coordinates', async () => {
   const rider = await supertest(app).post('/api/v1/auth/register').send({ fullName: 'Geocode Rider', phone: '+92 300 1112266', email: 'geocode-rider@example.com', password: 'longenough1', confirmPassword: 'longenough1', currency: 'USD' });
   const auth = `Bearer ${rider.body.data.accessToken}`;
-  const created = await supertest(app).post('/api/v1/deliveries/manual').set('Authorization', auth).send({ trackingId: 'GEO-RETRY-1', customer: { name: 'C', phone: '03001112223' }, address: { raw: 'DHQ Hospital Narowal' }, payment: { type: 'prepaid', orderValue: 10 } });
+  const created = await supertest(app).post('/api/v1/deliveries/manual').set('Authorization', auth).send({ trackingId: 'GEO-RETRY-1', customer: { name: 'C', phone: '03001112223' }, address: { raw: 'DHQ Hospital Narowal' } });
   assert.equal(created.status, 201);
 
   try {
@@ -123,18 +129,23 @@ test('planned route refresh retries unresolved addresses and updates stop coordi
     assert.equal(route.status, 201);
     assert.equal(route.body.data.stops[0].delivery.address.geocodeStatus, 'not_found');
 
-    setGeocoderForTests(async () => ({ latitude: 32.1009, longitude: 74.8722, normalized: 'Narowal, Pakistan', approximate: false }));
-    const refreshed = await supertest(app).post(`/api/v1/routes/${route.body.data.id}/retry-geocoding`).set('Authorization', auth);
-    assert.equal(refreshed.status, 200);
-    assert.equal(refreshed.body.data.stops[0].delivery.address.geocoded, true);
-    assert.equal(refreshed.body.data.stops[0].delivery.address.geocodeStatus, 'found');
-
+    // A retry first finds only the general area: the stop gets coordinates but stays flagged.
     setGeocoderForTests(async () => ({ latitude: 32.1009, longitude: 74.8722, normalized: 'Narowal, Pakistan', approximate: true }));
     const approximate = await supertest(app).post(`/api/v1/routes/${route.body.data.id}/retry-geocoding`).set('Authorization', auth);
     assert.equal(approximate.status, 200);
     assert.equal(approximate.body.data.stops[0].delivery.address.geocoded, false);
     assert.equal(approximate.body.data.stops[0].delivery.address.approximate, true);
+    assert.equal(approximate.body.data.stops[0].delivery.address.latitude, 32.1009);
     assert.ok(approximate.body.data.stops[0].delivery.flags.includes('approximate_location'));
+
+    // Retries look approximate stops up again, so a later exact match upgrades the stop.
+    setGeocoderForTests(async () => ({ latitude: 32.0983, longitude: 74.8735, normalized: 'DHQ Hospital, Narowal, Pakistan', approximate: false }));
+    const refreshed = await supertest(app).post(`/api/v1/routes/${route.body.data.id}/retry-geocoding`).set('Authorization', auth);
+    assert.equal(refreshed.status, 200);
+    assert.equal(refreshed.body.data.stops[0].delivery.address.geocoded, true);
+    assert.equal(refreshed.body.data.stops[0].delivery.address.geocodeStatus, 'found');
+    assert.equal(refreshed.body.data.stops[0].delivery.address.latitude, 32.0983);
+    assert.ok(!refreshed.body.data.stops[0].delivery.flags.includes('approximate_location'));
   } finally {
     setGeocoderForTests();
   }
@@ -143,7 +154,7 @@ test('planned route refresh retries unresolved addresses and updates stop coordi
 test('other delivery failure requires and accepts a description', async () => {
   const rider = await supertest(app).post('/api/v1/auth/register').send({ fullName: 'Failure Rider', phone: '+92 300 1112244', email: 'failure-rider@example.com', password: 'longenough1', confirmPassword: 'longenough1', currency: 'USD' });
   const auth = `Bearer ${rider.body.data.accessToken}`;
-  const created = await supertest(app).post('/api/v1/deliveries/manual').set('Authorization', auth).send({ trackingId: 'FAIL-OTHER-1', customer: { name: 'C', phone: '03001112223' }, address: { raw: 'Real address for failure test' }, payment: { type: 'prepaid', orderValue: 10 } });
+  const created = await supertest(app).post('/api/v1/deliveries/manual').set('Authorization', auth).send({ trackingId: 'FAIL-OTHER-1', customer: { name: 'C', phone: '03001112223' }, address: { raw: 'Real address for failure test' } });
   const route = await supertest(app).post('/api/v1/routes/build').set('Authorization', auth).send({});
   await supertest(app).post(`/api/v1/routes/${route.body.data.id}/start`).set('Authorization', auth);
   await supertest(app).post(`/api/v1/deliveries/${created.body.data.id}/arrive`).set('Authorization', auth);
@@ -160,7 +171,7 @@ test('rider can generate a report for a past service date', async () => {
   const rider = await supertest(app).post('/api/v1/auth/register').send({ fullName: 'Report Rider', phone: '+92 300 1112255', email: 'report-rider@example.com', password: 'longenough1', confirmPassword: 'longenough1', currency: 'USD' });
   const auth = `Bearer ${rider.body.data.accessToken}`;
   const pastDate = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
-  const created = await supertest(app).post('/api/v1/deliveries/manual').set('Authorization', auth).send({ trackingId: 'REPORT-PAST-1', customer: { name: 'C', phone: '03001112223' }, address: { raw: 'Real address for report test' }, payment: { type: 'prepaid', orderValue: 10 }, serviceDate: pastDate });
+  const created = await supertest(app).post('/api/v1/deliveries/manual').set('Authorization', auth).send({ trackingId: 'REPORT-PAST-1', customer: { name: 'C', phone: '03001112223' }, address: { raw: 'Real address for report test' }, serviceDate: pastDate });
   assert.equal(created.status, 201);
 
   const report = await supertest(app).post('/api/v1/reports/generate').set('Authorization', auth).send({ date: pastDate });
@@ -190,7 +201,7 @@ test('self-registered riders get their own individual subscription and control t
   assert.equal(me.body.data.subscription.userId, r.body.data.user.id);
   assert.equal(me.body.data.subscription.planKey, 'trial');
 
-  const delivery = await supertest(app).post('/api/v1/deliveries/manual').set('Authorization', auth).send({ trackingId: 'SOLO-1', customer: { name: 'C', phone: '03001112223' }, address: { raw: 'Somewhere real enough' }, payment: { type: 'prepaid', orderValue: 100 } });
+  const delivery = await supertest(app).post('/api/v1/deliveries/manual').set('Authorization', auth).send({ trackingId: 'SOLO-1', customer: { name: 'C', phone: '03001112223' }, address: { raw: 'Somewhere real enough' } });
   assert.equal(delivery.status, 201);
   assert.equal(delivery.body.data.riderId, r.body.data.user.id);
 });
@@ -201,8 +212,8 @@ test('two different riders can use the same tracking ID without colliding with e
   const authA = `Bearer ${a.body.data.accessToken}`;
   const authB = `Bearer ${b.body.data.accessToken}`;
 
-  const dA = await supertest(app).post('/api/v1/deliveries/manual').set('Authorization', authA).send({ trackingId: 'SHARED-1', customer: { name: 'C', phone: '03001112223' }, address: { raw: 'Somewhere real enough' }, payment: { type: 'prepaid', orderValue: 100 } });
-  const dB = await supertest(app).post('/api/v1/deliveries/manual').set('Authorization', authB).send({ trackingId: 'SHARED-1', customer: { name: 'C', phone: '03001112223' }, address: { raw: 'Somewhere else entirely' }, payment: { type: 'prepaid', orderValue: 100 } });
+  const dA = await supertest(app).post('/api/v1/deliveries/manual').set('Authorization', authA).send({ trackingId: 'SHARED-1', customer: { name: 'C', phone: '03001112223' }, address: { raw: 'Somewhere real enough' } });
+  const dB = await supertest(app).post('/api/v1/deliveries/manual').set('Authorization', authB).send({ trackingId: 'SHARED-1', customer: { name: 'C', phone: '03001112223' }, address: { raw: 'Somewhere else entirely' } });
   assert.equal(dA.status, 201);
   assert.equal(dB.status, 201, 'a different rider must be able to reuse the same tracking ID');
 });
@@ -215,13 +226,13 @@ test('a rider hits their plan delivery limit independently of everyone else', as
   await Plan.updateOne({ key: 'trial' }, { 'limits.deliveriesPerMonth': 2 });
 
   const items = [
-    { trackingId: 'LIM-1', customer: { name: 'C', phone: '03001112223' }, address: { raw: 'Addr 1' }, payment: { type: 'prepaid', orderValue: 10 } },
-    { trackingId: 'LIM-2', customer: { name: 'C', phone: '03001112223' }, address: { raw: 'Addr 2' }, payment: { type: 'prepaid', orderValue: 10 } },
+    { trackingId: 'LIM-1', customer: { name: 'C', phone: '03001112223' }, address: { raw: 'Addr 1' } },
+    { trackingId: 'LIM-2', customer: { name: 'C', phone: '03001112223' }, address: { raw: 'Addr 2' } },
   ];
   const ok1 = await supertest(app).post('/api/v1/deliveries/bulk').set('Authorization', auth).send({ items });
   assert.equal(ok1.status, 201);
 
-  const blocked = await supertest(app).post('/api/v1/deliveries/manual').set('Authorization', auth).send({ trackingId: 'LIM-3', customer: { name: 'C', phone: '03001112223' }, address: { raw: 'Addr 3' }, payment: { type: 'prepaid', orderValue: 10 } });
+  const blocked = await supertest(app).post('/api/v1/deliveries/manual').set('Authorization', auth).send({ trackingId: 'LIM-3', customer: { name: 'C', phone: '03001112223' }, address: { raw: 'Addr 3' } });
   assert.equal(blocked.status, 403);
   assert.equal(blocked.body.error.code, 'PLAN_LIMIT_REACHED');
 
@@ -283,4 +294,39 @@ test('admin can record a manual payment directly against a rider and activate th
   const me = await supertest(app).get('/api/v1/subscriptions/me').set('Authorization', `Bearer ${rider.body.data.accessToken}`);
   assert.equal(me.body.data.subscription.planKey, 'starter');
   assert.equal(me.body.data.subscription.status, 'active');
+});
+
+test('rider confirms a detected city and address lookups are scoped to it', async () => {
+  const rider = await supertest(app).post('/api/v1/auth/register').send({ fullName: 'Area Rider', phone: '+44 7700 900123', email: 'area-rider@example.com', password: 'longenough1', confirmPassword: 'longenough1', currency: 'GBP' });
+  const auth = `Bearer ${rider.body.data.accessToken}`;
+  const london = { city: 'London', country: 'United Kingdom', countryCode: 'gb', latitude: 51.5072, longitude: -0.1276 };
+  const seenAreas = [];
+  try {
+    setAreaResolverForTests(async () => london);
+    const detected = await supertest(app).get('/api/v1/rider/service-area/detect').query({ latitude: 51.5072, longitude: -0.1276 }).set('Authorization', auth);
+    assert.equal(detected.status, 200);
+    assert.equal(detected.body.data.city, 'London');
+
+    const before = await supertest(app).get('/api/v1/auth/me').set('Authorization', auth);
+    assert.equal(before.body.data.serviceArea, null, 'detecting alone must not save the city');
+
+    const confirmed = await supertest(app).put('/api/v1/rider/service-area').send({ latitude: 51.5072, longitude: -0.1276 }).set('Authorization', auth);
+    assert.equal(confirmed.status, 200);
+    assert.equal(confirmed.body.data.serviceArea.city, 'London');
+    assert.equal(confirmed.body.data.serviceArea.source, 'gps');
+
+    setGeocoderForTests(async (address, area) => { seenAreas.push(area); return { latitude: 51.51, longitude: -0.12, normalized: 'London', approximate: false }; });
+    await supertest(app).post('/api/v1/deliveries/manual').set('Authorization', auth).send({ trackingId: 'AREA-1', customer: { name: 'C', phone: '07700900124' }, address: { raw: '10 Downing Street' } });
+    const route = await supertest(app).post('/api/v1/routes/build').set('Authorization', auth).send({});
+    assert.equal(route.status, 201);
+    assert.equal(seenAreas[0]?.countryCode, 'gb');
+    assert.equal(seenAreas[0]?.city, 'London');
+
+    const cleared = await supertest(app).patch('/api/v1/auth/me').send({ city: null }).set('Authorization', auth);
+    assert.equal(cleared.status, 200);
+    assert.equal(cleared.body.data.serviceArea, null);
+  } finally {
+    setGeocoderForTests();
+    setAreaResolverForTests(null);
+  }
 });

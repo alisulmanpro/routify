@@ -2,7 +2,7 @@ import { Delivery } from '../models/delivery.js';
 import { Route } from '../models/route.js';
 import { User } from '../models/user.js';
 import { getSettings } from './settings.service.js';
-import { geocodeMany } from './geocoding.service.js';
+import { detectServiceArea, geocodeMany, isInsideArea } from './geocoding.service.js';
 import { planRoute } from './route-planner.service.js';
 import { cleanDeliveryAddress, serializeDelivery } from './serializers.js';
 import { conflict, forbidden, notFound, unprocessable } from '../utils/errors.js';
@@ -13,17 +13,11 @@ const OPEN = ['pending', 'in_progress'];
 const ROUTE_ROAD_FACTOR = 1.3;
 
 export function summarize(deliveries, route) {
-  const cod = deliveries.filter((d) => d.payment.type === 'cod');
   return {
     total: deliveries.length,
     delivered: deliveries.filter((d) => d.status === 'delivered').length,
     failed: deliveries.filter((d) => d.status === 'failed').length,
     pending: deliveries.filter((d) => OPEN.includes(d.status)).length,
-    prepaid: deliveries.length - cod.length,
-    cod: cod.length,
-    codExpected: round2(cod.reduce((s, d) => s + (d.payment.codAmount || 0), 0)),
-    codCollected: round2(cod.reduce((s, d) => s + (d.payment.codCollectedAmount || 0), 0)),
-    currency: deliveries[0]?.payment.currency || null,
     distanceKm: route?.distanceKm ?? 0,
     routeMinutes: route?.startedAt && route?.completedAt ? Math.max(1, Math.round((new Date(route.completedAt) - new Date(route.startedAt)) / 60000)) : null,
   };
@@ -57,7 +51,22 @@ async function releasePlanned(actor) {
   await Route.deleteMany({ _id: { $in: ids } });
 }
 
-async function refreshDeliveryGeocodes(deliveries, { retryApproximate = false } = {}) {
+/**
+ * The rider's service area. Riders who never confirmed a city get one detected from the
+ * route's starting point, so their lookups are still scoped.
+ */
+async function serviceAreaFor(actor, origin) {
+  const user = await User.findById(actor.id).select('serviceArea');
+  if (user?.serviceArea) return user.serviceArea.toObject();
+  if (!origin) return null;
+  const area = await detectServiceArea(origin).catch(() => null);
+  if (!area) return null;
+  user.serviceArea = { ...area, source: 'gps', confirmedAt: new Date() };
+  await user.save();
+  return user.serviceArea.toObject();
+}
+
+async function refreshDeliveryGeocodes(deliveries, { retryApproximate = false, area = null } = {}) {
   for (const delivery of deliveries) {
     const cleanAddress = cleanDeliveryAddress(delivery.address.raw, delivery.payment);
     if (cleanAddress !== delivery.address.raw) {
@@ -66,10 +75,12 @@ async function refreshDeliveryGeocodes(deliveries, { retryApproximate = false } 
     }
   }
 
-  const todo = deliveries.filter((delivery) => delivery.address.geocodeStatus !== 'found' && (retryApproximate || delivery.address.geocodeStatus !== 'approximate'));
+  // On a retry, also redo "found" stops that sit outside the rider's city (e.g. matched abroad before areas existed).
+  const outsideArea = (delivery) => retryApproximate && area && delivery.address.geocodeStatus === 'found' && !isInsideArea(delivery.address, area);
+  const todo = deliveries.filter((delivery) => outsideArea(delivery) || (delivery.address.geocodeStatus !== 'found' && (retryApproximate || delivery.address.geocodeStatus !== 'approximate')));
   if (!todo.length) return;
 
-  const results = await geocodeMany(todo.map((delivery) => delivery.address.raw), { retryApproximate });
+  const results = await geocodeMany(todo.map((delivery) => delivery.address.raw), { retryApproximate: retryApproximate || todo.some(outsideArea), area });
   for (const delivery of todo) {
     const hit = results.get(delivery.address.raw);
     delivery.address = hit
@@ -93,7 +104,7 @@ export async function build(actor, { preference, origin, deliveryIds, date }) {
   const pref = preference || user?.routePreference || settings.route.defaultPreference;
 
   // Geocode before ordering so stop numbers reflect destination order, not entry order.
-  await refreshDeliveryGeocodes(deliveries);
+  await refreshDeliveryGeocodes(deliveries, { area: await serviceAreaFor(actor, origin) });
 
   const located = deliveries.filter((d) => d.address.geocoded);
   const unlocated = deliveries.filter((d) => !d.address.geocoded);
@@ -119,7 +130,8 @@ export async function retryGeocoding(actor, id) {
   const route = await findMine(actor, id);
   if (!['planned', 'active'].includes(route.status)) throw conflict('Only planned or active routes can retry address lookup', 'INVALID_STATE');
   const deliveries = await Delivery.find({ riderId: actor.id, _id: { $in: route.stops.map((stop) => stop.deliveryId) } });
-  await refreshDeliveryGeocodes(deliveries, { retryApproximate: true });
+  const area = await serviceAreaFor(actor, route.origin?.latitude != null ? route.origin : null);
+  await refreshDeliveryGeocodes(deliveries, { retryApproximate: true, area });
 
   const [settings, user] = await Promise.all([
     getSettings(), User.findById(actor.id).select('routePreference').lean(),

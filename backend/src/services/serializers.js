@@ -1,5 +1,6 @@
 import { signFileUrl } from '../utils/signed-url.js';
 
+/** Older imports appended "COD 1500" to addresses; strip it when it matches the stored amount. */
 export function cleanDeliveryAddress(raw, payment) {
   const address = String(raw || '');
   if (payment?.type !== 'cod' || !(payment.codAmount > 0)) return address;
@@ -15,12 +16,8 @@ export function serializeDelivery(d) {
   return {
     id: String(d._id), riderId: String(d.riderId),
     trackingId: d.trackingId,
-    customer: { name: d.customer?.name, phone: d.customer?.phone },
+    customer: { name: d.customer?.name || '', phone: d.customer?.phone || '' },
     address: { raw: cleanDeliveryAddress(d.address?.raw, d.payment), normalized: d.address?.normalized ?? null, latitude: d.address?.latitude ?? null, longitude: d.address?.longitude ?? null, geocoded: !!d.address?.geocoded, approximate: !!d.address?.approximate, geocodeStatus: d.address?.geocodeStatus || 'pending' },
-    payment: {
-      type: d.payment.type, currency: d.payment.currency, orderValue: d.payment.orderValue ?? null, codAmount: d.payment.codAmount ?? null,
-      codCollectedAmount: d.payment.codCollectedAmount ?? null, collectionStatus: d.payment.collectionStatus,
-    },
     status: d.status,
     proof: d.proof?.photoKey ? { photoUrl: signFileUrl(d.proof.photoKey), capturedAt: d.proof.capturedAt } : null,
     note: d.note || null,

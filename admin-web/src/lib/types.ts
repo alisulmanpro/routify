@@ -5,14 +5,13 @@ export type AdminUser = { id: string; fullName: string; email: string; role: 'ow
 
 export type Rider = {
   id: string; fullName: string; email: string; phone: string; status: 'active' | 'suspended'; subscriptionStatus: string | null;
-  deliveries: number; prepaid: number; cod: number; codCollected: { currency: string; amount: number }[];
+  deliveries: number;
   lastActiveAt: string | null; registeredAt: string;
 };
 
 export type Delivery = {
   id: string; riderId: string; trackingId: string;
   customer: { name: string; phone: string }; address: { raw: string; geocoded: boolean; geocodeStatus: string };
-  payment: { type: 'prepaid' | 'cod'; currency: string; orderValue: number | null; codAmount: number | null; codCollectedAmount: number | null; collectionStatus: string };
   status: 'pending' | 'in_progress' | 'delivered' | 'failed';
   proof: { photoUrl: string } | null; note: string | null; failure: { reason: string; note: string | null } | null;
   serviceDate: string; createdAt: string; riderName: string | null; flags: string[];
@@ -41,9 +40,8 @@ export type Settings = {
 };
 
 export type Overview = {
-  metrics: { riders: number; ridersChangePct: number; activeRiders24h: number; activeRoutes: number; deliveriesToday: number; deliveriesWeek: number; deliveriesChangePct: number; codCollectedToday: { currency: string; amount: number }[]; subscriptionRevenueMonth: { currency: string; amount: number }[] };
+  metrics: { riders: number; ridersChangePct: number; activeRiders24h: number; activeRoutes: number; deliveriesToday: number; deliveriesWeek: number; deliveriesChangePct: number; subscriptionRevenueMonth: { currency: string; amount: number }[] };
   subscriptions: { total: number; active: number; trialing: number; expired: number; pastDue: number; cancelled: number; byPlan: Record<string, number>; byCycle: Record<string, number> };
-  paymentMix: { total: number; prepaid: number; cod: number; windowDays: number };
   volume: { date: string; total: number; delivered: number; failed: number }[];
   liveRoutes: { id: string; rider: string; done: number; total: number; startedAt: string }[];
   recentDeliveries: Delivery[];

@@ -1,5 +1,7 @@
 # Delivery Planner - Product Requirements Document (PRD)
 
+> **Update (Oct 2026):** customer payment (prepaid / cash on delivery) has been removed from the product. Deliveries now need only a parcel ID and an address; customer name and phone are optional. Sections below that mention COD describe the earlier design.
+
 > Status: reflects the platform as actually built. See `REBUILD-NOTES.md` for the
 > history of how it got here (it went from a hardcoded prototype -> org-optional ->
 > fully rider-only).

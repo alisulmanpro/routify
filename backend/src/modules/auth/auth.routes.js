@@ -22,6 +22,8 @@ const refreshBody = z.object({ refreshToken: z.string().min(20).max(200).optiona
 const profileBody = z.object({
   fullName: trimmed(2, 120).optional(), phone: phone.optional(), currency: currency.optional(),
   routePreference: z.enum(['smart', 'nearest_first', 'shortest']).optional(), notificationsEnabled: z.boolean().optional(),
+  // A city name sets the rider's service area by hand; null clears it so GPS detection takes over.
+  city: z.string().trim().max(120).nullable().optional(),
 }).refine((b) => Object.keys(b).length > 0, 'Nothing to update');
 const passwordBody = z.object({ currentPassword: z.string().min(1).max(128), newPassword: password });
 

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { extractDeliveriesFromText } from '../../src/services/pdf-import.service.js';
 import { cleanDeliveryAddress } from '../../src/services/serializers.js';
 
-test('extracts COD and prepaid deliveries and flags ambiguous payment for review', () => {
+test('extracts deliveries from labelled blocks without exposing payment details', () => {
   const text = `
 Tracking ID: TCS-5001
 Customer Name: Bilal Ahmed
@@ -27,12 +27,12 @@ Note: payment on delivery maybe
 `;
   const items = extractDeliveriesFromText(text);
   assert.equal(items.length, 3);
-  assert.equal(items[0].paymentType, 'cod');
-  assert.equal(items[0].codAmount, 3200);
-  assert.equal(items[1].paymentType, 'prepaid');
-  assert.equal(items[1].orderValue, 1500);
-  assert.equal(items[2].paymentType, null, 'must never guess an ambiguous payment type');
-  assert.ok(items[2].flags.includes('payment_needs_review'));
+  assert.equal(items[0].trackingId, 'TCS-5001');
+  assert.equal(items[0].address, 'House 12, Street 4, Gulshan-e-Iqbal, Karachi');
+  for (const item of items) {
+    assert.ok(!('paymentType' in item) && !('codAmount' in item) && !('orderValue' in item));
+    assert.ok(!item.flags.includes('payment_needs_review'));
+  }
 });
 
 test('flags a delivery block with no address', () => {
@@ -55,20 +55,17 @@ ORD-1002 Usman Ahmed 0300-0001002 House 45, Mohalla Islam Pura, Narowal
   assert.equal(items[0].customerName, 'Ali Raza');
   assert.equal(items[0].phone, '0300-0001001');
   assert.equal(items[0].address, 'House 12, Street 3, Circular Road, Narowal');
-  assert.equal(items[0].paymentType, null);
-  assert.ok(items[0].flags.includes('payment_needs_review'));
+  assert.ok(!('paymentType' in items[0]));
 });
 
-test('separates a trailing COD amount from a table address', () => {
+test('strips a trailing COD amount from a table address', () => {
   const [item] = extractDeliveriesFromText(`
 Order ID Customer Phone Delivery Address
 ORD-1009 Fahad Aslam 0300-0001009 House 14, Main Bazar, Narowal COD PKR 1,575
 `);
 
   assert.equal(item.address, 'House 14, Main Bazar, Narowal');
-  assert.equal(item.paymentType, 'cod');
-  assert.equal(item.codAmount, 1575);
-  assert.ok(!item.flags.includes('payment_needs_review'));
+  assert.ok(!('codAmount' in item));
 });
 
 test('cleans a saved COD suffix only when its amount matches the payment record', () => {

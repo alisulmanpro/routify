@@ -7,6 +7,5 @@ export const pagination = { page: z.coerce.number().int().min(1).optional(), lim
 export const money = z.number().finite().min(0).max(1_000_000_000);
 export const preference = z.enum(['smart', 'nearest_first', 'shortest']);
 export const currency = z.enum(['USD', 'GBP', 'EUR', 'PKR', 'INR']);
-export const paymentTypeParam = z.string().transform((v) => v.toLowerCase()).pipe(z.enum(['prepaid', 'cod']));
 export const trimmed = (min, max) => z.string().trim().min(min).max(max);
 export const phone = z.string().trim().min(5).max(32).regex(/^\+?[\d\s\-()]{5,}$/, 'Enter a valid phone number');
