@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState, type ComponentProps } from 'react';
-import { Animated, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View, type ViewStyle } from 'react-native';
+import { Animated, Image, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View, type ViewStyle } from 'react-native';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useFocusEffect } from '../lib/useFocusEffect';
 import { get, post, ApiRequestError } from '../lib/api';
@@ -8,6 +8,7 @@ import { todayKey } from '../lib/format';
 import { getRouteOrigin } from '../lib/location';
 import { Banner, Screen } from '../components/Kit';
 import { PButton } from '../components/Premium';
+import { BRAND_MARK } from './Login';
 import { premium as c, premiumRadius as r, premiumShadow } from '../lib/theme';
 import { useNav } from '../lib/nav';
 
@@ -111,7 +112,7 @@ export default function Dashboard() {
         <View style={s.header}>
           <View style={s.avatarRing}>
             <View style={s.avatar}>
-              <MaterialCommunityIcons name="package-variant-closed" size={26} color={c.primary} />
+              <Image source={BRAND_MARK} style={{ width: 34, height: 32 }} resizeMode="contain" accessibilityLabel="Routify" />
             </View>
           </View>
           <View style={{ flex: 1, marginLeft: 14 }}>
@@ -285,8 +286,8 @@ function ProgressBar({ progress, color, style }: { progress: number; color: stri
 
 const s = StyleSheet.create({
   header: { flexDirection: 'row', alignItems: 'center', marginBottom: 18 },
-  avatarRing: { width: 54, height: 54, borderRadius: 27, borderWidth: 2, borderColor: 'rgba(255,170,50,0.45)', padding: 3 },
-  avatar: { flex: 1, borderRadius: 24, backgroundColor: '#2A1E10', alignItems: 'center', justifyContent: 'center' },
+  avatarRing: { width: 54, height: 54, borderRadius: 27, borderWidth: 2, borderColor: 'rgba(139,124,255,0.55)', padding: 3 },
+  avatar: { flex: 1, borderRadius: 24, backgroundColor: '#14113F', alignItems: 'center', justifyContent: 'center' },
   greeting: { color: c.textSecondary, fontSize: 13, fontWeight: '500' },
   name: { color: c.text, fontSize: 20, fontWeight: '800', marginTop: 1 },
   role: { color: c.textSecondary, fontSize: 12, fontWeight: '600' },

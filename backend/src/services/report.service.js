@@ -19,7 +19,7 @@ export const serializeReport = (r, extra = {}) => ({
 const label = { customer_unavailable: 'Customer unavailable', customer_refused: 'Customer refused', wrong_address: 'Wrong address', phone_unreachable: 'Phone unreachable', business_closed: 'Business closed', payment_issue: 'Payment issue', other: 'Other' };
 
 async function renderPdf({ rider, date, summary, deliveries, includePhotos }) {
-  const doc = new PDFDocument({ size: 'A4', margin: 40, info: { Title: `Delivery report ${date}`, Author: 'Delivery Planner' } });
+  const doc = new PDFDocument({ size: 'A4', margin: 40, info: { Title: `Delivery report ${date}`, Author: 'Routify' } });
   const chunks = [];
   doc.on('data', (c) => chunks.push(c));
   const done = new Promise((resolve) => doc.on('end', () => resolve(Buffer.concat(chunks))));

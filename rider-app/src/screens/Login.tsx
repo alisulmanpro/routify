@@ -1,10 +1,9 @@
 import { useState } from 'react';
-import { KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
-import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { Image, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useAuth } from '../lib/auth';
 import { ApiRequestError, API_URL } from '../lib/api';
 import { Screen } from '../components/Kit';
-import { DARK_ON_PRIMARY, ErrorBanner, PButton, PInput, SectionLabel, gradient } from '../components/Premium';
+import { ErrorBanner, PButton, PInput, SectionLabel, gradient } from '../components/Premium';
 import { premium as c } from '../lib/theme';
 
 export default function Login({ onGoRegister }: { onGoRegister: () => void }) {
@@ -30,9 +29,8 @@ export default function Login({ onGoRegister }: { onGoRegister: () => void }) {
     <Screen style={{ backgroundColor: c.background }}>
       <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
         <ScrollView contentContainerStyle={s.page} keyboardShouldPersistTaps="handled">
-          <View style={[s.glow, gradient('radial-gradient(circle at 50% 50%, rgba(255,170,50,0.28) 0%, rgba(5,11,24,0) 70%)')]} pointerEvents="none" />
-          <BrandMark />
-          <Text style={s.eyebrow}>Delivery planner</Text>
+          <View style={[s.glow, gradient('radial-gradient(circle at 50% 50%, rgba(124,92,255,0.30) 0%, rgba(5,11,24,0) 70%)')]} pointerEvents="none" />
+          <Image source={LOGO} style={s.fullLogo} resizeMode="contain" accessibilityLabel="Routify: Plan, Deliver, Track" />
           <Text style={s.title}>Welcome back.</Text>
           <Text style={s.subtitle}>Sign in to take control of today&apos;s deliveries.</Text>
 
@@ -57,19 +55,18 @@ export default function Login({ onGoRegister }: { onGoRegister: () => void }) {
   );
 }
 
+const LOGO = require('../../assets/brand/routify-logo.png');
+export const BRAND_MARK = require('../../assets/brand/routify-mark.png');
+
 export function BrandMark() {
-  return (
-    <View style={[s.logo, gradient('linear-gradient(135deg, #FFC56B 0%, #FFAA32 50%, #C97812 100%)')]}>
-      <MaterialCommunityIcons name="package-variant-closed" size={30} color={DARK_ON_PRIMARY} />
-    </View>
-  );
+  return <Image source={BRAND_MARK} style={s.mark} resizeMode="contain" accessibilityLabel="Routify" />;
 }
 
 const s = StyleSheet.create({
   page: { flexGrow: 1, justifyContent: 'center', padding: 24 },
   glow: { position: 'absolute', top: 40, left: -60, width: 320, height: 320, borderRadius: 160 },
-  logo: { width: 60, height: 60, borderRadius: 20, backgroundColor: c.primary, alignItems: 'center', justifyContent: 'center', marginBottom: 22, shadowColor: c.primary, shadowOpacity: 0.45, shadowRadius: 18, shadowOffset: { width: 0, height: 8 }, elevation: 10 },
-  eyebrow: { color: c.primary, fontSize: 12, fontWeight: '800', letterSpacing: 1.2, textTransform: 'uppercase', marginBottom: 6 },
+  fullLogo: { width: 190, height: 204, alignSelf: 'center', marginBottom: 26 },
+  mark: { width: 76, height: 70, marginBottom: 16 },
   title: { color: c.text, fontSize: 28, fontWeight: '800', marginBottom: 6 },
   subtitle: { color: c.textSecondary, fontSize: 14, lineHeight: 20, marginBottom: 26 },
 });

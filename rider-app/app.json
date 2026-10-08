@@ -1,15 +1,15 @@
 {
   "expo": {
-    "name": "Delivery Rider",
+    "name": "Routify",
     "slug": "delivery-rider",
     "version": "1.0.0",
     "orientation": "portrait",
     "androidStatusBar": {
-      "barStyle": "dark-content",
-      "backgroundColor": "#f4f6f9"
+      "barStyle": "light-content",
+      "backgroundColor": "#050B18"
     },
     "icon": "./assets/icon.png",
-    "userInterfaceStyle": "light",
+    "userInterfaceStyle": "dark",
     "ios": {
       "supportsTablet": true,
       "infoPlist": {
@@ -21,7 +21,7 @@
     },
     "android": {
       "adaptiveIcon": {
-        "backgroundColor": "#E6F4FE",
+        "backgroundColor": "#0A0D3A",
         "foregroundImage": "./assets/android-icon-foreground.png",
         "backgroundImage": "./assets/android-icon-background.png",
         "monochromeImage": "./assets/android-icon-monochrome.png"

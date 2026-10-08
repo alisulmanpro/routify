@@ -6,7 +6,7 @@ export const DEFAULT_SETTINGS = {
   trialDays: 14,
   route: { defaultPreference: 'smart', avgSpeedKmh: 25, stopServiceMinutes: 3 },
   reports: { includePhotos: true },
-  platform: { name: 'Delivery Planner', supportEmail: '', privacyUrl: '', paymentInstructions: '' },
+  platform: { name: 'Routify', supportEmail: '', privacyUrl: '', paymentInstructions: '' },
   security: { minPasswordLength: 8, maxFailedLogins: 5, lockoutMinutes: 15 },
 };
 

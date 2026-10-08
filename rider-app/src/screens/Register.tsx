@@ -40,9 +40,9 @@ export default function Register({ onGoLogin }: { onGoLogin: () => void }) {
       <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
         <ScrollView contentContainerStyle={{ padding: 24, paddingTop: 36 }} keyboardShouldPersistTaps="handled">
           <BrandMark />
-          <Text style={s.eyebrow}>Get started</Text>
+          <Text style={s.eyebrow}>Routify · Get started</Text>
           <Text style={s.title}>Create your rider account.</Text>
-          <Text style={s.subtitle}>Your own {config?.platformName || 'Delivery Planner'} account with a free trial.</Text>
+          <Text style={s.subtitle}>Your own {config?.platformName || 'Routify'} account with a free trial.</Text>
 
           <ErrorBanner text={error} />
           <PCard style={{ gap: 14 }}>
