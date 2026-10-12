@@ -58,11 +58,12 @@ def month_start() -> datetime:
     return datetime(d.year, d.month, 1, tzinfo=timezone.utc)
 
 
-async def get_usage(actor: dict) -> dict:
+async def get_usage(actor: dict, client: Any = None) -> dict:
     since = month_start()
+    client = client or db
     deliveries, reports = await asyncio.gather(
-        db.delivery.count(where={"riderId": actor["id"], "createdAt": {"gte": since}}),
-        db.report.count(where={"riderId": actor["id"], "createdAt": {"gte": since}}),
+        client.delivery.count(where={"riderId": actor["id"], "createdAt": {"gte": since}}),
+        client.report.count(where={"riderId": actor["id"], "createdAt": {"gte": since}}),
     )
     return {"deliveriesThisMonth": deliveries, "reportsThisMonth": reports}
 
@@ -104,30 +105,35 @@ async def get_mine(actor: dict) -> dict:
     }
 
 
-async def assert_can_create_deliveries(actor: dict, count: int = 1) -> None:
-    """Blocks new deliveries when the subscription is not usable or the monthly limit would be exceeded."""
-    subscription = await db.subscription.find_unique(where={"userId": actor["id"]})
+async def assert_can_create_deliveries(actor: dict, count: int = 1, client: Any = None) -> None:
+    """Blocks new deliveries when the subscription is not usable or the monthly limit would be exceeded.
+
+    Pass the transaction that inserts the deliveries as `client` so the count and the insert see the same data.
+    """
+    client = client or db
+    subscription = await client.subscription.find_unique(where={"userId": actor["id"]})
     status = effective_status(subscription)
     if status not in ("trialing", "active"):
         message = ("Your last payment failed. Update your subscription to add deliveries." if status == "past_due"
                    else "Your subscription has expired. Upgrade to add new deliveries.")
         raise AppError(403, "SUBSCRIPTION_EXPIRED", message)
-    plan = await db.plan.find_unique(where={"key": subscription.planKey})
+    plan = await client.plan.find_unique(where={"key": subscription.planKey})
     if not plan:
         return
-    used = (await get_usage(actor))["deliveriesThisMonth"]
+    used = (await get_usage(actor, client))["deliveriesThisMonth"]
     if used + count > plan.deliveriesPerMonth:
         raise AppError(403, "PLAN_LIMIT_REACHED", f"Your {plan.name} plan allows {plan.deliveriesPerMonth} deliveries per month ({used} used).")
 
 
-async def assert_can_create_report(actor: dict, is_new_report: bool) -> None:
+async def assert_can_create_report(actor: dict, is_new_report: bool, client: Any = None) -> None:
     if not is_new_report:
         return
-    subscription = await db.subscription.find_unique(where={"userId": actor["id"]})
-    plan = await db.plan.find_unique(where={"key": subscription.planKey}) if subscription else None
+    client = client or db
+    subscription = await client.subscription.find_unique(where={"userId": actor["id"]})
+    plan = await client.plan.find_unique(where={"key": subscription.planKey}) if subscription else None
     if not plan:
         return
-    if (await get_usage(actor))["reportsThisMonth"] + 1 > plan.reportsPerMonth:
+    if (await get_usage(actor, client))["reportsThisMonth"] + 1 > plan.reportsPerMonth:
         raise AppError(403, "PLAN_LIMIT_REACHED", f"Your {plan.name} plan allows {plan.reportsPerMonth} reports per month.")
 
 

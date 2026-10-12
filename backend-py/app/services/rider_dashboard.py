@@ -67,11 +67,16 @@ async def history(actor: dict, limit: int = 60) -> list[dict]:
 
 async def clear_history(actor: dict) -> dict:
     """Permanently removes completed rider work and its downloadable reports."""
-    reports = await db.report.find_many(where={"riderId": actor["id"]})
+    finished = {"riderId": actor["id"], "status": {"in": ["delivered", "failed"]}}
+    reports, photos = await asyncio.gather(
+        db.report.find_many(where={"riderId": actor["id"]}),
+        db.delivery.find_many(where={**finished, "NOT": [{"proofPhotoKey": None}]}),
+    )
     deliveries, routes = await asyncio.gather(
-        db.delivery.delete_many(where={"riderId": actor["id"], "status": {"in": ["delivered", "failed"]}}),
+        db.delivery.delete_many(where=finished),
         db.route.delete_many(where={"riderId": actor["id"], "status": "completed"}),
     )
     await db.report.delete_many(where={"riderId": actor["id"]})
-    await asyncio.gather(*(storage.remove(r.fileKey) for r in reports))
+    # Customer doorstep photos go with the deliveries they prove.
+    await asyncio.gather(*(storage.remove(r.fileKey) for r in reports), *(storage.remove(d.proofPhotoKey) for d in photos))
     return {"deliveriesDeleted": deliveries, "routesDeleted": routes, "reportsDeleted": len(reports)}

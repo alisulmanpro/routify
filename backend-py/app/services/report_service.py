@@ -5,7 +5,7 @@ import io
 from typing import Any
 from xml.sax.saxutils import escape
 
-from ..db import as_json, db
+from ..db import as_json, db, lock_rider
 from ..errors import forbidden, not_found, unprocessable
 from ..http import iso, now
 from ..ids import new_id
@@ -103,7 +103,7 @@ async def generate(actor: dict, date: str) -> dict:
         raise unprocessable("There are no deliveries for this date", "NO_DELIVERIES")
 
     existing = await db.report.find_unique(where={"riderId_date": {"riderId": actor["id"], "date": date}})
-    await assert_can_create_report(actor, not existing)
+    await assert_can_create_report(actor, not existing)  # early refusal before the slow render; re-checked under the lock below
 
     rider, route, settings = await asyncio.gather(
         db.user.find_unique(where={"id": actor["id"]}),
@@ -125,10 +125,20 @@ async def generate(actor: dict, date: str) -> dict:
     file_key = await storage.save(pdf, "reports", "pdf")
 
     data = {"summary": as_json(summary), "fileKey": file_key, "fileSize": len(pdf), "generatedAt": now()}
-    report = await db.report.upsert(
-        where={"riderId_date": {"riderId": actor["id"], "date": date}},
-        data={"create": {"id": new_id(), "riderId": actor["id"], "date": date, **data}, "update": data},
-    )
+    try:
+        # Rendering runs unlocked (it can take seconds); the limit check and the save are serialised per rider,
+        # so parallel requests cannot both slip under the monthly report limit.
+        async with db.tx() as tx:
+            await lock_rider(tx, actor["id"])
+            existing = await tx.report.find_unique(where={"riderId_date": {"riderId": actor["id"], "date": date}})
+            await assert_can_create_report(actor, not existing, tx)
+            report = await tx.report.upsert(
+                where={"riderId_date": {"riderId": actor["id"], "date": date}},
+                data={"create": {"id": new_id(), "riderId": actor["id"], "date": date, **data}, "update": data},
+            )
+    except Exception:
+        await storage.remove(file_key)
+        raise
     if existing and existing.fileKey:
         await storage.remove(existing.fileKey)
     return serialize_report(report)

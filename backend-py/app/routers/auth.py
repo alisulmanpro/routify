@@ -7,9 +7,9 @@ from pydantic import StringConstraints, model_validator
 
 from ..auth import authenticate, ctx
 from ..config import env
-from ..errors import unauthorized
+from ..errors import AppError, unauthorized
 from ..http import ApiJSONResponse, ok, respond
-from ..middleware import auth_limiter, limit
+from ..middleware import auth_limiter, email_taken_limiter, limit
 from ..services import auth_service as auth
 from ..validation import Currency, Email, Phone, Schema, Trimmed, validate
 
@@ -64,6 +64,7 @@ class ProfileBody(Schema):
 class PasswordBody(Schema):
     currentPassword: Annotated[str, StringConstraints(min_length=1, max_length=128)]
     newPassword: Password
+    client: Literal["mobile", "web"] = "mobile"
 
 
 def _cookie_kwargs() -> dict:
@@ -88,22 +89,31 @@ def _require_csrf_header(request: Request) -> None:
 
 @router.post("/register")
 async def register(request: Request):
-    limit(request, auth_limiter)
+    await limit(request, auth_limiter)
     body = (await validate(request, body=RegisterBody))["body"]
+    # An IP that keeps hitting taken emails is probing for accounts: once over the cap it is refused whether or not
+    # the next email is free, so the 429 itself tells it nothing.
+    if await email_taken_limiter.exceeded(request.state.ip):
+        raise AppError(429, "RATE_LIMITED", email_taken_limiter.message)
     data = body.model_dump(exclude={"confirmPassword"})
-    return _respond(await auth.register(data, ctx(request)), "mobile", 201)
+    try:
+        return _respond(await auth.register(data, ctx(request)), "mobile", 201)
+    except AppError as error:
+        if error.code == "EMAIL_TAKEN":
+            await email_taken_limiter.check(request.state.ip)
+        raise
 
 
 @router.post("/login")
 async def login(request: Request):
-    limit(request, auth_limiter)
+    await limit(request, auth_limiter)
     body = (await validate(request, body=LoginBody))["body"]
     return _respond(await auth.login(email=body.email, password=body.password, client=body.client, ctx=ctx(request)), body.client)
 
 
 @router.post("/refresh")
 async def refresh(request: Request):
-    limit(request, auth_limiter)
+    await limit(request, auth_limiter)
     body = (await validate(request, body=RefreshBody))["body"]
     presented = body.refreshToken
     if body.client == "web":
@@ -139,9 +149,9 @@ async def update_me(request: Request):
 
 @router.post("/change-password")
 async def change_password(request: Request):
-    limit(request, auth_limiter)
+    await limit(request, auth_limiter)
     actor = await authenticate(request)
     body = (await validate(request, body=PasswordBody))["body"]
-    await auth.change_password(actor["id"], body.currentPassword, body.newPassword)
-    return respond({"changed": True})
+    # Every older session (and access token) is now dead; this one continues with the fresh tokens returned here.
+    return _respond(await auth.change_password(actor["id"], body.currentPassword, body.newPassword, ctx(request)), body.client)
 

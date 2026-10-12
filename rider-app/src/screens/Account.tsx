@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Alert, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useAuth } from '../lib/auth';
-import { patch, post, ApiRequestError } from '../lib/api';
+import { patch, post, setTokens, ApiRequestError } from '../lib/api';
 import type { Currency, RoutePreference } from '../lib/types';
 import { Screen } from '../components/Kit';
 import { ErrorBanner, Header, IconCircle, PButton, PCard, PInput, Pill, SectionLabel, gradient, DARK_ON_PRIMARY, type McName } from '../components/Premium';
@@ -54,7 +54,9 @@ export default function Account() {
     setSaving(true);
     setError('');
     try {
-      await post('/auth/change-password', passwords);
+      // Changing the password signs out every session; keep this one going with the fresh tokens the API returns.
+      const result = await post<{ accessToken: string; refreshToken: string }>('/auth/change-password', { ...passwords, client: 'mobile' });
+      await setTokens({ accessToken: result.data.accessToken, refreshToken: result.data.refreshToken });
       setPasswords({ currentPassword: '', newPassword: '' });
       setShowPassword(false);
       Alert.alert('Password changed');

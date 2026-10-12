@@ -89,14 +89,14 @@ def _item(model: DeliveryInput) -> dict:
 @router.post("/import/pdf")
 async def import_pdf(request: Request):
     actor = await authenticate(request, "rider")
-    limit(request, upload_limiter)
+    await limit(request, upload_limiter)
     return respond(await build_draft(actor, await receive(request, PDF)))
 
 
 @router.post("/import/file")
 async def import_file(request: Request):
     actor = await authenticate(request, "rider")
-    limit(request, upload_limiter)
+    await limit(request, upload_limiter)
     return respond(await build_draft_from_file(actor, await receive(request, DOCUMENT)))
 
 
@@ -162,7 +162,7 @@ async def arrive(request: Request):
 @router.post("/{id}/proof")
 async def proof(request: Request):
     actor = await authenticate(request, "rider")
-    limit(request, upload_limiter)
+    await limit(request, upload_limiter)
     params = (await validate(request, params=IdParams))["params"]
     return respond(await deliveries.attach_proof(actor, params.id, await receive(request, PHOTO)))
 

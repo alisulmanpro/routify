@@ -27,6 +27,11 @@ async def is_ready() -> bool:
         return False
 
 
+async def lock_rider(tx: Any, rider_id: str) -> None:
+    """Holds a per-rider lock until the transaction ends (serialises check-then-insert races across workers)."""
+    await tx.query_raw("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))::text AS locked", rider_id)
+
+
 def as_json(value: Any) -> Json:
     """Prisma needs JSON column values wrapped explicitly."""
     return Json(value)

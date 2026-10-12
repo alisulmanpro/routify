@@ -49,6 +49,8 @@ async def receive(request: Request, spec: UploadSpec) -> Optional[UploadedFile]:
         return None
     try:
         form = await request.form(max_files=10, max_fields=20)
+    except AppError:
+        raise
     except Exception as error:  # noqa: BLE001
         raise AppError(400, "UPLOAD_ERROR", str(error) or "Malformed multipart body") from None
 

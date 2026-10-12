@@ -16,7 +16,8 @@ from .db import connect, disconnect, is_ready
 from .errors import AppError, error_body
 from .http import ApiJSONResponse, respond
 from .logger import log
-from .middleware import ApiRateLimitMiddleware, EdgeMiddleware
+from .middleware import ApiRateLimitMiddleware, BodyLimitMiddleware, EdgeMiddleware
+from .openapi import install_openapi
 from .routers import admin, auth, deliveries, rider_side
 from .services.subscription_service import ensure_default_plans
 
@@ -37,6 +38,7 @@ async def run_maintenance() -> None:
             log(logging.INFO, "Expired lapsed subscriptions", expired=expired)
         await db.geocodecache.delete_many(where={"expiresAt": {"lt": now()}})
         await db.refreshtoken.delete_many(where={"expiresAt": {"lt": now() - timedelta(days=7)}})
+        await db.ratelimit.delete_many(where={"resetAt": {"lt": now()}, "OR": [{"lockedUntil": None}, {"lockedUntil": {"lt": now()}}]})
     except Exception:  # noqa: BLE001
         log(logging.ERROR, "Maintenance job failed", exc_info=True)
 
@@ -99,8 +101,11 @@ def create_app(*, run_jobs: bool = True) -> FastAPI:
                    rider_side.rider_router, rider_side.reports_router, rider_side.subscriptions_router, admin.router):
         api.include_router(router)
     app.include_router(api)
+    if not env.is_production:
+        install_openapi(app)
 
     # Added inner → outer: rate limit runs inside CORS, so preflights are never counted.
+    app.add_middleware(BodyLimitMiddleware)
     app.add_middleware(ApiRateLimitMiddleware)
     app.add_middleware(
         CORSMiddleware, allow_origins=list(env.cors_origins), allow_credentials=True, allow_methods=["GET", "POST", "PATCH", "PUT", "DELETE"],

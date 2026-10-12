@@ -47,9 +47,9 @@ async def verify_password(password: str, hashed: str) -> bool:
 
 # ---- Access tokens ----
 
-def sign_access_token(user_id: str, role: str) -> str:
+def sign_access_token(user_id: str, role: str, version: int = 0) -> str:
     issued = int(time.time())
-    claims = {"role": role, "iat": issued, "exp": issued + env.ACCESS_TOKEN_TTL_SECONDS, "iss": ISSUER, "sub": str(user_id)}
+    claims = {"role": role, "iat": issued, "exp": issued + env.ACCESS_TOKEN_TTL_SECONDS, "iss": ISSUER, "sub": str(user_id), "ver": version}
     return jwt.encode(claims, env.JWT_ACCESS_SECRET, algorithm="HS256")
 
 

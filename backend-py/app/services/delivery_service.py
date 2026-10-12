@@ -2,11 +2,12 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from ..db import db
+from ..db import db, lock_rider
 from ..errors import conflict, forbidden, not_found
 from ..http import now, page_meta, paginate, today_key
 from ..ids import new_id
 from ..uploads import UploadedFile, detect_file_type
+from ..validation import contains_text
 from . import storage_service as storage
 from .geo import normalize_address
 from .route_service import on_stop_finished
@@ -40,24 +41,27 @@ def _to_row(actor: dict, item: dict) -> dict:
 async def create_many(actor: dict, items: list[dict]) -> list[dict]:
     if actor["role"] != "rider":
         raise forbidden("Only riders create deliveries")
-    await assert_can_create_deliveries(actor, len(items))
-
-    ids = [i["trackingId"] for i in items]
-    existing = {d.trackingId for d in await db.delivery.find_many(where={"riderId": actor["id"], "trackingId": {"in": ids}})}
-    in_batch: set[str] = set()
-    details = []
-    for index, item in enumerate(items):
-        tid = item["trackingId"]
-        if tid in existing:
-            details.append({"index": index, "path": "trackingId", "code": "DUPLICATE", "message": f"Parcel ID {tid} already exists"})
-        elif tid in in_batch:
-            details.append({"index": index, "path": "trackingId", "code": "DUPLICATE", "message": f"Parcel ID {tid} appears more than once"})
-        in_batch.add(tid)
-    if details:
-        raise conflict("Some deliveries are duplicates", "DUPLICATE_TRACKING_ID", details)
 
     rows = [_to_row(actor, item) for item in items]
-    await db.delivery.create_many(data=rows)
+    # One rider's creates run one at a time, so parallel requests cannot both pass the plan limit.
+    async with db.tx() as tx:
+        await lock_rider(tx, actor["id"])
+        await assert_can_create_deliveries(actor, len(items), tx)
+
+        ids = [i["trackingId"] for i in items]
+        existing = {d.trackingId for d in await tx.delivery.find_many(where={"riderId": actor["id"], "trackingId": {"in": ids}})}
+        in_batch: set[str] = set()
+        details = []
+        for index, item in enumerate(items):
+            tid = item["trackingId"]
+            if tid in existing:
+                details.append({"index": index, "path": "trackingId", "code": "DUPLICATE", "message": f"Parcel ID {tid} already exists"})
+            elif tid in in_batch:
+                details.append({"index": index, "path": "trackingId", "code": "DUPLICATE", "message": f"Parcel ID {tid} appears more than once"})
+            in_batch.add(tid)
+        if details:
+            raise conflict("Some deliveries are duplicates", "DUPLICATE_TRACKING_ID", details)
+        await tx.delivery.create_many(data=rows)
     created = {d.id: d for d in await db.delivery.find_many(where={"id": {"in": [r["id"] for r in rows]}})}
     return [serialize_delivery(created[r["id"]]) for r in rows]
 
@@ -88,7 +92,7 @@ async def list_deliveries(actor: dict, q: dict) -> tuple[list[Any], dict]:
     if q.get("dateFrom") or q.get("dateTo"):
         where["serviceDate"] = {**({"gte": q["dateFrom"]} if q.get("dateFrom") else {}), **({"lte": q["dateTo"]} if q.get("dateTo") else {})}
     if q.get("search"):
-        rx = {"contains": q["search"], "mode": "insensitive"}
+        rx = contains_text(q["search"])
         where["OR"] = [{"trackingId": rx}, {"customerName": rx}, {"addressRaw": rx}]
 
     total = await db.delivery.count(where=where)

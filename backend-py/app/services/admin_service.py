@@ -7,6 +7,7 @@ from typing import Any
 from ..db import db
 from ..errors import conflict, not_found
 from ..http import js_round, now, page_meta, paginate, round2, today_key
+from ..validation import contains_text
 from .auth_service import serialize_user
 from .report_service import serialize_report
 from .serializers import serialize_delivery
@@ -26,7 +27,7 @@ def pct(current: int, before: int) -> int:
 
 
 def _rx(s: str) -> dict:
-    return {"contains": s, "mode": "insensitive"}
+    return contains_text(s)
 
 
 async def user_names(ids: list[str]) -> dict[str, str]:

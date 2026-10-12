@@ -2,11 +2,9 @@
 from __future__ import annotations
 
 import logging
-import math
 import re
 import time
 import uuid
-from collections import defaultdict
 
 from starlette.datastructures import Headers, MutableHeaders
 from starlette.requests import Request
@@ -35,6 +33,15 @@ HELMET_HEADERS = {
     "x-frame-options": "SAMEORIGIN",
     "x-permitted-cross-domain-policies": "none",
     "x-xss-protection": "0",
+}
+
+# Swagger UI (development only: /docs is disabled in production) loads its bundle from jsDelivr and boots with an inline script.
+DOCS_PATHS = ("/docs", "/docs/oauth2-redirect")
+DOCS_HEADERS = {
+    **HELMET_HEADERS,
+    "content-security-policy": "default-src 'self';base-uri 'self';frame-ancestors 'self';object-src 'none';connect-src 'self';"
+                               "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net;style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net;"
+                               "img-src 'self' data: https://fastapi.tiangolo.com https://cdn.jsdelivr.net",
 }
 
 
@@ -87,7 +94,7 @@ class EdgeMiddleware:
             if message["type"] == "http.response.start":
                 status_holder.update(status=message["status"], started=True)
                 headers = MutableHeaders(scope=message)
-                for key, value in HELMET_HEADERS.items():
+                for key, value in (DOCS_HEADERS if scope.get("path") in DOCS_PATHS else HELMET_HEADERS).items():
                     if key not in headers:
                         headers[key] = value
                 headers["x-request-id"] = request_id
@@ -107,51 +114,78 @@ class EdgeMiddleware:
                 statusCode=status, responseTime=round((time.perf_counter() - started) * 1000))
 
 
-class _Window:
-    __slots__ = ("count", "reset")
-
-    def __init__(self, reset: float):
-        self.count = 0
-        self.reset = reset
+# One atomic upsert per hit: the count lives in PostgreSQL, so all API workers (and restarts) share it.
+_HIT_SQL = """
+INSERT INTO "rate_limits" ("key", "count", "resetAt")
+VALUES ($1, 1, timezone('utc', now()) + make_interval(secs => $2::int))
+ON CONFLICT ("key") DO UPDATE SET
+  "count"   = CASE WHEN "rate_limits"."resetAt" <= timezone('utc', now()) THEN 1 ELSE "rate_limits"."count" + 1 END,
+  "resetAt" = CASE WHEN "rate_limits"."resetAt" <= timezone('utc', now()) THEN EXCLUDED."resetAt" ELSE "rate_limits"."resetAt" END
+RETURNING "count", GREATEST(0, CEIL(EXTRACT(EPOCH FROM ("resetAt" - timezone('utc', now())))))::int AS "resetIn"
+"""
 
 
 class RateLimiter:
-    """Fixed-window limiter per client IP, like express-rate-limit's default memory store."""
+    """Fixed-window limiter per key (normally the client IP), shared by every worker through the database."""
 
-    def __init__(self, name: str, window_seconds: int, limit: int):
+    def __init__(self, name: str, window_seconds: int, limit: int, message: str = "Too many requests. Please slow down and try again shortly.",
+                 *, enforce: bool | None = None):
         self.name = name
         self.window = window_seconds
         self.limit = limit
-        self.hits: dict[str, _Window] = defaultdict(lambda: _Window(time.monotonic() + self.window))
+        self.message = message
+        self.enforce = enforce  # None: on everywhere except NODE_ENV=test
 
-    def check(self, ip: str) -> dict[str, str]:
+    async def hit(self, key: str) -> tuple[int, int]:
+        """Counts one hit and returns (hits in this window, seconds until the window resets)."""
+        from .db import db
+
+        rows = await db.query_raw(_HIT_SQL, f"{self.name}:{key}"[:300], self.window)
+        return int(rows[0]["count"]), int(rows[0]["resetIn"])
+
+    def _enforced(self) -> bool:
+        return self.enforce if self.enforce is not None else not env.is_test
+
+    async def exceeded(self, key: str) -> bool:
+        """True when this key already used up its window, without counting a hit."""
+        from .db import db
+
+        if not self._enforced():
+            return False
+        try:
+            rows = await db.query_raw("""SELECT "count" FROM "rate_limits" WHERE "key" = $1 AND "resetAt" > timezone('utc', now())""",
+                                      f"{self.name}:{key}"[:300])
+        except Exception:  # noqa: BLE001
+            log(logging.ERROR, "Rate limiter unavailable", limiter=self.name, exc_info=True)
+            return False
+        return bool(rows) and int(rows[0]["count"]) >= self.limit
+
+    async def check(self, key: str) -> dict[str, str]:
         """Counts a hit; raises 429 when over the limit. Returns the RateLimit headers to send."""
-        if env.is_test:
+        if not self._enforced():
             return {}
-        current = time.monotonic()
-        if len(self.hits) > 50_000:
-            for key in [k for k, w in self.hits.items() if w.reset <= current]:
-                del self.hits[key]
-        window = self.hits[ip]
-        if window.reset <= current:
-            window.count, window.reset = 0, current + self.window
-        window.count += 1
-        reset_in = max(0, math.ceil(window.reset - current))
+        try:
+            count, reset_in = await self.hit(key)
+        except Exception:  # noqa: BLE001 - a limiter outage must not take the API down with it
+            log(logging.ERROR, "Rate limiter unavailable", limiter=self.name, exc_info=True)
+            return {}
         policy = f"{self.limit}-in-{self.window // 60}min"
         headers = {"RateLimit-Policy": f'"{policy}"; q={self.limit}; w={self.window}',
-                   "RateLimit": f'"{policy}"; r={max(0, self.limit - window.count)}; t={reset_in}'}
-        if window.count > self.limit:
-            raise AppError(429, "RATE_LIMITED", "Too many requests. Please slow down and try again shortly.")
+                   "RateLimit": f'"{policy}"; r={max(0, self.limit - count)}; t={reset_in}'}
+        if count > self.limit:
+            raise AppError(429, "RATE_LIMITED", self.message)
         return headers
 
 
 api_limiter = RateLimiter("api", 15 * 60, 1000)
 auth_limiter = RateLimiter("auth", 15 * 60, 40)
 upload_limiter = RateLimiter("upload", 15 * 60, 120)
+# Registration has to say when an email is taken (it signs the rider straight in), so cap how often one IP can learn that.
+email_taken_limiter = RateLimiter("email-taken", 60 * 60, 5, "Too many sign-up attempts. Please try again later or sign in instead.")
 
 
-def limit(request: Request, limiter: RateLimiter) -> None:
-    limiter.check(request.state.ip)
+async def limit(request: Request, limiter: RateLimiter) -> None:
+    await limiter.check(request.state.ip)
 
 
 class ApiRateLimitMiddleware:
@@ -164,7 +198,7 @@ class ApiRateLimitMiddleware:
         if scope["type"] != "http" or not scope.get("path", "").startswith("/api/v1"):
             return await self.app(scope, receive, send)
         try:
-            headers = api_limiter.check(scope.get("state", {}).get("ip", ""))
+            headers = await api_limiter.check(scope.get("state", {}).get("ip", ""))
         except AppError as error:
             status, body = json_error(error.status, error.code, error.message)
             return await _send_json(send, status, body)
@@ -178,3 +212,42 @@ class ApiRateLimitMiddleware:
 
         await self.app(scope, receive, send_wrapper)
 
+
+
+JSON_BODY_LIMIT = 1024 * 1024
+UPLOAD_BODY_LIMIT = 11 * 1024 * 1024  # largest upload (10 MB document) plus multipart overhead
+_UPLOAD_PATH = re.compile(r"^/api/v1/deliveries/(import/(pdf|file)|[0-9a-fA-F]{24}/proof)$")
+
+
+class BodyTooLarge(AppError):
+    def __init__(self):
+        super().__init__(413, "PAYLOAD_TOO_LARGE", "Request body is too large")
+
+
+class BodyLimitMiddleware:
+    """Rejects oversized bodies before they are buffered: by Content-Length up front, and while streaming for chunked bodies."""
+
+    def __init__(self, app: ASGIApp):
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+        limit = UPLOAD_BODY_LIMIT if _UPLOAD_PATH.match(scope.get("path", "")) else JSON_BODY_LIMIT
+        declared = Headers(scope=scope).get("content-length")
+        if declared is not None and (not declared.isdigit() or int(declared) > limit):
+            status, body = json_error(413, "PAYLOAD_TOO_LARGE", "Request body is too large")
+            return await _send_json(send, status, body, {"connection": "close"})
+
+        received = 0
+
+        async def limited_receive() -> Message:
+            nonlocal received
+            message = await receive()
+            if message["type"] == "http.request":
+                received += len(message.get("body", b""))
+                if received > limit:
+                    raise BodyTooLarge()
+            return message
+
+        await self.app(scope, limited_receive, send)

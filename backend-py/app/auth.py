@@ -32,6 +32,9 @@ async def authenticate(request: Request, *roles: str) -> dict:
     user = await db.user.find_unique(where={"id": claims["sub"]}) if is_object_id(claims.get("sub")) else None
     if not user:
         raise unauthorized("Account no longer exists", "INVALID_TOKEN")
+    # Tokens from before the last password change carry an older version ("ver" is absent on pre-versioning tokens = 0).
+    if claims.get("ver", 0) != user.tokenVersion:
+        raise unauthorized("Your password was changed. Please sign in again.", "TOKEN_REVOKED")
     if user.status != "active":
         raise forbidden("Your account is suspended", "ACCOUNT_SUSPENDED")
 

@@ -108,6 +108,8 @@ model User {
   status               UserStatus      @default(active)
   failedLoginCount     Int             @default(0)
   lockedUntil          DateTime?
+  // Bumped when the password changes; access tokens carry it, so older tokens stop working at once.
+  tokenVersion         Int             @default(0)
   lastActiveAt         DateTime?
 
   // The city a rider delivers in (null until detected or typed). Address lookups are scoped to it.
@@ -368,4 +370,15 @@ model GeocodeCache {
 
   @@index([expiresAt])
   @@map("geocode_cache")
+}
+
+// Shared counters for rate limits and unknown-email login lockouts, so every API worker sees the same numbers.
+model RateLimit {
+  key         String    @id @db.VarChar(300)
+  count       Int
+  resetAt     DateTime
+  lockedUntil DateTime?
+
+  @@index([resetAt])
+  @@map("rate_limits")
 }

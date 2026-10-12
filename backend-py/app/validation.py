@@ -76,6 +76,12 @@ def _finite(v: float) -> float:
     return v
 
 
+def contains_text(s: str) -> dict:
+    """Case-insensitive substring filter. Prisma passes the value to ILIKE as-is, so %, _ and backslash must be escaped."""
+    escaped = s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return {"contains": escaped, "mode": "insensitive"}
+
+
 def Trimmed(lo: int, hi: int):  # noqa: N802 - reads like a type
     return Annotated[str, StringConstraints(strip_whitespace=True, min_length=lo, max_length=hi)]
 
@@ -95,7 +101,7 @@ class IdParams(Schema):
 
 
 class Pagination(Schema):
-    page: Optional[Annotated[int, Field(ge=1)]] = None
+    page: Optional[Annotated[int, Field(ge=1, le=1_000_000)]] = None
     limit: Optional[Annotated[int, Field(ge=1, le=100)]] = None
 
 
@@ -129,8 +135,24 @@ async def read_json(request: Request) -> Any:
         return None
     try:
         return json.loads(raw)
-    except ValueError:
+    except (ValueError, RecursionError):
         raise AppError(400, "BAD_REQUEST", "Request body is not valid JSON") from None
+
+
+def _has_null_byte(data: Any) -> bool:
+    """PostgreSQL text cannot hold NUL characters; walk iteratively so deep input cannot overflow the stack."""
+    stack = [data]
+    while stack:
+        item = stack.pop()
+        if isinstance(item, str):
+            if "\x00" in item:
+                return True
+        elif isinstance(item, dict):
+            stack.extend(item.keys())
+            stack.extend(item.values())
+        elif isinstance(item, list):
+            stack.extend(item)
+    return False
 
 
 async def validate(request: Request, *, params: type[Schema] | None = None, query: type[Schema] | None = None,
@@ -150,6 +172,9 @@ async def validate(request: Request, *, params: type[Schema] | None = None, quer
         try:
             if not isinstance(data, dict):
                 raise ValueError
+            if _has_null_byte(data):
+                issues.append({"location": part, "path": "", "message": "Text must not contain null characters"})
+                continue
             valid[part] = schema.model_validate(data)
         except ValidationError as error:
             issues.extend(_issues(part, error))

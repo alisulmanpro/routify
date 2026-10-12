@@ -12,5 +12,6 @@ if __name__ == "__main__":
         reload_dirs=["app"] if env.NODE_ENV == "development" else None,
         # Client IPs come from TRUST_PROXY (like Express "trust proxy"), so uvicorn must not rewrite them itself.
         proxy_headers=False,
+        server_header=False,
         log_level="warning",
     )
