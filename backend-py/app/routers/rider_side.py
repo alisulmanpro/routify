@@ -1,0 +1,204 @@
+"""Smaller rider-facing routers: config, files, routes, rider dashboard, reports, subscriptions."""
+from __future__ import annotations
+
+from typing import Annotated, Literal, Optional
+
+from fastapi import APIRouter, Request
+from pydantic import Field
+from starlette.responses import FileResponse
+
+from ..auth import authenticate
+from ..errors import not_found
+from ..http import respond, today_key
+from ..security import verify_file_signature
+from ..services import auth_service as auth
+from ..services import report_service as reports
+from ..services import rider_dashboard as dash
+from ..services import route_service as routes
+from ..services import storage_service as storage
+from ..services import subscription_service as subs
+from ..services.settings_service import get_public_config
+from ..validation import DateKey, IdParams, ObjectId, Preference, Schema, validate
+
+# ---------- /config ----------
+config_router = APIRouter(prefix="/config")
+
+
+@config_router.get("")
+async def public_config():
+    return respond(await get_public_config())
+
+
+# ---------- /files ----------
+files_router = APIRouter(prefix="/files")
+
+
+@files_router.get("/{kind}/{name}")
+async def get_file(request: Request, kind: str, name: str):
+    """Files are private. Access needs a short-lived HMAC-signed URL issued by an authenticated API response."""
+    key = f"{kind}/{name}"
+    q = request.query_params
+    disposition = q.get("d")
+    if not verify_file_signature(key, q.get("exp"), disposition, q.get("sig")):
+        raise not_found("File")
+    full = storage.resolve_key(key)
+    info = storage.stat(key)
+    return FileResponse(full, media_type=storage.content_type_for(key), stat_result=info, headers={
+        "Content-Disposition": f'{disposition}; filename="{name}"',
+        "Cache-Control": "private, max-age=300", "X-Content-Type-Options": "nosniff", "Cross-Origin-Resource-Policy": "cross-origin",
+    })
+
+
+# ---------- /routes ----------
+routes_router = APIRouter(prefix="/routes")
+
+
+class Point(Schema):
+    latitude: Annotated[float, Field(ge=-90, le=90)]
+    longitude: Annotated[float, Field(ge=-180, le=180)]
+
+
+class BuildBody(Schema):
+    preference: Optional[Preference] = None
+    origin: Optional[Point] = None
+    deliveryIds: Optional[Annotated[list[ObjectId], Field(max_length=300)]] = None
+    date: Optional[DateKey] = None
+
+
+@routes_router.post("/build")
+async def build_route(request: Request):
+    actor = await authenticate(request, "rider")
+    body = (await validate(request, body=BuildBody))["body"]
+    return respond(await routes.build(actor, preference=body.preference, origin=body.origin.model_dump() if body.origin else None,
+                                      delivery_ids=body.deliveryIds, date=body.date), 201)
+
+
+@routes_router.get("/current")
+async def current_route(request: Request):
+    actor = await authenticate(request, "rider")
+    return respond(await routes.get_current(actor))
+
+
+@routes_router.get("")
+async def completed_routes(request: Request):
+    actor = await authenticate(request, "rider")
+    return respond(await routes.list_completed(actor))
+
+
+@routes_router.post("/{id}/retry-geocoding")
+async def retry_geocoding(request: Request):
+    actor = await authenticate(request, "rider")
+    params = (await validate(request, params=IdParams))["params"]
+    return respond(await routes.retry_geocoding(actor, params.id))
+
+
+@routes_router.get("/{id}")
+async def get_route(request: Request):
+    actor = await authenticate(request, "rider")
+    params = (await validate(request, params=IdParams))["params"]
+    return respond(await routes.get_by_id(actor, params.id))
+
+
+@routes_router.post("/{id}/start")
+async def start_route(request: Request):
+    actor = await authenticate(request, "rider")
+    params = (await validate(request, params=IdParams))["params"]
+    return respond(await routes.start(actor, params.id))
+
+
+# ---------- /rider ----------
+rider_router = APIRouter(prefix="/rider")
+
+
+class DateQuery(Schema):
+    date: Optional[DateKey] = None
+
+
+@rider_router.get("/dashboard")
+async def dashboard(request: Request):
+    actor = await authenticate(request, "rider")
+    query = (await validate(request, query=DateQuery))["query"]
+    return respond(await dash.dashboard(actor, query.date or today_key()))
+
+
+@rider_router.get("/history")
+async def history(request: Request):
+    actor = await authenticate(request, "rider")
+    return respond(await dash.history(actor))
+
+
+# The app checks the rider's city on launch and every few hours: preview first, save once the rider agrees.
+@rider_router.get("/service-area/detect")
+async def detect_area(request: Request):
+    await authenticate(request, "rider")
+    query = (await validate(request, query=Point))["query"]
+    return respond(await auth.preview_service_area(query.model_dump()))
+
+
+@rider_router.put("/service-area")
+async def confirm_area(request: Request):
+    actor = await authenticate(request, "rider")
+    body = (await validate(request, body=Point))["body"]
+    return respond(await auth.confirm_service_area(actor["id"], body.model_dump()))
+
+
+@rider_router.delete("/history")
+async def clear_history(request: Request):
+    actor = await authenticate(request, "rider")
+    return respond(await dash.clear_history(actor))
+
+
+# ---------- /reports ----------
+reports_router = APIRouter(prefix="/reports")
+
+
+class GenerateBody(Schema):
+    date: Optional[DateKey] = None
+
+
+@reports_router.post("/generate")
+async def generate_report(request: Request):
+    actor = await authenticate(request, "rider")
+    body = (await validate(request, body=GenerateBody))["body"]
+    return respond(await reports.generate(actor, body.date or today_key()), 201)
+
+
+@reports_router.get("")
+async def my_reports(request: Request):
+    actor = await authenticate(request, "rider")
+    return respond(await reports.list_mine(actor))
+
+
+@reports_router.get("/{id}")
+async def get_report(request: Request):
+    actor = await authenticate(request, "rider")
+    params = (await validate(request, params=IdParams))["params"]
+    return respond(reports.serialize_report(await reports.find_visible(actor, params.id)))
+
+
+# ---------- /subscriptions ----------
+subscriptions_router = APIRouter(prefix="/subscriptions")
+
+
+class ChangeBody(Schema):
+    planKey: Literal["starter", "pro"]
+    billingCycle: Literal["monthly", "annual"]
+
+
+@subscriptions_router.get("/me")
+async def my_subscription(request: Request):
+    actor = await authenticate(request, "rider")
+    return respond(await subs.get_mine(actor))
+
+
+@subscriptions_router.post("")
+async def request_change(request: Request):
+    actor = await authenticate(request, "rider")
+    body = (await validate(request, body=ChangeBody))["body"]
+    return respond(await subs.request_change(actor, body.planKey, body.billingCycle), 201)
+
+
+@subscriptions_router.post("/cancel")
+async def cancel(request: Request):
+    actor = await authenticate(request, "rider")
+    return respond(await subs.cancel_at_period_end(actor))

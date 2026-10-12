@@ -12,7 +12,8 @@ why that's worth calling out explicitly.
 
 | Path          | What it is                                              |
 |---------------|----------------------------------------------------------|
-| `backend/`    | Node/Express/MongoDB REST API (`/api/v1`)                |
+| `backend-py/` | FastAPI + Prisma + PostgreSQL REST API (`/api/v1`)       |
+| `backend/`    | Legacy Node/Express/MongoDB API (same contract; kept until the switch is confirmed) |
 | `admin-web/`  | Platform admin console - Vite + React + TypeScript        |
 | `rider-app/`  | Rider mobile app - Expo + React Native                    |
 
@@ -34,14 +35,16 @@ code, the code changed and the doc slipped; please fix the doc.
 
 ## Quick start
 
-**Backend** (needs a real MongoDB - Atlas free tier or local `mongod`/Docker):
+**Backend** (needs PostgreSQL; `docker compose up -d` in `backend-py/` starts one on port 5433):
 ```bash
-cd backend
-cp .env.example .env      # fill in JWT/refresh/file-signing secrets + MONGODB_URI
-npm install
-npm run seed:admin        # requires ADMIN_EMAIL + ADMIN_PASSWORD (10+ chars) in .env
-npm run dev                # http://localhost:4000
-npm test                   # 15 unit + integration tests against a real MongoDB
+cd backend-py
+python -m venv .venv && .venv\Scripts\activate   # macOS/Linux: source .venv/bin/activate
+pip install -r requirements-dev.txt
+cp .env.example .env      # fill in JWT/refresh/file-signing secrets + DATABASE_URL
+prisma migrate deploy     # create the tables
+python -m scripts.seed_admin   # requires ADMIN_EMAIL + ADMIN_PASSWORD (10+ chars) in .env
+python -m app             # http://localhost:4000
+pytest                    # 32 unit + integration tests against a real PostgreSQL
 ```
 
 **Admin web:**
@@ -62,7 +65,7 @@ npx expo start
 
 ## Stack
 
-- Backend: Node.js + Express 5 + Mongoose + MongoDB
+- Backend: Python + FastAPI + Prisma (prisma-client-py) + PostgreSQL
 - Admin web: React + TypeScript + Vite
 - Rider app: React Native + Expo
 - Auth: JWT access tokens + rotating refresh tokens (bcrypt password hashing)

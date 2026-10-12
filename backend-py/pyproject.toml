@@ -1,0 +1,15 @@
+[project]
+name = "routify-api"
+version = "2.0.0"
+description = "Routify / Delivery Planner REST API (FastAPI + Prisma + PostgreSQL)"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 160
+target-version = "py311"

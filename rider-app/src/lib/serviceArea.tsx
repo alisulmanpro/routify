@@ -134,7 +134,7 @@ export function ServiceAreaProvider({ children }: { children: ReactNode }) {
                 Do you want to continue today&apos;s deliveries in {prompt.detected.city}?
                 {current ? ` Your deliveries are currently set to ${current.city}.` : ''} Addresses will be searched in the city you choose.
               </Text>
-              <Pressable onPress={accept} disabled={saving} style={({ pressed }) => [s.primaryBtn, gradient('linear-gradient(100deg, #C97812 0%, #FFAA32 100%)'), (pressed || saving) && { opacity: 0.9 }]}>
+              <Pressable onPress={accept} disabled={saving} style={({ pressed }) => [s.primaryBtn, (pressed || saving) && { opacity: 0.9 }]}>
                 {saving ? <ActivityIndicator color="#1A1206" /> : <Text style={s.primaryText}>Yes, deliver in {prompt.detected.city}</Text>}
               </Pressable>
               <Pressable onPress={decline} disabled={saving} style={({ pressed }) => [s.secondaryBtn, pressed && { opacity: 0.85 }]}>
@@ -155,7 +155,7 @@ const s = StyleSheet.create({
   eyebrow: { color: c.primary, fontSize: 11, fontWeight: '800', letterSpacing: 1.1, textTransform: 'uppercase' },
   title: { color: c.text, fontSize: 20, fontWeight: '800', textAlign: 'center', lineHeight: 27, marginTop: 6 },
   body: { color: c.textSecondary, fontSize: 13, lineHeight: 19, textAlign: 'center', marginTop: 10, marginBottom: 20 },
-  primaryBtn: { alignSelf: 'stretch', minHeight: 52, borderRadius: r.medium, backgroundColor: c.primary, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 16 },
+  primaryBtn: { alignSelf: 'stretch', minHeight: 52, borderRadius: r.medium, backgroundColor: '#FFFFFF', alignItems: 'center', justifyContent: 'center', paddingHorizontal: 16 },
   primaryText: { color: '#1A1206', fontSize: 15, fontWeight: '800' },
   secondaryBtn: { alignSelf: 'stretch', minHeight: 48, borderRadius: r.medium, borderWidth: 1, borderColor: c.border, backgroundColor: c.surfaceSoft, alignItems: 'center', justifyContent: 'center', marginTop: 10, paddingHorizontal: 16 },
   secondaryText: { color: c.text, fontSize: 14, fontWeight: '700' },

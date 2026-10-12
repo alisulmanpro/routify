@@ -41,7 +41,7 @@ export default function VoicePanel({ onText }: VoicePanelProps) {
   return (
     <View style={{ alignItems: 'center', paddingVertical: 8 }}>
       <Pressable onPress={toggle} style={({ pressed }) => [s.mic, listening && s.micOn, pressed && { opacity: 0.9 }]}>
-        <View style={[s.micInner, gradient(listening ? 'linear-gradient(135deg, #FF5368 0%, #E0384F 100%)' : 'linear-gradient(135deg, #FFC56B 0%, #FFAA32 50%, #C97812 100%)')]}>
+        <View style={[s.micInner, listening ? gradient('linear-gradient(135deg, #FF5368 0%, #E0384F 100%)') : { backgroundColor: '#FFFFFF' }]}>
           <Ionicons name={listening ? 'stop' : 'mic'} size={34} color={listening ? '#fff' : DARK_ON_PRIMARY} />
         </View>
       </Pressable>

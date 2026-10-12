@@ -49,7 +49,7 @@ export function PButton({ title, onPress, icon, variant = 'primary', loading, di
       disabled={disabled || loading}
       style={({ pressed }) => [
         s.btn,
-        variant === 'primary' && [s.btnPrimary, gradient(PRIMARY_GRADIENT)],
+        variant === 'primary' && s.btnPrimary,
         variant === 'secondary' && s.btnSecondary,
         variant === 'danger' && [s.btnDanger, gradient('linear-gradient(100deg, #E0384F 0%, #FF5368 100%)')],
         (disabled || loading) && { opacity: 0.55 },
@@ -133,7 +133,7 @@ const s = StyleSheet.create({
   cardAccent: { borderColor: 'rgba(255,170,50,0.35)' },
 
   btn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10, minHeight: 50, paddingHorizontal: 16, borderRadius: r.medium },
-  btnPrimary: { backgroundColor: c.primary, shadowColor: c.primary, shadowOpacity: 0.3, shadowRadius: 14, shadowOffset: { width: 0, height: 6 }, elevation: 6 },
+  btnPrimary: { backgroundColor: '#FFFFFF', shadowColor: '#FFFFFF', shadowOpacity: 0.3, shadowRadius: 14, shadowOffset: { width: 0, height: 6 }, elevation: 6 },
   btnSecondary: { backgroundColor: c.surfaceSoft, borderWidth: 1, borderColor: c.border },
   btnDanger: { backgroundColor: c.danger },
   btnText: { flexShrink: 1, fontSize: 15, fontWeight: '800' },

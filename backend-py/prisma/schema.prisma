@@ -1,0 +1,371 @@
+// PostgreSQL schema for the Routify / Delivery Planner API.
+// IDs are 24-char hex strings (MongoDB ObjectId format) so records migrated from MongoDB keep
+// their IDs, and existing links, tokens and clients keep working. New IDs are generated in app/ids.py.
+
+generator client {
+  provider             = "prisma-client-py"
+  interface            = "asyncio"
+  recursive_type_depth = 5
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  rider
+  owner_admin
+}
+
+enum UserStatus {
+  active
+  suspended
+}
+
+enum RoutePreference {
+  smart
+  nearest_first
+  shortest
+}
+
+enum AreaSource {
+  gps
+  manual
+}
+
+enum DeliveryStatus {
+  pending
+  in_progress
+  delivered
+  failed
+}
+
+enum GeocodeStatus {
+  pending
+  found
+  approximate
+  not_found
+}
+
+enum FailureReason {
+  customer_unavailable
+  customer_refused
+  wrong_address
+  phone_unreachable
+  business_closed
+  payment_issue
+  other
+}
+
+enum RouteStatus {
+  planned
+  active
+  completed
+}
+
+enum PlanKey {
+  trial
+  starter
+  pro
+}
+
+enum BillingCycle {
+  monthly
+  annual
+}
+
+enum SubscriptionStatus {
+  trialing
+  active
+  past_due
+  expired
+  cancelled
+}
+
+enum PaymentStatus {
+  pending
+  succeeded
+  failed
+  refunded
+}
+
+enum AuditStatus {
+  success
+  failure
+}
+
+model User {
+  id                   String          @id @db.VarChar(24)
+  fullName             String          @db.VarChar(120)
+  phone                String          @db.VarChar(32)
+  email                String          @unique @db.VarChar(254)
+  passwordHash         String
+  role                 Role
+  currency             String          @default("USD") @db.VarChar(3)
+  routePreference      RoutePreference @default(smart)
+  notificationsEnabled Boolean         @default(true)
+  status               UserStatus      @default(active)
+  failedLoginCount     Int             @default(0)
+  lockedUntil          DateTime?
+  lastActiveAt         DateTime?
+
+  // The city a rider delivers in (null until detected or typed). Address lookups are scoped to it.
+  areaCity        String?     @db.VarChar(120)
+  areaCountry     String?     @db.VarChar(120)
+  areaCountryCode String?     @db.VarChar(2)
+  areaLatitude    Float?
+  areaLongitude   Float?
+  areaSource      AreaSource?
+  areaConfirmedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  deliveries    Delivery[]
+  routes        Route[]
+  reports       Report[]
+  subscription  Subscription?
+  payments      Payment[]
+  refreshTokens RefreshToken[]
+
+  @@index([role])
+  @@index([status])
+  @@index([createdAt(sort: Desc)])
+  @@map("users")
+}
+
+model Delivery {
+  id         String @id @db.VarChar(24)
+  riderId    String @db.VarChar(24)
+  rider      User   @relation(fields: [riderId], references: [id], onDelete: Cascade)
+  trackingId String @db.VarChar(80)
+
+  customerName  String @default("") @db.VarChar(160)
+  customerPhone String @default("") @db.VarChar(32)
+
+  addressRaw         String        @db.VarChar(400)
+  addressNormalized  String?
+  addressLatitude    Float?
+  addressLongitude   Float?
+  addressGeocoded    Boolean       @default(false)
+  addressApproximate Boolean       @default(false)
+  geocodeStatus      GeocodeStatus @default(pending)
+
+  // Legacy: deliveries no longer carry payment details. Kept so records migrated from MongoDB still load.
+  payment Json?
+
+  status          DeliveryStatus @default(pending)
+  proofPhotoKey   String?
+  proofPhotoUrl   String?
+  proofCapturedAt DateTime?
+  note            String?        @db.VarChar(1000)
+  failureReason   FailureReason?
+  failureNote     String?        @db.VarChar(1000)
+  serviceDate     String         @db.VarChar(10)
+  routeId         String?        @db.VarChar(24)
+  route           Route?         @relation(fields: [routeId], references: [id], onDelete: SetNull)
+  stopOrder       Int?
+  arrivedAt       DateTime?
+  deliveredAt     DateTime?
+  failedAt        DateTime?
+
+  // Optimistic concurrency: every save bumps this and fails with 409 if someone else saved first.
+  version   Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  stops RouteStop[]
+
+  // Every rider is independent, so tracking IDs only need to be unique within one rider's own deliveries.
+  @@unique([riderId, trackingId])
+  @@index([riderId, status])
+  @@index([riderId, serviceDate])
+  @@index([serviceDate, status])
+  @@index([routeId])
+  @@index([createdAt(sort: Desc)])
+  @@map("deliveries")
+}
+
+model Route {
+  id              String          @id @db.VarChar(24)
+  riderId         String          @db.VarChar(24)
+  rider           User            @relation(fields: [riderId], references: [id], onDelete: Cascade)
+  serviceDate     String          @db.VarChar(10)
+  preference      RoutePreference
+  status          RouteStatus     @default(planned)
+  originLatitude  Float?
+  originLongitude Float?
+  distanceKm      Float           @default(0)
+  durationMin     Float           @default(0)
+  startedAt       DateTime?
+  completedAt     DateTime?
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  stops      RouteStop[]
+  deliveries Delivery[]
+
+  @@index([riderId, status])
+  @@index([status])
+  @@map("routes")
+}
+
+model RouteStop {
+  routeId        String   @db.VarChar(24)
+  route          Route    @relation(fields: [routeId], references: [id], onDelete: Cascade)
+  deliveryId     String   @db.VarChar(24)
+  delivery       Delivery @relation(fields: [deliveryId], references: [id], onDelete: Cascade)
+  order          Int
+  legDistanceKm  Float    @default(0)
+  legDurationMin Float    @default(0)
+
+  @@id([routeId, deliveryId])
+  @@index([deliveryId])
+  @@map("route_stops")
+}
+
+model Report {
+  id          String   @id @db.VarChar(24)
+  riderId     String   @db.VarChar(24)
+  rider       User     @relation(fields: [riderId], references: [id], onDelete: Cascade)
+  date        String   @db.VarChar(10)
+  summary     Json
+  fileKey     String
+  fileSize    Int?
+  generatedAt DateTime @default(now())
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([riderId, date])
+  @@index([date(sort: Desc)])
+  @@map("reports")
+}
+
+model Plan {
+  id                 String   @id @db.VarChar(24)
+  key                PlanKey  @unique
+  name               String
+  monthlyPrice       Float
+  annualPrice        Float
+  currency           String   @default("USD") @db.VarChar(3)
+  deliveriesPerMonth Int
+  reportsPerMonth    Int
+  features           String[] @default([])
+  active             Boolean  @default(true)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  @@map("plans")
+}
+
+// Every rider is fully independent: one subscription belongs to exactly one rider, billed directly.
+model Subscription {
+  id                 String             @id @db.VarChar(24)
+  userId             String             @unique @db.VarChar(24)
+  user               User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  planKey            PlanKey
+  billingCycle       BillingCycle       @default(monthly)
+  status             SubscriptionStatus
+  price              Float              @default(0)
+  currency           String             @default("USD") @db.VarChar(3)
+  startedAt          DateTime           @default(now())
+  currentPeriodEnd   DateTime
+  cancelAtPeriodEnd  Boolean            @default(false)
+  pendingPlanKey     PlanKey?
+  pendingBillingCycle BillingCycle?
+  pendingPaymentId   String?            @db.VarChar(24)
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+
+  payments Payment[]
+
+  @@index([planKey])
+  @@index([status])
+  @@index([createdAt(sort: Desc)])
+  @@map("subscriptions")
+}
+
+// SaaS subscription payments ONLY, always billed directly to the rider.
+model Payment {
+  id             String        @id @db.VarChar(24)
+  userId         String        @db.VarChar(24)
+  user           User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  subscriptionId String?       @db.VarChar(24)
+  subscription   Subscription? @relation(fields: [subscriptionId], references: [id], onDelete: SetNull)
+  planKey        PlanKey
+  billingCycle   BillingCycle
+  amount         Float
+  currency       String        @db.VarChar(3)
+  status         PaymentStatus @default(pending)
+  provider       String        @default("manual")
+  providerRef    String?
+  paidAt         DateTime?
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  @@index([userId])
+  @@index([status])
+  @@index([createdAt(sort: Desc)])
+  @@map("payments")
+}
+
+model RefreshToken {
+  id             String    @id @db.VarChar(24)
+  userId         String    @db.VarChar(24)
+  user           User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  family         String
+  tokenHash      String    @unique
+  expiresAt      DateTime
+  revokedAt      DateTime?
+  replacedByHash String?
+  userAgent      String?   @db.VarChar(300)
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@index([userId])
+  @@index([family])
+  @@index([expiresAt])
+  @@map("refresh_tokens")
+}
+
+model AuditLog {
+  id         String      @id @db.VarChar(24)
+  actorId    String?     @db.VarChar(24)
+  actorEmail String?
+  action     String
+  targetType String?
+  targetId   String?
+  status     AuditStatus @default(success)
+  ip         String?
+  meta       Json?
+  createdAt  DateTime    @default(now())
+
+  @@index([action])
+  @@index([createdAt(sort: Desc)])
+  @@map("audit_logs")
+}
+
+model Setting {
+  id        String   @id @db.VarChar(24)
+  key       String   @unique
+  value     Json
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("settings")
+}
+
+model GeocodeCache {
+  key         String   @id
+  found       Boolean
+  latitude    Float?
+  longitude   Float?
+  normalized  String?
+  approximate Boolean  @default(false)
+  provider    String?
+  expiresAt   DateTime
+
+  @@index([expiresAt])
+  @@map("geocode_cache")
+}

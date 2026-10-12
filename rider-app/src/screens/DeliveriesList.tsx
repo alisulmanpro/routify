@@ -7,7 +7,7 @@ import type { Delivery, Route } from '../lib/types';
 import { titleCase } from '../lib/format';
 import { getRouteOrigin } from '../lib/location';
 import { Screen } from '../components/Kit';
-import { DARK_ON_PRIMARY, Empty, ErrorBanner, Header, PButton, PCard, Pill, gradient, type PillTone } from '../components/Premium';
+import { DARK_ON_PRIMARY, Empty, ErrorBanner, Header, PButton, PCard, Pill, type PillTone } from '../components/Premium';
 import { premium as c } from '../lib/theme';
 import { useNav } from '../lib/nav';
 
@@ -186,7 +186,7 @@ export default function DeliveriesList() {
         }}
       />
 
-      <Pressable onPress={() => navigate('AddDelivery')} accessibilityLabel="Add deliveries" style={({ pressed }) => [s.fab, gradient('linear-gradient(135deg, #FFC56B 0%, #FFAA32 50%, #C97812 100%)'), pressed && { opacity: 0.9 }]}>
+      <Pressable onPress={() => navigate('AddDelivery')} accessibilityLabel="Add deliveries" style={({ pressed }) => [s.fab, pressed && { opacity: 0.9 }]}>
         <Ionicons name="add" size={30} color={DARK_ON_PRIMARY} />
       </Pressable>
     </Screen>
@@ -206,5 +206,5 @@ const s = StyleSheet.create({
   parcel: { flex: 1, color: c.text, fontSize: 15, fontWeight: '800' },
   customer: { color: c.textSecondary, fontSize: 13, marginTop: 2 },
   address: { flex: 1, color: c.textMuted, fontSize: 12, lineHeight: 17 },
-  fab: { position: 'absolute', right: 20, bottom: 20, width: 60, height: 60, borderRadius: 30, backgroundColor: c.primary, alignItems: 'center', justifyContent: 'center', shadowColor: c.primary, shadowOpacity: 0.45, shadowRadius: 14, shadowOffset: { width: 0, height: 6 }, elevation: 10 },
+  fab: { position: 'absolute', right: 20, bottom: 20, width: 60, height: 60, borderRadius: 30, backgroundColor: '#FFFFFF', alignItems: 'center', justifyContent: 'center', shadowColor: '#FFFFFF', shadowOpacity: 0.45, shadowRadius: 14, shadowOffset: { width: 0, height: 6 }, elevation: 10 },
 });

@@ -1,6 +1,6 @@
 import { StatusBar } from 'expo-status-bar';
 import { SafeAreaView, SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Pressable, StatusBar as NativeStatusBar, Text, View } from 'react-native';
+import { Platform, Pressable, StatusBar as NativeStatusBar, Text, View } from 'react-native';
 import { useEffect, useState } from 'react';
 import { AuthProvider, useAuth } from './src/lib/auth';
 import { NavProvider, useNav, type TabName } from './src/lib/nav';
@@ -116,7 +116,8 @@ function Gate() {
 export default function App() {
   useEffect(() => {
     NativeStatusBar.setBarStyle('light-content');
-    NativeStatusBar.setBackgroundColor(colors.bg);
+    // The status bar background colour is Android-only; iOS shows the app's background through it.
+    if (Platform.OS === 'android') NativeStatusBar.setBackgroundColor(colors.bg);
   }, []);
 
   return (

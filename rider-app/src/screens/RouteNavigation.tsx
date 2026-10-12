@@ -89,7 +89,7 @@ export default function RouteNavigation() {
           <Text style={[s.muted, { textAlign: 'center', marginTop: 6, marginBottom: 20 }]}>All caught up. Head back to your dashboard or add more deliveries to plan a new route.</Text>
         </View>
         {/* This screen lives in the Deliveries tab, so reset that stack before leaving it. */}
-        <Pressable onPress={() => { resetTab('deliveries'); switchTab('home'); }} style={({ pressed }) => [s.primaryBtn, gradient(PRIMARY_GRADIENT), pressed && { opacity: 0.9 }]}>
+        <Pressable onPress={() => { resetTab('deliveries'); switchTab('home'); }} style={({ pressed }) => [s.primaryBtn, pressed && { opacity: 0.9 }]}>
           <Ionicons name="home-outline" size={18} color={DARK_ON_PRIMARY} />
           <Text style={s.primaryText}>Go home</Text>
           <Ionicons name="chevron-forward" size={18} color={DARK_ON_PRIMARY} />
@@ -130,7 +130,7 @@ export default function RouteNavigation() {
               <Text style={s.address}>{current.delivery.address.raw}</Text>
             </View>
 
-            <Pressable onPress={openGoogleMaps} style={({ pressed }) => [s.primaryBtn, { marginTop: 16 }, gradient(PRIMARY_GRADIENT), pressed && { opacity: 0.9 }]}>
+            <Pressable onPress={openGoogleMaps} style={({ pressed }) => [s.primaryBtn, { marginTop: 16 }, pressed && { opacity: 0.9 }]}>
               <Ionicons name="navigate-outline" size={18} color={DARK_ON_PRIMARY} />
               <Text style={[s.primaryText, { textAlign: 'center' }]}>Get directions</Text>
               <Ionicons name="chevron-forward" size={18} color={DARK_ON_PRIMARY} />
@@ -221,7 +221,6 @@ export default function RouteNavigation() {
   );
 }
 
-const PRIMARY_GRADIENT = 'linear-gradient(100deg, #C97812 0%, #FFAA32 100%)';
 
 function StatusPill({ status }: { status: Delivery['status'] }) {
   const st = STATUS_STYLE[status];
@@ -243,7 +242,7 @@ const s = StyleSheet.create({
   muted: { color: c.textSecondary, fontSize: 13 },
   cardTitle: { color: c.text, fontSize: 15, fontWeight: '800' },
 
-  primaryBtn: { flexDirection: 'row', alignItems: 'center', gap: 10, minHeight: 50, paddingHorizontal: 16, borderRadius: r.medium, backgroundColor: c.primary, shadowColor: c.primary, shadowOpacity: 0.3, shadowRadius: 14, shadowOffset: { width: 0, height: 6 }, elevation: 6 },
+  primaryBtn: { flexDirection: 'row', alignItems: 'center', gap: 10, minHeight: 50, paddingHorizontal: 16, borderRadius: r.medium, backgroundColor: '#FFFFFF', shadowColor: '#FFFFFF', shadowOpacity: 0.3, shadowRadius: 14, shadowOffset: { width: 0, height: 6 }, elevation: 6 },
   primaryText: { flex: 1, color: DARK_ON_PRIMARY, fontSize: 15, fontWeight: '800' },
   secondaryBtn: { flexDirection: 'row', alignItems: 'center', gap: 10, minHeight: 48, paddingHorizontal: 16, marginTop: 10, borderRadius: r.medium, backgroundColor: c.surfaceSoft, borderWidth: 1, borderColor: c.border },
   secondaryText: { flex: 1, color: c.text, fontSize: 14, fontWeight: '700', textAlign: 'center' },

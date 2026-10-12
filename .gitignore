@@ -165,3 +165,6 @@ node-compile-cache/
 .idea/
 .DS_Store
 Thumbs.db
+
+# Archives
+backend.zip

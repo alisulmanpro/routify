@@ -1,0 +1,281 @@
+from __future__ import annotations
+
+import asyncio
+from typing import Any, Optional
+
+from ..db import db
+from ..errors import conflict, forbidden, not_found, unprocessable
+from ..http import js_round, now, round2, today_key
+from ..ids import new_id
+from . import geocoding_service as geocoding
+from .geo import haversine_km, normalize_address
+from .route_planner import plan_route
+from .serializers import clean_delivery_address, serialize_delivery
+from .settings_service import get_settings
+
+OPEN = ("pending", "in_progress")
+ROUTE_ROAD_FACTOR = 1.3
+_FRESH_ADDRESS = {"addressNormalized": None, "addressLatitude": None, "addressLongitude": None, "addressGeocoded": False,
+                  "addressApproximate": False, "geocodeStatus": "pending"}
+
+
+def summarize(deliveries: list[Any], route: Any = None) -> dict:
+    statuses = [str(d.status) for d in deliveries]
+    minutes = None
+    if route is not None and route.startedAt and route.completedAt:
+        minutes = max(1, js_round((route.completedAt - route.startedAt).total_seconds() / 60))
+    return {
+        "total": len(statuses),
+        "delivered": statuses.count("delivered"),
+        "failed": statuses.count("failed"),
+        "pending": sum(1 for s in statuses if s in OPEN),
+        "distanceKm": route.distanceKm if route is not None and route.distanceKm is not None else 0,
+        "routeMinutes": minutes,
+    }
+
+
+def _origin(route: Any) -> Optional[dict]:
+    if route.originLatitude is None:
+        return None
+    return {"latitude": route.originLatitude, "longitude": route.originLongitude}
+
+
+async def serialize_route(route: Any) -> dict:
+    stop_rows = sorted(await db.routestop.find_many(where={"routeId": route.id}), key=lambda s: s.order)
+    deliveries = await db.delivery.find_many(where={"id": {"in": [s.deliveryId for s in stop_rows]}}) if stop_rows else []
+    by_id = {d.id: d for d in deliveries}
+    stops = [
+        {"order": i + 1, "legDistanceKm": s.legDistanceKm, "legDurationMin": s.legDurationMin, "delivery": serialize_delivery(by_id[s.deliveryId])}
+        for i, s in enumerate(s for s in stop_rows if s.deliveryId in by_id)
+    ]
+    done = sum(1 for s in stops if s["delivery"]["status"] not in OPEN)
+    current = next((s for s in stops if s["delivery"]["status"] in OPEN), None)
+    return {
+        "id": route.id, "status": str(route.status), "preference": str(route.preference), "serviceDate": route.serviceDate,
+        "origin": _origin(route),
+        "distanceKm": route.distanceKm, "durationMin": route.durationMin, "startedAt": route.startedAt, "completedAt": route.completedAt,
+        "stops": stops, "progress": {"total": len(stops), "done": done, "remaining": len(stops) - done},
+        "currentStopId": current["delivery"]["id"] if current else None,
+        "summary": summarize([by_id[s["delivery"]["id"]] for s in stops], route),
+    }
+
+
+def _require_rider(actor: dict) -> None:
+    if actor["role"] != "rider":
+        raise forbidden("Only riders manage routes")
+
+
+async def _release_planned(actor: dict) -> None:
+    planned = await db.route.find_many(where={"riderId": actor["id"], "status": "planned"})
+    if not planned:
+        return
+    ids = [r.id for r in planned]
+    await db.delivery.update_many(where={"routeId": {"in": ids}, "status": "pending"}, data={"routeId": None, "stopOrder": None})
+    await db.route.delete_many(where={"id": {"in": ids}})
+
+
+def area_of_user(user: Any) -> Optional[dict]:
+    if not user or not user.areaCity or not user.areaCountryCode:
+        return None
+    return {"city": user.areaCity, "country": user.areaCountry, "countryCode": user.areaCountryCode, "latitude": user.areaLatitude,
+            "longitude": user.areaLongitude, "source": str(user.areaSource) if user.areaSource else None, "confirmedAt": user.areaConfirmedAt}
+
+
+async def service_area_for(actor: dict, origin: Optional[dict]) -> Optional[dict]:
+    """The rider's service area. Riders who never confirmed a city get one detected from the route's start point."""
+    from .auth_service import area_columns
+
+    user = await db.user.find_unique(where={"id": actor["id"]})
+    area = area_of_user(user)
+    if area:
+        return area
+    if not origin:
+        return None
+    try:
+        detected = await geocoding.detect_service_area(origin)
+    except Exception:  # noqa: BLE001
+        detected = None
+    if not detected:
+        return None
+    user = await db.user.update(where={"id": actor["id"]}, data=area_columns(detected, "gps"))
+    return area_of_user(user)
+
+
+async def _refresh_delivery_geocodes(deliveries: list[Any], *, retry_approximate: bool = False, area: Optional[dict] = None) -> list[Any]:
+    """Looks up stops without coordinates. Returns the deliveries as saved (same order)."""
+    from .delivery_service import save_delivery
+
+    out = list(deliveries)
+    for i, d in enumerate(out):
+        clean = clean_delivery_address(d.addressRaw, d.payment)
+        if clean != d.addressRaw:
+            out[i] = await save_delivery(d, {"addressRaw": clean, **_FRESH_ADDRESS})
+
+    # On a retry, also redo "found" stops that sit outside the rider's city (e.g. matched abroad before areas existed).
+    def outside_area(d: Any) -> bool:
+        point = {"latitude": d.addressLatitude, "longitude": d.addressLongitude}
+        return bool(retry_approximate and area and d.geocodeStatus == "found" and not geocoding.is_inside_area(point, area))
+
+    todo = [i for i, d in enumerate(out)
+            if outside_area(d) or (d.geocodeStatus != "found" and (retry_approximate or d.geocodeStatus != "approximate"))]
+    if not todo:
+        return out
+
+    results = await geocoding.geocode_many([out[i].addressRaw for i in todo],
+                                           retry_approximate=retry_approximate or any(outside_area(out[i]) for i in todo), area=area)
+    for i in todo:
+        d = out[i]
+        hit = results.get(d.addressRaw)
+        if hit:
+            approx = bool(hit.get("approximate"))
+            data = {"addressLatitude": hit["latitude"], "addressLongitude": hit["longitude"], "addressNormalized": hit.get("normalized"),
+                    "addressGeocoded": not approx, "addressApproximate": approx, "geocodeStatus": "approximate" if approx else "found"}
+        else:
+            data = {"addressLatitude": None, "addressLongitude": None, "addressNormalized": None, "addressGeocoded": False,
+                    "addressApproximate": False, "geocodeStatus": "not_found"}
+        out[i] = await save_delivery(d, data)
+    return out
+
+
+def _plan(deliveries: list[Any], origin: Optional[dict], preference: str, settings: dict) -> tuple[list[dict], float, float]:
+    located = [d for d in deliveries if d.addressGeocoded]
+    unlocated = [d for d in deliveries if not d.addressGeocoded]
+    plan = plan_route(
+        origin=origin, preference=preference, avg_speed_kmh=settings["route"]["avgSpeedKmh"], service_minutes=settings["route"]["stopServiceMinutes"],
+        stops=[{"id": d.id, "latitude": d.addressLatitude, "longitude": d.addressLongitude, "addressKey": normalize_address(d.addressRaw)} for d in located],
+    )
+    stops = [
+        *({"deliveryId": did, "order": i + 1, "legDistanceKm": plan["legs"][i]["distanceKm"], "legDurationMin": plan["legs"][i]["durationMin"]}
+          for i, did in enumerate(plan["order"])),
+        *({"deliveryId": d.id, "order": len(plan["order"]) + i + 1, "legDistanceKm": 0, "legDurationMin": 0} for i, d in enumerate(unlocated)),
+    ]
+    return stops, plan["distanceKm"], plan["durationMin"] + len(unlocated) * settings["route"]["stopServiceMinutes"]
+
+
+async def _assign_stops(route_id: str, rider_id: str, stops: list[dict]) -> None:
+    async with db.batch_() as batch:
+        for s in stops:
+            batch.delivery.update_many(where={"id": s["deliveryId"], "riderId": rider_id}, data={"routeId": route_id, "stopOrder": s["order"]})
+
+
+async def build(actor: dict, *, preference: Optional[str] = None, origin: Optional[dict] = None, delivery_ids: Optional[list[str]] = None,
+                date: Optional[str] = None) -> dict:
+    _require_rider(actor)
+    if await db.route.find_first(where={"riderId": actor["id"], "status": "active"}):
+        raise conflict("Finish or end your active route before planning a new one", "ROUTE_ACTIVE")
+    await _release_planned(actor)
+
+    where: dict[str, Any] = {"riderId": actor["id"], "status": "pending", "routeId": None}
+    if delivery_ids:
+        where["id"] = {"in": delivery_ids}
+    deliveries = await db.delivery.find_many(where=where, order=[{"createdAt": "asc"}, {"id": "asc"}])
+    if not deliveries:
+        raise unprocessable("Add deliveries before building a route", "NO_DELIVERIES")
+
+    settings, user = await asyncio.gather(get_settings(), db.user.find_unique(where={"id": actor["id"]}))
+    pref = preference or (str(user.routePreference) if user else None) or settings["route"]["defaultPreference"]
+
+    # Geocode before ordering so stop numbers reflect destination order, not entry order.
+    deliveries = await _refresh_delivery_geocodes(deliveries, area=await service_area_for(actor, origin))
+    stops, distance_km, duration_min = _plan(deliveries, origin, pref, settings)
+
+    route = await db.route.create(data={
+        "id": new_id(), "riderId": actor["id"], "serviceDate": date or today_key(), "preference": pref,
+        "status": "planned", "originLatitude": origin["latitude"] if origin else None, "originLongitude": origin["longitude"] if origin else None,
+        "distanceKm": distance_km, "durationMin": duration_min,
+    })
+    await db.routestop.create_many(data=[{"routeId": route.id, **s} for s in stops])
+    await _assign_stops(route.id, actor["id"], stops)
+    return await serialize_route(route)
+
+
+async def retry_geocoding(actor: dict, route_id: str) -> dict:
+    _require_rider(actor)
+    route = await _find_mine(actor, route_id)
+    if route.status not in ("planned", "active"):
+        raise conflict("Only planned or active routes can retry address lookup", "INVALID_STATE")
+    stop_rows = await db.routestop.find_many(where={"routeId": route.id})
+    deliveries = await db.delivery.find_many(where={"riderId": actor["id"], "id": {"in": [s.deliveryId for s in stop_rows]}},
+                                             order=[{"createdAt": "asc"}, {"id": "asc"}])
+    origin = _origin(route)
+    area = await service_area_for(actor, origin)
+    deliveries = await _refresh_delivery_geocodes(deliveries, retry_approximate=True, area=area)
+
+    settings, user = await asyncio.gather(get_settings(), db.user.find_unique(where={"id": actor["id"]}))
+    by_id = {d.id: d for d in deliveries}
+
+    if route.status == "planned":
+        pref = str(route.preference) or (str(user.routePreference) if user else None) or settings["route"]["defaultPreference"]
+        stops, distance_km, duration_min = _plan(deliveries, origin, pref, settings)
+        await db.routestop.delete_many(where={"routeId": route.id})
+        await db.routestop.create_many(data=[{"routeId": route.id, **s} for s in stops])
+        route = await db.route.update(where={"id": route.id}, data={"distanceKm": distance_km, "durationMin": duration_min})
+        await _assign_stops(route.id, actor["id"], stops)
+    else:
+        previous = origin
+        distance_km = 0.0
+        travel = 0
+        async with db.batch_() as batch:
+            for stop in sorted(stop_rows, key=lambda s: s.order):
+                d = by_id.get(stop.deliveryId)
+                if not d or not d.addressGeocoded:
+                    previous = None
+                    continue
+                point = {"latitude": d.addressLatitude, "longitude": d.addressLongitude}
+                distance = round2(haversine_km(previous, point) * ROUTE_ROAD_FACTOR) if previous else 0
+                minutes = js_round((distance / settings["route"]["avgSpeedKmh"]) * 60)
+                batch.routestop.update(where={"routeId_deliveryId": {"routeId": route.id, "deliveryId": stop.deliveryId}},
+                                       data={"legDistanceKm": distance, "legDurationMin": minutes})
+                distance_km += distance
+                travel += minutes
+                previous = point
+        route = await db.route.update(where={"id": route.id}, data={
+            "distanceKm": round2(distance_km), "durationMin": travel + len(stop_rows) * settings["route"]["stopServiceMinutes"],
+        })
+    return await serialize_route(route)
+
+
+async def _find_mine(actor: dict, route_id: str) -> Any:
+    route = await db.route.find_first(where={"id": route_id, "riderId": actor["id"]})
+    if not route:
+        raise not_found("Route")
+    return route
+
+
+async def get_by_id(actor: dict, route_id: str) -> dict:
+    _require_rider(actor)
+    return await serialize_route(await _find_mine(actor, route_id))
+
+
+async def get_current(actor: dict) -> Optional[dict]:
+    _require_rider(actor)
+    route = (await db.route.find_first(where={"riderId": actor["id"], "status": "active"})
+             or await db.route.find_first(where={"riderId": actor["id"], "status": "planned"}, order=[{"createdAt": "desc"}, {"id": "desc"}]))
+    return await serialize_route(route) if route else None
+
+
+async def start(actor: dict, route_id: str) -> dict:
+    _require_rider(actor)
+    route = await _find_mine(actor, route_id)
+    if route.status == "active":
+        return await serialize_route(route)
+    if route.status != "planned":
+        raise conflict("This route is already completed", "INVALID_STATE")
+    if not await db.delivery.count(where={"routeId": route.id, "status": "pending"}):
+        raise conflict("This route has no pending deliveries. Build a new one.", "ROUTE_STALE")
+    if await db.route.find_first(where={"riderId": actor["id"], "status": "active"}):
+        raise conflict("You already have an active route", "ROUTE_ACTIVE")
+    route = await db.route.update(where={"id": route.id}, data={"status": "active", "startedAt": now()})
+    return await serialize_route(route)
+
+
+async def on_stop_finished(route_id: str) -> None:
+    """Completes the route automatically once no stop is left open."""
+    if not await db.delivery.count(where={"routeId": route_id, "status": {"in": list(OPEN)}}):
+        await db.route.update_many(where={"id": route_id, "status": "active"}, data={"status": "completed", "completedAt": now()})
+
+
+async def list_completed(actor: dict, limit: int = 30) -> list[dict]:
+    _require_rider(actor)
+    routes = await db.route.find_many(where={"riderId": actor["id"], "status": "completed"}, order=[{"completedAt": "desc"}, {"id": "desc"}], take=limit)
+    return [await serialize_route(r) for r in routes]

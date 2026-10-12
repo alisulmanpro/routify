@@ -12,7 +12,6 @@ type Row = ImportDraftItem & { include: boolean };
 
 // Gradients use RN's native CSS gradient support; backgroundColor is the fallback (e.g. web).
 const gradient = (value: string): ViewStyle => ({ experimental_backgroundImage: value } as ViewStyle);
-const BUTTON_GRADIENT = 'linear-gradient(100deg, #C97812 0%, #FFAA32 100%)';
 const FORMATS = ['PDF', 'Word', 'Excel', 'CSV'];
 // Name and phone are optional now, so only flags that block or duplicate a stop are shown.
 const SHOWN_FLAGS = new Set(['missing_address', 'duplicate']);
@@ -97,7 +96,7 @@ export default function ImportFile({ onCreated }: { onCreated: () => void }) {
             {FORMATS.map((f) => <View key={f} style={s.formatChip}><Text style={s.formatText}>{f}</Text></View>)}
           </View>
           {error ? <Banner text={error} /> : null}
-          <Pressable onPress={pickAndUpload} disabled={busy} style={({ pressed }) => [s.primaryBtn, gradient(BUTTON_GRADIENT), (pressed || busy) && { opacity: 0.9 }]}>
+          <Pressable onPress={pickAndUpload} disabled={busy} style={({ pressed }) => [s.primaryBtn, (pressed || busy) && { opacity: 0.9 }]}>
             {busy ? <ActivityIndicator color={DARK_ON_PRIMARY} /> : <Ionicons name="document-outline" size={20} color={DARK_ON_PRIMARY} />}
             <Text style={s.primaryText}>{busy ? 'Reading your file…' : 'Choose file'}</Text>
             <View style={s.chevron}><Ionicons name="chevron-forward" size={16} color={DARK_ON_PRIMARY} /></View>
@@ -138,7 +137,7 @@ export default function ImportFile({ onCreated }: { onCreated: () => void }) {
           ))}
         </View>
 
-        <Pressable onPress={submit} disabled={busy || includedCount === 0} style={({ pressed }) => [s.primaryBtn, { marginTop: 18 }, gradient(BUTTON_GRADIENT), (busy || includedCount === 0) && { opacity: 0.5 }, pressed && { opacity: 0.9 }]}>
+        <Pressable onPress={submit} disabled={busy || includedCount === 0} style={({ pressed }) => [s.primaryBtn, { marginTop: 18 }, (busy || includedCount === 0) && { opacity: 0.5 }, pressed && { opacity: 0.9 }]}>
           {busy ? <ActivityIndicator color={DARK_ON_PRIMARY} /> : <Ionicons name="add-circle-outline" size={20} color={DARK_ON_PRIMARY} />}
           <Text style={s.primaryText}>Add {includedCount} deliveries</Text>
         </Pressable>
@@ -211,7 +210,7 @@ const s = StyleSheet.create({
   formatChip: { paddingHorizontal: 12, paddingVertical: 5, borderRadius: r.pill, backgroundColor: c.surfaceElevated, borderWidth: 1, borderColor: c.border },
   formatText: { color: c.textSecondary, fontSize: 11, fontWeight: '700', letterSpacing: 0.4 },
 
-  primaryBtn: { flexDirection: 'row', alignItems: 'center', minHeight: 56, paddingHorizontal: 18, borderRadius: r.medium, backgroundColor: c.primary, gap: 10, shadowColor: c.primary, shadowOpacity: 0.35, shadowRadius: 16, shadowOffset: { width: 0, height: 8 }, elevation: 8 },
+  primaryBtn: { flexDirection: 'row', alignItems: 'center', minHeight: 56, paddingHorizontal: 18, borderRadius: r.medium, backgroundColor: '#FFFFFF', gap: 10, shadowColor: '#FFFFFF', shadowOpacity: 0.35, shadowRadius: 16, shadowOffset: { width: 0, height: 8 }, elevation: 8 },
   primaryText: { flex: 1, color: DARK_ON_PRIMARY, fontSize: 15, fontWeight: '800' },
   chevron: { width: 28, height: 28, borderRadius: 14, backgroundColor: 'rgba(26,18,6,0.14)', alignItems: 'center', justifyContent: 'center' },
 

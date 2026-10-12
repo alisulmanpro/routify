@@ -5,7 +5,7 @@ import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { post, ApiRequestError } from '../lib/api';
 import { NATIVE_BUILD_HINT, loadVoicePanel, readTextFromImage } from '../lib/optionalNative';
 import { premium as c, premiumRadius as r } from '../lib/theme';
-import { DARK_ON_PRIMARY, ErrorBanner, IconCircle, PButton, PCard, Pill, gradient, type McName } from './Premium';
+import { DARK_ON_PRIMARY, ErrorBanner, IconCircle, PButton, PCard, Pill, type McName } from './Premium';
 
 type Mode = 'scan' | 'voice';
 type FieldKey = 'address' | 'parcel' | 'name' | 'phone' | 'note';
@@ -380,7 +380,7 @@ function ScanPanel({ hasValue, onLines, onCode, onUnsupported }: { hasValue: boo
           </View>
         ) : null}
       </View>
-      <Pressable onPress={readText} disabled={!ready || reading} style={({ pressed }) => [s.shutter, gradient('linear-gradient(100deg, #C97812 0%, #FFAA32 100%)'), (!ready || reading) && { opacity: 0.6 }, pressed && { opacity: 0.85 }]}>
+      <Pressable onPress={readText} disabled={!ready || reading} style={({ pressed }) => [s.shutter, (!ready || reading) && { opacity: 0.6 }, pressed && { opacity: 0.85 }]}>
         <MaterialCommunityIcons name="text-recognition" size={20} color={DARK_ON_PRIMARY} />
         <Text style={{ color: DARK_ON_PRIMARY, fontWeight: '800', fontSize: 15 }}>Read text</Text>
       </Pressable>
@@ -431,7 +431,7 @@ const s = StyleSheet.create({
   frame: { position: 'absolute', top: '14%', bottom: '14%', left: '8%', right: '8%' },
   corner: { position: 'absolute', width: 34, height: 34, borderColor: c.primary },
   torch: { position: 'absolute', top: 12, right: 12, width: 38, height: 38, borderRadius: 19, backgroundColor: 'rgba(5,11,24,0.7)', alignItems: 'center', justifyContent: 'center' },
-  shutter: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10, minHeight: 50, borderRadius: r.medium, backgroundColor: c.primary, marginTop: 12 },
+  shutter: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10, minHeight: 50, borderRadius: r.medium, backgroundColor: '#FFFFFF', marginTop: 12 },
 
   notice: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 12, padding: 12, borderRadius: r.small, backgroundColor: 'rgba(255,170,50,0.1)' },
   lineChip: { flexDirection: 'row', alignItems: 'center', gap: 6, maxWidth: '100%', paddingHorizontal: 12, paddingVertical: 8, borderRadius: r.small, borderWidth: 1, borderColor: c.border, backgroundColor: c.surfaceSoft },
