@@ -9,7 +9,7 @@ export type User = {
   serviceArea: ServiceArea | null;
 };
 
-export type PublicConfig = { currencies: Currency[]; defaultCurrency: Currency; routePreference: RoutePreference; minPasswordLength: number; platformName: string; supportEmail: string; privacyUrl: string; paymentInstructions: string };
+export type PublicConfig = { currencies: Currency[]; defaultCurrency: Currency; routePreference: RoutePreference; minPasswordLength: number; platformName: string; supportEmail: string; privacyUrl: string; paymentInstructions: string; trialDays: number };
 
 export type FailureReason = 'customer_unavailable' | 'customer_refused' | 'wrong_address' | 'phone_unreachable' | 'business_closed' | 'other';
 
@@ -48,5 +48,12 @@ export type ImportDraftItem = { trackingId: string; customerName: string; phone:
 export type ImportDraft = { fileType: string; items: ImportDraftItem[] };
 
 export type Plan = { id: string; key: 'trial' | 'starter' | 'pro'; name: string; monthlyPrice: number; annualPrice: number; currency: string; limits: { deliveriesPerMonth: number; reportsPerMonth: number }; features: string[]; active: boolean };
-export type Subscription = { id: string; planKey: 'trial' | 'starter' | 'pro'; billingCycle: 'monthly' | 'annual'; status: string; price: number; currency: string; startedAt: string; currentPeriodEnd: string; cancelAtPeriodEnd: boolean; pending: { planKey: string; billingCycle: string } | null };
-export type SubscriptionInfo = { subscription: Subscription | null; plan: Plan | null; plans: Plan[]; usage: { deliveriesThisMonth: number; reportsThisMonth: number }; paymentInstructions: string };
+export type Subscription = { id: string; planKey: 'trial' | 'starter' | 'pro'; billingCycle: 'monthly' | 'annual'; status: string; price: number; currency: string; startedAt: string; currentPeriodEnd: string; cancelAtPeriodEnd: boolean; pending: { planKey: string; billingCycle: string } | null; storeManaged: boolean };
+export type StoreName = 'apple' | 'google' | 'mock';
+export type PaidPlanKey = 'starter' | 'pro';
+export type BillingCycle = 'monthly' | 'annual';
+/** The store purchase billing the plan (null when the plan is not billed through a store). */
+export type StorePurchase = { store: StoreName; productId: string; status: 'active' | 'grace' | 'past_due'; autoRenew: boolean; expiresAt: string; testMode: boolean };
+export type SubscriptionInfo = { subscription: Subscription | null; store: StorePurchase | null; plan: Plan | null; plans: Plan[]; usage: { deliveriesThisMonth: number; reportsThisMonth: number }; paymentInstructions: string };
+export type StoreProduct = { productId: string; basePlanId?: string; trialOfferId?: string; planKey: PaidPlanKey; billingCycle: BillingCycle };
+export type StoreConfig = { stores: StoreName[]; accountToken: string; products: Partial<Record<StoreName, StoreProduct[]>>; trialEligible: Partial<Record<StoreName, boolean>>; trialDays: number };

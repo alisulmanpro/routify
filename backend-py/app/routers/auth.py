@@ -9,7 +9,7 @@ from ..auth import authenticate, ctx
 from ..config import env
 from ..errors import AppError, unauthorized
 from ..http import ApiJSONResponse, ok, respond
-from ..middleware import auth_limiter, email_taken_limiter, limit
+from ..middleware import auth_limiter, email_taken_limiter, limit, reset_email_limiter
 from ..services import auth_service as auth
 from ..validation import Currency, Email, Phone, Schema, Trimmed, validate
 
@@ -19,8 +19,8 @@ Password = Annotated[str, StringConstraints(min_length=6, max_length=128)]
 
 
 class RegisterBody(Schema):
+    # Phone is no longer collected at sign-up; a client that still sends it is ignored (unknown fields are dropped).
     fullName: Trimmed(2, 120)
-    phone: Phone
     email: Email
     password: Password
     confirmPassword: str
@@ -45,9 +45,9 @@ class RefreshBody(Schema):
 
 
 class ProfileBody(Schema):
-    nullable_fields = frozenset({"city"})
+    nullable_fields = frozenset({"city", "phone"})
     fullName: Optional[Trimmed(2, 120)] = None
-    phone: Optional[Phone] = None
+    phone: Optional[Phone] = None  # optional; null removes it
     currency: Optional[Currency] = None
     routePreference: Optional[Literal["smart", "nearest_first", "shortest"]] = None
     notificationsEnabled: Optional[bool] = None
@@ -65,6 +65,29 @@ class PasswordBody(Schema):
     currentPassword: Annotated[str, StringConstraints(min_length=1, max_length=128)]
     newPassword: Password
     client: Literal["mobile", "web"] = "mobile"
+
+
+ResetCode = Annotated[str, StringConstraints(strip_whitespace=True, pattern=r"^[0-9]{6}$")]
+
+
+class ForgotBody(Schema):
+    email: Email
+
+
+class ResetCodeBody(Schema):
+    email: Email
+    code: ResetCode
+
+
+class ResetBody(ResetCodeBody):
+    newPassword: Password
+    confirmPassword: str
+
+    @model_validator(mode="after")
+    def passwords_match(self):
+        if self.newPassword != self.confirmPassword:
+            raise ValueError("Passwords do not match")
+        return self
 
 
 def _cookie_kwargs() -> dict:
@@ -155,3 +178,27 @@ async def change_password(request: Request):
     # Every older session (and access token) is now dead; this one continues with the fresh tokens returned here.
     return _respond(await auth.change_password(actor["id"], body.currentPassword, body.newPassword, ctx(request)), body.client)
 
+
+# Forgot password: request a code by email → (optionally) check it → set the new password, then sign in as usual.
+@router.post("/forgot-password")
+async def forgot_password(request: Request):
+    await limit(request, auth_limiter)
+    body = (await validate(request, body=ForgotBody))["body"]
+    # Per address as well as per IP, so nobody can flood one inbox with codes from many IPs.
+    await reset_email_limiter.check(body.email.lower())
+    auth.request_password_reset(body.email, ctx(request))
+    return respond({"sent": True, "message": "If an account exists for this email, a reset code is on its way."})
+
+
+@router.post("/reset-password/verify")
+async def verify_reset_code(request: Request):
+    await limit(request, auth_limiter)
+    body = (await validate(request, body=ResetCodeBody))["body"]
+    return respond(await auth.verify_reset_code(body.email, body.code))
+
+
+@router.post("/reset-password")
+async def reset_password(request: Request):
+    await limit(request, auth_limiter)
+    body = (await validate(request, body=ResetBody))["body"]
+    return respond(await auth.reset_password(body.email, body.code, body.newPassword, ctx(request)))

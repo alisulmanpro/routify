@@ -1,5 +1,6 @@
 import { useState } from 'react';
-import { Alert, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Alert, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
+import { KeyboardAwareScrollView } from '../components/KeyboardAware';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useAuth } from '../lib/auth';
 import { patch, post, setTokens, ApiRequestError } from '../lib/api';
@@ -21,6 +22,7 @@ export default function Account() {
   const { user, logout, refreshProfile } = useAuth();
   const { navigate } = useNav();
   const [error, setError] = useState('');
+  const [passwordError, setPasswordError] = useState('');
   const [saving, setSaving] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [passwords, setPasswords] = useState({ currentPassword: '', newPassword: '' });
@@ -52,7 +54,7 @@ export default function Account() {
 
   const changePassword = async () => {
     setSaving(true);
-    setError('');
+    setPasswordError('');
     try {
       // Changing the password signs out every session; keep this one going with the fresh tokens the API returns.
       const result = await post<{ accessToken: string; refreshToken: string }>('/auth/change-password', { ...passwords, client: 'mobile' });
@@ -60,7 +62,7 @@ export default function Account() {
       setPasswords({ currentPassword: '', newPassword: '' });
       setShowPassword(false);
       Alert.alert('Password changed');
-    } catch (err) { setError(err instanceof ApiRequestError ? err.message : 'Could not change password'); }
+    } catch (err) { setPasswordError(err instanceof ApiRequestError ? err.message : 'Could not change password'); }
     finally { setSaving(false); }
   };
 
@@ -85,7 +87,7 @@ export default function Account() {
 
   return (
     <Screen style={{ backgroundColor: c.background }}>
-      <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 32, gap: 14 }} keyboardShouldPersistTaps="handled">
+      <KeyboardAwareScrollView contentContainerStyle={{ padding: 16, paddingBottom: 32, gap: 14 }} keyboardShouldPersistTaps="handled">
         <Header eyebrow="Settings" eyebrowIcon="cog-outline" title="Account" />
         <ErrorBanner text={error} />
 
@@ -180,15 +182,19 @@ export default function Account() {
           </Pressable>
           {showPassword ? (
             <View style={{ gap: 10, marginTop: 14 }}>
-              <PInput icon="key-outline" placeholder="Current password" secureTextEntry value={passwords.currentPassword} onChangeText={(v) => setPasswords({ ...passwords, currentPassword: v })} />
-              <PInput icon="lock-closed-outline" placeholder="New password" secureTextEntry value={passwords.newPassword} onChangeText={(v) => setPasswords({ ...passwords, newPassword: v })} />
+              <SectionLabel>Current password (your old one)</SectionLabel>
+              <PInput icon="key-outline" placeholder="Current password" secureTextEntry autoComplete="current-password" value={passwords.currentPassword} onChangeText={(v) => setPasswords({ ...passwords, currentPassword: v })} />
+              <SectionLabel>New password</SectionLabel>
+              <PInput icon="lock-closed-outline" placeholder="New password" secureTextEntry autoComplete="new-password" value={passwords.newPassword} onChangeText={(v) => setPasswords({ ...passwords, newPassword: v })} />
+              {/* Shown here, not in the banner at the top, which is off-screen while this card is open. */}
+              <ErrorBanner text={passwordError} />
               <PButton title="Update password" icon="shield-checkmark-outline" onPress={changePassword} loading={saving} disabled={!passwords.currentPassword || !passwords.newPassword} />
             </View>
           ) : null}
         </PCard>
 
         <PButton title="Sign out" icon="log-out-outline" variant="danger" onPress={logout} style={{ marginTop: 4 }} />
-      </ScrollView>
+      </KeyboardAwareScrollView>
     </Screen>
   );
 }

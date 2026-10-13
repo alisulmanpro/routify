@@ -18,7 +18,7 @@ from .http import ApiJSONResponse, respond
 from .logger import log
 from .middleware import ApiRateLimitMiddleware, BodyLimitMiddleware, EdgeMiddleware
 from .openapi import install_openapi
-from .routers import admin, auth, deliveries, rider_side
+from .routers import admin, auth, billing_webhooks, deliveries, rider_side
 from .services.subscription_service import ensure_default_plans
 
 HOUR = 3600
@@ -38,6 +38,7 @@ async def run_maintenance() -> None:
             log(logging.INFO, "Expired lapsed subscriptions", expired=expired)
         await db.geocodecache.delete_many(where={"expiresAt": {"lt": now()}})
         await db.refreshtoken.delete_many(where={"expiresAt": {"lt": now() - timedelta(days=7)}})
+        await db.passwordreset.delete_many(where={"expiresAt": {"lt": now() - timedelta(days=1)}})
         await db.ratelimit.delete_many(where={"resetAt": {"lt": now()}, "OR": [{"lockedUntil": None}, {"lockedUntil": {"lt": now()}}]})
     except Exception:  # noqa: BLE001
         log(logging.ERROR, "Maintenance job failed", exc_info=True)
@@ -98,7 +99,7 @@ def create_app(*, run_jobs: bool = True) -> FastAPI:
 
     api = APIRouter(prefix="/api/v1")
     for router in (auth.router, rider_side.config_router, rider_side.files_router, deliveries.router, rider_side.routes_router,
-                   rider_side.rider_router, rider_side.reports_router, rider_side.subscriptions_router, admin.router):
+                   rider_side.rider_router, rider_side.reports_router, rider_side.subscriptions_router, billing_webhooks.router, admin.router):
         api.include_router(router)
     app.include_router(api)
     if not env.is_production:

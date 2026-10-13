@@ -61,6 +61,9 @@ ENDPOINTS = [
     ("GET", "/api/v1/subscriptions/me", "rider"),
     ("POST", "/api/v1/subscriptions", "rider"),
     ("POST", "/api/v1/subscriptions/cancel", "rider"),
+    ("GET", "/api/v1/subscriptions/store", "rider"),
+    ("POST", "/api/v1/subscriptions/purchases", "rider"),
+    ("POST", "/api/v1/subscriptions/mock/events", "rider"),
     ("GET", "/api/v1/admin/overview", "admin"),
     ("GET", "/api/v1/admin/riders", "admin"),
     ("PATCH", f"/api/v1/admin/riders/{FAKE_ID}", "admin"),
@@ -196,6 +199,7 @@ async def test_registration_ignores_privileged_fields(client):
     assert res.status_code == 201
     user = res.json()["data"]["user"]
     assert user["role"] == "rider" and user["id"] != FAKE_ID
+    assert user["phone"] is None  # no longer collected at sign-up: a stale client's phone is dropped
     admin = await client.get("/api/v1/admin/overview", headers=bearer(res.json()["data"]["accessToken"]))
     assert admin.status_code == 403
 
@@ -213,7 +217,7 @@ async def test_profile_patch_cannot_change_role_email_or_status(client):
 
 
 async def test_password_rules_and_change_password(client):
-    weak = await client.post("/api/v1/auth/register", json={"fullName": "W", "phone": "+92 300 0000002", "email": "weakpw@example.com",
+    weak = await client.post("/api/v1/auth/register", json={"fullName": "W", "email": "weakpw@example.com",
                                                             "password": "1234567", "confirmPassword": "1234567", "currency": "USD"})
     assert weak.status_code == 400
 
@@ -759,12 +763,12 @@ async def test_registration_cannot_be_used_to_enumerate_accounts_at_scale(client
     email_taken_limiter.enforce = True
     try:
         for _ in range(email_taken_limiter.limit):
-            res = await client.post("/api/v1/auth/register", json={"fullName": "Probe", "phone": "+92 300 0000009", "email": "taken-1@example.com",
+            res = await client.post("/api/v1/auth/register", json={"fullName": "Probe", "email": "taken-1@example.com",
                                                                    "password": PASSWORD, "confirmPassword": PASSWORD, "currency": "USD"})
             assert res.json()["error"]["code"] == "EMAIL_TAKEN"
         # Over the cap, the answer is the same whether the email is taken or free, so it reveals nothing.
         for email in ("taken-1@example.com", "free-after-cap@example.com"):
-            res = await client.post("/api/v1/auth/register", json={"fullName": "Probe", "phone": "+92 300 0000009", "email": email,
+            res = await client.post("/api/v1/auth/register", json={"fullName": "Probe", "email": email,
                                                                    "password": PASSWORD, "confirmPassword": PASSWORD, "currency": "USD"})
             assert res.status_code == 429, (email, res.status_code)
         assert not await db.user.find_unique(where={"email": "free-after-cap@example.com"})
@@ -813,6 +817,8 @@ async def test_openapi_documents_every_body_parameter_and_lock(client):
     app = create_app(run_jobs=False)
     spec = app.openapi()
     public = {"/health", "/ready", "/api/v1/auth/register", "/api/v1/auth/login", "/api/v1/auth/refresh", "/api/v1/auth/logout",
+              "/api/v1/auth/forgot-password", "/api/v1/auth/reset-password/verify", "/api/v1/auth/reset-password",
+              "/api/v1/billing/webhooks/apple", "/api/v1/billing/webhooks/google",
               "/api/v1/config", "/api/v1/files/{kind}/{name}"}
     for route in fr.iter_route_contexts(app.routes):
         if not isinstance(route.original_route, fr.APIRoute):
@@ -827,3 +833,23 @@ async def test_openapi_documents_every_body_parameter_and_lock(client):
                 if calls.get(part):
                     assert set(calls[part].model_fields) <= documented, where
             assert bool(op.get("security")) == (route.path_format not in public), where
+
+
+# ---------------------------------------------------------------- zip bombs / log hygiene
+
+async def test_office_zip_bombs_are_refused_before_parsing(client):
+    _, auth = await rider(client, "zipbomb@example.com")
+    payload = io.BytesIO()
+    with zipfile.ZipFile(payload, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("[Content_Types].xml", "<Types/>")
+        archive.writestr("xl/worksheets/sheet1.xml", b"\0" * (150 * 1024 * 1024))
+    res = await client.post("/api/v1/deliveries/import/file", headers=auth,
+                            files={"file": ("bomb.xlsx", payload.getvalue(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")})
+    assert res.status_code == 422 and res.json()["error"]["code"] == "FILE_TOO_COMPLEX"
+
+
+def test_access_log_redacts_signed_url_secrets():
+    from app.middleware import _loggable_url
+
+    url = _loggable_url("/api/v1/files/proofs/x.jpg?exp=1&d=inline&sig=SECRETSIG&design=ok")
+    assert "SECRETSIG" not in url and "sig=[redacted]" in url and "design=ok" in url

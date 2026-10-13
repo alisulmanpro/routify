@@ -10,11 +10,20 @@ from ..ids import new_id
 DEFAULT_SETTINGS: dict[str, Any] = {
     "currencies": ["USD", "GBP", "EUR", "PKR", "INR"],
     "defaultCurrency": "USD",
+    # Length of the free trial offered through the stores (7, 14 or 30 days). The stores run the trial and need a card.
     "trialDays": 14,
     "route": {"defaultPreference": "smart", "avgSpeedKmh": 25, "stopServiceMinutes": 3},
     "reports": {"includePhotos": True},
     "platform": {"name": "Routify", "supportEmail": "", "privacyUrl": "", "paymentInstructions": ""},
     "security": {"minPasswordLength": 8, "maxFailedLogins": 5, "lockoutMinutes": 15},
+    # Store product IDs per plan and billing cycle. They must match App Store Connect / Play Console exactly.
+    # Google subscriptions are "<productId>:<basePlanId>". The mock store uses "<plan>.<cycle>".
+    "billing": {"products": {
+        "starter": {"monthly": {"apple": "routify.starter.monthly", "google": "routify_starter:monthly"},
+                    "annual": {"apple": "routify.starter.annual", "google": "routify_starter:annual"}},
+        "pro": {"monthly": {"apple": "routify.pro.monthly", "google": "routify_pro:monthly"},
+                "annual": {"apple": "routify.pro.annual", "google": "routify_pro:annual"}},
+    }},
 }
 
 _cache: dict | None = None
@@ -68,6 +77,7 @@ async def get_public_config() -> dict:
         "supportEmail": s["platform"]["supportEmail"],
         "privacyUrl": s["platform"]["privacyUrl"],
         "paymentInstructions": s["platform"]["paymentInstructions"],
+        "trialDays": s["trialDays"],
     }
 
 

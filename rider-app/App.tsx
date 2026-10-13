@@ -9,6 +9,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { colors, premium, spacing } from './src/lib/theme';
 import Login from './src/screens/Login';
 import Register from './src/screens/Register';
+import ForgotPassword from './src/screens/ForgotPassword';
 import Dashboard from './src/screens/Dashboard';
 import DeliveriesList from './src/screens/DeliveriesList';
 import RouteNavigation from './src/screens/RouteNavigation';
@@ -21,6 +22,7 @@ import VoiceEntry from './src/screens/VoiceEntry';
 import History from './src/screens/History';
 import Reports from './src/screens/Reports';
 import SubscriptionScreen from './src/screens/Subscription';
+import Paywall from './src/screens/Paywall';
 import Account from './src/screens/Account';
 
 type IconName = React.ComponentProps<typeof Ionicons>['name'];
@@ -49,6 +51,7 @@ function ScreenRouter() {
     case 'History': return <History />;
     case 'Reports': return <Reports />;
     case 'SubscriptionScreen': return <SubscriptionScreen />;
+    case 'Paywall': return <Paywall />;
     case 'Account': return <Account />;
     default: return <Dashboard />;
   }
@@ -105,12 +108,16 @@ function AuthedApp() {
 
 function Gate() {
   const { user, loading } = useAuth();
-  const [screen, setScreen] = useState<'login' | 'register'>('login');
+  const [screen, setScreen] = useState<'login' | 'register' | 'forgot'>('login');
+  const [resetEmail, setResetEmail] = useState('');
   const insets = useSafeAreaInsets();
 
   if (loading) return <SafeAreaView style={{ flex: 1, backgroundColor: colors.bg, alignItems: 'center', justifyContent: 'center', paddingTop: insets.top }}><Text style={{ color: colors.muted }}>Loading…</Text></SafeAreaView>;
   if (user) return <AuthedApp />;
-  return screen === 'login' ? <Login onGoRegister={() => setScreen('register')} /> : <Register onGoLogin={() => setScreen('login')} />;
+  if (screen === 'forgot') return <ForgotPassword initialEmail={resetEmail} onBack={() => setScreen('login')} />;
+  return screen === 'login'
+    ? <Login onGoRegister={() => setScreen('register')} onForgot={(email) => { setResetEmail(email); setScreen('forgot'); }} />
+    : <Register onGoLogin={() => setScreen('login')} />;
 }
 
 export default function App() {

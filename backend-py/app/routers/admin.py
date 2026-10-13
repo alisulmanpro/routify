@@ -18,7 +18,7 @@ from ..validation import Currency, DateKey, Email, IdParams, Money, ObjectId, Pa
 router = APIRouter(prefix="/admin")
 
 Search = Optional[Annotated[str, StringConstraints(strip_whitespace=True, max_length=100)]]
-SubStatus = Literal["trialing", "active", "past_due", "expired", "cancelled"]
+SubStatus = Literal["inactive", "trialing", "active", "past_due", "expired", "cancelled"]
 PlanKey = Literal["trial", "starter", "pro"]
 Cycle = Literal["monthly", "annual"]
 
@@ -259,7 +259,7 @@ class ReportSettings(Schema):
 class PlatformSettings(Schema):
     name: Optional[Trimmed(1, 80)] = None
     supportEmail: Optional[Union[Literal[""], Email]] = None
-    privacyUrl: Optional[str] = None
+    privacyUrl: Optional[Annotated[str, StringConstraints(strip_whitespace=True, max_length=500)]] = None
     paymentInstructions: Optional[Annotated[str, StringConstraints(strip_whitespace=True, max_length=1000)]] = None
 
     @field_validator("privacyUrl")
@@ -281,14 +281,35 @@ class SecuritySettings(Schema):
     lockoutMinutes: Optional[Annotated[int, Field(ge=1, le=1440)]] = None
 
 
+class StoreProductIds(Schema):
+    apple: Optional[Annotated[str, StringConstraints(strip_whitespace=True, pattern=r"^[A-Za-z0-9._-]{1,200}$")]] = None
+    google: Optional[Annotated[str, StringConstraints(strip_whitespace=True, pattern=r"^[a-z0-9_.]{1,100}:[a-z0-9-]{1,63}$")]] = None
+
+
+class CycleProducts(Schema):
+    monthly: Optional[StoreProductIds] = None
+    annual: Optional[StoreProductIds] = None
+
+
+class ProductCatalog(Schema):
+    starter: Optional[CycleProducts] = None
+    pro: Optional[CycleProducts] = None
+
+
+class BillingSettings(Schema):
+    products: Optional[ProductCatalog] = None
+
+
 class SettingsBody(NotEmpty):
     currencies: Optional[Annotated[list[Currency], Field(min_length=1)]] = None
     defaultCurrency: Optional[Currency] = None
-    trialDays: Optional[Annotated[int, Field(ge=0, le=365)]] = None
+    # Free-trial length for store subscriptions. Match it in Play Console (offer free-trial-<days>d) and App Store Connect.
+    trialDays: Optional[Literal[7, 14, 30]] = None
     route: Optional[RouteSettings] = None
     reports: Optional[ReportSettings] = None
     platform: Optional[PlatformSettings] = None
     security: Optional[SecuritySettings] = None
+    billing: Optional[BillingSettings] = None
 
 
 @router.get("/settings")

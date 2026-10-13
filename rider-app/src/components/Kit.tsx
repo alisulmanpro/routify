@@ -1,4 +1,5 @@
 import { ActivityIndicator, Animated, Pressable, StyleSheet, Text, TextInput, View, type TextInputProps, type ViewStyle } from 'react-native';
+import { useRevealOnFocus } from './KeyboardAware';
 import { useEffect, useState } from 'react';
 import { colors, radius, spacing } from '../lib/theme';
 
@@ -31,10 +32,11 @@ export function Button({ title, onPress, variant = 'primary', disabled, loading 
 }
 
 export function Field({ label, error, ...props }: { label: string; error?: string } & TextInputProps) {
+  const reveal = useRevealOnFocus();
   return (
     <View style={{ marginBottom: spacing(4) }}>
       <Text style={s.label}>{label}</Text>
-      <TextInput style={[s.input, error && s.inputError]} placeholderTextColor={colors.faint} {...props} />
+      <TextInput style={[s.input, error && s.inputError]} placeholderTextColor={colors.faint} {...props} onFocus={(e) => { reveal(); props.onFocus?.(e); }} />
       {error ? <Text style={s.errorText}>{error}</Text> : null}
     </View>
   );
