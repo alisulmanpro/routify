@@ -7,7 +7,7 @@ import Pagination from '../components/Pagination';
 import Modal from '../components/Modal';
 import { useToast } from '../components/Toast';
 
-const STATUSES = ['trialing', 'active', 'past_due', 'expired', 'cancelled'] as const;
+const STATUSES = ['inactive', 'trialing', 'active', 'past_due', 'expired', 'cancelled'] as const;
 const PLANS = ['trial', 'starter', 'pro'] as const;
 
 export default function Subscriptions() {

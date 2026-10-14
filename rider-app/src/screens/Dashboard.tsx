@@ -8,6 +8,7 @@ import { todayKey } from '../lib/format';
 import { getRouteOrigin } from '../lib/location';
 import { Banner, Screen } from '../components/Kit';
 import { PButton } from '../components/Premium';
+import PlanNudge from '../components/PlanNudge';
 import { BRAND_MARK } from './Login';
 import { premium as c, premiumRadius as r, premiumShadow } from '../lib/theme';
 import { useNav } from '../lib/nav';
@@ -127,6 +128,7 @@ export default function Dashboard() {
         </View>
 
         {error ? <Banner text={error} /> : null}
+        <PlanNudge />
 
         <HeroCard />
 

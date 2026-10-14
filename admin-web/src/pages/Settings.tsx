@@ -62,7 +62,12 @@ export default function Settings() {
 
         <h3>Trial &amp; routing</h3>
         <div className="form-grid">
-          <label className="field-label">Trial length (days)<input className="input" type="number" min={0} value={settings.trialDays} onChange={(e) => setSettings({ ...settings, trialDays: Number(e.target.value) })} /></label>
+          <label className="field-label">Free trial (through Google Play / App Store)
+            <select className="input" value={settings.trialDays} onChange={(e) => setSettings({ ...settings, trialDays: Number(e.target.value) })}>
+              <option value={7}>7 days</option><option value={14}>14 days</option><option value={30}>30 days</option>
+            </select>
+            <small className="muted-small">Riders add a payment method in the store to start it. Keep Play Console offers (free-trial-7d / 14d / 30d) and the App Store introductory offer matching.</small>
+          </label>
           <label className="field-label">Default route preference
             <select className="input" value={settings.route.defaultPreference} onChange={(e) => setSettings({ ...settings, route: { ...settings.route, defaultPreference: e.target.value } })}>
               <option value="smart">Smart</option><option value="nearest_first">Nearest first</option><option value="shortest">Shortest</option>

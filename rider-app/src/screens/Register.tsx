@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
-import { KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { KeyboardAwareScrollView } from '../components/KeyboardAware';
 import { useAuth } from '../lib/auth';
 import { ApiRequestError, get } from '../lib/api';
 import type { Currency, PublicConfig } from '../lib/types';
@@ -37,12 +38,11 @@ export default function Register({ onGoLogin }: { onGoLogin: () => void }) {
 
   return (
     <Screen style={{ backgroundColor: c.background }}>
-      <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-        <ScrollView contentContainerStyle={{ padding: 24, paddingTop: 36 }} keyboardShouldPersistTaps="handled">
+        <KeyboardAwareScrollView contentContainerStyle={{ padding: 24, paddingTop: 36 }} keyboardShouldPersistTaps="handled">
           <BrandMark />
           <Text style={s.eyebrow}>Routify · Get started</Text>
           <Text style={s.title}>Create your rider account.</Text>
-          <Text style={s.subtitle}>Your own {config?.platformName || 'Routify'} account with a free trial.</Text>
+          <Text style={s.subtitle}>Your own {config?.platformName || 'Routify'} account. Then start your {config?.trialDays ? `${config.trialDays}-day ` : ''}free trial through Google Play or the App Store.</Text>
 
           <ErrorBanner text={error} />
           <PCard style={{ gap: 14 }}>
@@ -73,8 +73,7 @@ export default function Register({ onGoLogin }: { onGoLogin: () => void }) {
           <Pressable onPress={onGoLogin} style={{ alignItems: 'center', paddingVertical: 18 }}>
             <Text style={{ color: c.textSecondary, fontSize: 14 }}>Already have an account? <Text style={{ color: c.primary, fontWeight: '800' }}>Sign in</Text></Text>
           </Pressable>
-        </ScrollView>
-      </KeyboardAvoidingView>
+        </KeyboardAwareScrollView>
     </Screen>
   );
 }

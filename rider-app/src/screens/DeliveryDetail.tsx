@@ -1,5 +1,6 @@
 import { useCallback, useState } from 'react';
-import { Alert, Image, Linking, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Alert, Image, Linking, Pressable, StyleSheet, Text, View } from 'react-native';
+import { KeyboardAwareScrollView } from '../components/KeyboardAware';
 import * as ImagePicker from 'expo-image-picker';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useFocusEffect } from '../lib/useFocusEffect';
@@ -117,7 +118,7 @@ export default function DeliveryDetail({ id, onDone }: { id: string; onDone: () 
 
   return (
     <Screen style={{ backgroundColor: c.background }}>
-      <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 32, gap: 14 }}>
+      <KeyboardAwareScrollView contentContainerStyle={{ padding: 16, paddingBottom: 32, gap: 14 }}>
         {/* Parcel header */}
         <PCard accent>
           <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
@@ -232,7 +233,7 @@ export default function DeliveryDetail({ id, onDone }: { id: string; onDone: () 
             <Text style={{ color: c.danger, fontWeight: '700', fontSize: 13 }}>Delete delivery</Text>
           </Pressable>
         ) : null}
-      </ScrollView>
+      </KeyboardAwareScrollView>
     </Screen>
   );
 }

@@ -4,7 +4,7 @@ from __future__ import annotations
 from typing import Annotated, Literal, Optional
 
 from fastapi import APIRouter, Request
-from pydantic import Field
+from pydantic import Field, StringConstraints
 from starlette.responses import FileResponse
 
 from ..auth import authenticate
@@ -12,6 +12,7 @@ from ..errors import not_found
 from ..http import respond, today_key
 from ..security import verify_file_signature
 from ..services import auth_service as auth
+from ..services import billing
 from ..services import report_service as reports
 from ..services import rider_dashboard as dash
 from ..services import route_service as routes
@@ -202,3 +203,42 @@ async def request_change(request: Request):
 async def cancel(request: Request):
     actor = await authenticate(request, "rider")
     return respond(await subs.cancel_at_period_end(actor))
+
+
+# In-app purchases: the app buys through StoreKit / Play Billing, then reports the receipt here for verification.
+@subscriptions_router.get("/store")
+async def store_config(request: Request):
+    actor = await authenticate(request, "rider")
+    return respond(await billing.store_config(actor))
+
+
+class PurchaseBody(Schema):
+    store: Literal["apple", "google", "revenuecat", "mock"]
+    # apple: the transaction's signed JWS · google: the purchase token · revenuecat, mock: not used
+    receipt: Optional[Annotated[str, StringConstraints(strip_whitespace=True, min_length=10, max_length=20_000)]] = None
+    productId: Optional[Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200)]] = None
+    # Mock store only: start with a free trial, as a store free-trial offer would. Real stores report trials themselves.
+    trial: bool = False
+
+
+@subscriptions_router.post("/purchases")
+async def report_purchase(request: Request):
+    """Also used for "Restore purchases": reporting the same receipt again is harmless."""
+    actor = await authenticate(request, "rider")
+    body = (await validate(request, body=PurchaseBody))["body"]
+    await billing.verify_purchase(actor, body.store, receipt=body.receipt, product_id=body.productId, trial=body.trial)
+    return respond(await subs.get_mine(actor))
+
+
+class MockEventBody(Schema):
+    event: Literal["renew", "cancel", "resume", "fail_renewal", "grace", "recover", "expire", "refund"]
+
+
+@subscriptions_router.post("/mock/events")
+async def mock_store_event(request: Request):
+    """Test store only (never enabled in production): simulates what the real stores do over time."""
+    actor = await authenticate(request, "rider")
+    body = (await validate(request, body=MockEventBody))["body"]
+    await billing.simulate_mock_event(actor, body.event)
+    return respond(await subs.get_mine(actor))
+

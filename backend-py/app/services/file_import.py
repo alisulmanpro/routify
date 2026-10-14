@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import csv
 import io
+import zipfile
 from datetime import date, datetime
 from typing import Any, Optional
 
@@ -10,6 +11,24 @@ from ..errors import unprocessable
 from ..uploads import UploadedFile, detect_document_type
 from .pdf_import import extract_deliveries_from_text, extract_pdf_text, flag_duplicates
 from .subscription_service import assert_can_create_deliveries
+
+
+# A 10 MB upload may not unpack into gigabytes (zip bomb): real delivery sheets are a tiny fraction of these limits.
+MAX_UNZIPPED_BYTES = 100 * 1024 * 1024
+MAX_ZIP_ENTRIES = 2000
+MAX_COMPRESSION_RATIO = 200
+
+
+def _assert_safe_zip(data: bytes) -> None:
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+            entries = archive.infolist()
+    except (zipfile.BadZipFile, ValueError):
+        raise unprocessable("This file could not be read. Check that it is a valid Office document.", "INVALID_FILE") from None
+    total = sum(e.file_size for e in entries)
+    packed = sum(e.compress_size for e in entries) or 1
+    if len(entries) > MAX_ZIP_ENTRIES or total > MAX_UNZIPPED_BYTES or total / packed > MAX_COMPRESSION_RATIO:
+        raise unprocessable("This file is too large to import once unpacked. Split it into smaller files.", "FILE_TOO_COMPLEX")
 
 
 def _extract_from_word(data: bytes, ext: str) -> str:
@@ -88,6 +107,8 @@ def _extract_from_spreadsheet(data: bytes, ext: str) -> str:
 
 
 def _extract_text(data: bytes, ext: str) -> str:
+    if ext in ("docx", "xlsx"):
+        _assert_safe_zip(data)
     if ext == "pdf":
         return extract_pdf_text(data)[0]
     if ext in ("docx", "doc"):

@@ -39,17 +39,18 @@ def effective_status(sub: Any) -> str:
     if not sub:
         return "expired"
     status = str(sub.status)
-    if status in ("expired", "cancelled"):
+    if status in ("inactive", "expired", "cancelled"):
         return status
     return "expired" if sub.currentPeriodEnd < now() else status
 
 
-async def create_trial(user_id: str) -> Any:
+async def create_inactive_subscription(user_id: str) -> Any:
+    """A new rider starts with no plan: the free trial needs a payment method, so it starts through Google Play / the App Store
+    (length set by the admin in settings.trialDays). This row is what the store purchase or an admin payment then activates."""
     settings = await get_settings()
-    plan = await db.plan.find_unique(where={"key": "trial"})
     return await db.subscription.create(data={
-        "id": new_id(), "userId": user_id, "planKey": "trial", "billingCycle": "monthly", "status": "trialing", "price": 0,
-        "currency": plan.currency if plan else settings["defaultCurrency"], "currentPeriodEnd": now() + timedelta(days=settings["trialDays"]),
+        "id": new_id(), "userId": user_id, "planKey": "trial", "billingCycle": "monthly", "status": "inactive", "price": 0,
+        "currency": settings["defaultCurrency"], "currentPeriodEnd": now(),
     })
 
 
@@ -84,7 +85,33 @@ def serialize_subscription(s: Any) -> dict | None:
         "startedAt": s.startedAt, "currentPeriodEnd": s.currentPeriodEnd, "cancelAtPeriodEnd": s.cancelAtPeriodEnd,
         "pending": {"planKey": str(s.pendingPlanKey), "billingCycle": str(s.pendingBillingCycle) if s.pendingBillingCycle else None, "paymentId": s.pendingPaymentId}
         if s.pendingPlanKey else None,
+        "storeManaged": bool(s.storePurchaseId),
     }
+
+
+def serialize_store_purchase(p: Any) -> dict | None:
+    if not p:
+        return None
+    return {"store": p.store, "productId": p.productId, "status": p.status, "autoRenew": p.autoRenew, "expiresAt": p.expiresAt,
+            "testMode": p.environment != "production"}
+
+
+STORE_LABEL = {"apple": "the App Store", "google": "Google Play", "mock": "the test store"}
+
+
+async def live_store_purchase(subscription: Any) -> Any:
+    """The store purchase billing this subscription while it is live: the rider changes or cancels it in the store, not here."""
+    if not subscription or not subscription.storePurchaseId:
+        return None
+    purchase = await db.storepurchase.find_unique(where={"id": subscription.storePurchaseId})
+    return purchase if purchase and purchase.status in ("active", "grace", "past_due") else None
+
+
+async def _refuse_if_store_managed(subscription: Any) -> None:
+    purchase = await live_store_purchase(subscription)
+    if purchase:
+        raise conflict(f"Your plan is billed through {STORE_LABEL.get(purchase.store, purchase.store)}. "
+                       "Change or cancel it in your phone's subscription settings.", "STORE_MANAGED")
 
 
 async def get_mine(actor: dict) -> dict:
@@ -99,7 +126,8 @@ async def get_mine(actor: dict) -> dict:
     if not plan and subscription:
         plan = await db.plan.find_unique(where={"key": subscription.planKey})
     return {
-        "subscription": serialize_subscription(subscription), "plan": serialize_plan(plan) if plan else None,
+        "subscription": serialize_subscription(subscription), "store": serialize_store_purchase(await live_store_purchase(subscription)),
+        "plan": serialize_plan(plan) if plan else None,
         "plans": [serialize_plan(p) for p in plans], "usage": usage,
         "paymentInstructions": (await get_settings())["platform"]["paymentInstructions"],
     }
@@ -113,6 +141,8 @@ async def assert_can_create_deliveries(actor: dict, count: int = 1, client: Any 
     client = client or db
     subscription = await client.subscription.find_unique(where={"userId": actor["id"]})
     status = effective_status(subscription)
+    if status == "inactive":
+        raise AppError(403, "SUBSCRIPTION_REQUIRED", "Start your free trial or choose a plan to add deliveries.")
     if status not in ("trialing", "active"):
         message = ("Your last payment failed. Update your subscription to add deliveries." if status == "past_due"
                    else "Your subscription has expired. Upgrade to add new deliveries.")
@@ -156,6 +186,7 @@ async def request_change(actor: dict, plan_key: str, billing_cycle: str) -> dict
     subscription = await db.subscription.find_unique(where={"userId": actor["id"]})
     if not subscription:
         raise not_found("Subscription")
+    await _refuse_if_store_managed(subscription)
     await _fail_pending_payment(subscription)
     payment = await db.payment.create(data={
         "id": new_id(), "userId": actor["id"], "subscriptionId": subscription.id, "planKey": plan_key, "billingCycle": billing_cycle,
@@ -174,6 +205,7 @@ async def cancel_at_period_end(actor: dict) -> dict:
         raise not_found("Subscription")
     if subscription.planKey == "trial":
         raise conflict("A free trial simply ends on its own", "CANNOT_CANCEL_TRIAL")
+    await _refuse_if_store_managed(subscription)
     data: dict[str, Any] = {"cancelAtPeriodEnd": True}
     if subscription.pendingPaymentId:
         await _fail_pending_payment(subscription)

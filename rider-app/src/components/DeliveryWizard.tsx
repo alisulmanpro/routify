@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, Vibration, View } from 'react-native';
+import { ActivityIndicator, Platform, Pressable, ScrollView, StyleSheet, Text, Vibration, View } from 'react-native';
+import { KeyboardAwareScrollView, RevealingTextInput } from '../components/KeyboardAware';
 import { CameraView, useCameraPermissions, type BarcodeType } from 'expo-camera';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { post, ApiRequestError } from '../lib/api';
@@ -196,7 +197,7 @@ export default function DeliveryWizard({ mode, onCreated, onDone }: { mode: Mode
   }
 
   return (
-    <ScrollView contentContainerStyle={s.page} keyboardShouldPersistTaps="handled">
+    <KeyboardAwareScrollView contentContainerStyle={s.page} keyboardShouldPersistTaps="handled">
       <Progress step={step} />
 
       {step === REVIEW ? (
@@ -259,7 +260,7 @@ export default function DeliveryWizard({ mode, onCreated, onDone }: { mode: Mode
           {(value || typing) ? (
             <PCard style={{ marginTop: 14 }}>
               <Text style={s.sectionLabel}>{current.label}</Text>
-              <TextInput
+              <RevealingTextInput
                 value={value}
                 onChangeText={(t) => setValue(current.key, current.key === 'parcel' ? t.toUpperCase() : t)}
                 placeholder={`Type the ${current.label.toLowerCase()}`}
@@ -284,7 +285,7 @@ export default function DeliveryWizard({ mode, onCreated, onDone }: { mode: Mode
           </View>
         </>
       )}
-    </ScrollView>
+    </KeyboardAwareScrollView>
   );
 }
 

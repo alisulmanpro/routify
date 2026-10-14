@@ -41,7 +41,7 @@ export type Settings = {
 
 export type Overview = {
   metrics: { riders: number; ridersChangePct: number; activeRiders24h: number; activeRoutes: number; deliveriesToday: number; deliveriesWeek: number; deliveriesChangePct: number; subscriptionRevenueMonth: { currency: string; amount: number }[] };
-  subscriptions: { total: number; active: number; trialing: number; expired: number; pastDue: number; cancelled: number; byPlan: Record<string, number>; byCycle: Record<string, number> };
+  subscriptions: { total: number; active: number; trialing: number; expired: number; pastDue: number; cancelled: number; inactive: number; byPlan: Record<string, number>; byCycle: Record<string, number> };
   volume: { date: string; total: number; delivered: number; failed: number }[];
   liveRoutes: { id: string; rider: string; done: number; total: number; startedAt: string }[];
   recentDeliveries: Delivery[];

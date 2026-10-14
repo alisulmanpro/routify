@@ -1,12 +1,13 @@
 import { useState } from 'react';
-import { Image, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Image, Pressable, StyleSheet, Text, View } from 'react-native';
+import { KeyboardAwareScrollView } from '../components/KeyboardAware';
 import { useAuth } from '../lib/auth';
 import { ApiRequestError, API_URL } from '../lib/api';
 import { Screen } from '../components/Kit';
 import { ErrorBanner, PButton, PInput, SectionLabel, gradient } from '../components/Premium';
 import { premium as c } from '../lib/theme';
 
-export default function Login({ onGoRegister }: { onGoRegister: () => void }) {
+export default function Login({ onGoRegister, onForgot }: { onGoRegister: () => void; onForgot: (email: string) => void }) {
   const { login } = useAuth();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -27,8 +28,7 @@ export default function Login({ onGoRegister }: { onGoRegister: () => void }) {
 
   return (
     <Screen style={{ backgroundColor: c.background }}>
-      <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-        <ScrollView contentContainerStyle={s.page} keyboardShouldPersistTaps="handled">
+        <KeyboardAwareScrollView contentContainerStyle={s.page} keyboardShouldPersistTaps="handled">
           <View style={[s.glow, gradient('radial-gradient(circle at 50% 50%, rgba(124,92,255,0.30) 0%, rgba(5,11,24,0) 70%)')]} pointerEvents="none" />
           <Image source={LOGO} style={s.fullLogo} resizeMode="contain" accessibilityLabel="Routify: Plan, Deliver, Track" />
           <Text style={s.title}>Welcome back.</Text>
@@ -43,14 +43,16 @@ export default function Login({ onGoRegister }: { onGoRegister: () => void }) {
             <View>
               <SectionLabel>Password</SectionLabel>
               <PInput icon="lock-closed-outline" secureTextEntry autoComplete="password" value={password} onChangeText={setPassword} placeholder="••••••••" returnKeyType="go" onSubmitEditing={() => { if (email && password) void submit(); }} />
+              <Pressable onPress={() => onForgot(email.trim())} hitSlop={8} style={{ alignSelf: 'flex-end', marginTop: 10 }}>
+                <Text style={{ color: c.primary, fontSize: 13, fontWeight: '700' }}>Forgot password?</Text>
+              </Pressable>
             </View>
           </View>
           <PButton title="Sign in" icon="log-in-outline" onPress={submit} loading={busy} disabled={!email || !password} chevron style={{ marginTop: 22 }} />
           <Pressable onPress={onGoRegister} style={{ alignItems: 'center', paddingVertical: 18 }}>
             <Text style={{ color: c.textSecondary, fontSize: 14 }}>New here? <Text style={{ color: c.primary, fontWeight: '800' }}>Create an account</Text></Text>
           </Pressable>
-        </ScrollView>
-      </KeyboardAvoidingView>
+        </KeyboardAwareScrollView>
     </Screen>
   );
 }
