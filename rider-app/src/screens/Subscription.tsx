@@ -1,5 +1,5 @@
 import { useCallback, useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useFocusEffect } from '../lib/useFocusEffect';
 import { useNav } from '../lib/nav';
@@ -65,7 +65,7 @@ export default function Subscription() {
         {sub && sub.status !== 'inactive' ? (
           <CurrentPlan info={info} storeManaged={storeManaged} manualMode={!store} busy={busy}
             onCancel={() => run('cancel', async () => { await post('/subscriptions/cancel'); return reloadMine(); }, 'Could not cancel')}
-            onManage={() => info.store && openStoreSubscriptions(info.store.store, info.store.productId)}
+            onManage={() => { if (info.store) void openStoreSubscriptions(info.store.store, info.store.productId).then(load); }}
             onChangePlan={() => navigate('Paywall')} />
         ) : null}
 
@@ -123,7 +123,7 @@ function CurrentPlan({ info, storeManaged, manualMode, busy, onCancel, onManage,
 
       {storeManaged && purchase ? (
         <View style={s.billedBy}>
-          <MaterialCommunityIcons name={purchase.store === 'apple' ? 'apple' : purchase.store === 'google' ? 'google-play' : 'flask-outline'} size={15} color={c.textSecondary} />
+          <MaterialCommunityIcons name={purchase.store === 'apple' ? 'apple' : purchase.store === 'google' ? 'google-play' : purchase.store === 'revenuecat' ? (Platform.OS === 'ios' ? 'apple' : 'google-play') : 'flask-outline'} size={15} color={c.textSecondary} />
           <Text style={{ flex: 1, color: c.textSecondary, fontSize: 12 }}>Billed through {STORE_LABEL[purchase.store]}{purchase.autoRenew ? '' : ' · auto-renew off'}</Text>
           {purchase.testMode ? <Pill text="Test" tone="blue" /> : null}
         </View>

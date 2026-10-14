@@ -80,6 +80,14 @@ Play Developer API), a purchase can only ever belong to one rider, and store eve
 subscription back. Product IDs live in the `billing.products` platform setting (editable with `PUT /admin/settings`).
 Sandbox, license-tester and mock payments are marked `testMode` and left out of revenue totals.
 
+**RevenueCat.** With `PAYMENT_STORES=revenuecat`, the rider app buys through RevenueCat's SDK and paywall (Google Play,
+App Store, or RevenueCat's Test Store with a `test_` key). The app logs each rider in to RevenueCat with their Routify
+user id; after a purchase it calls `POST /subscriptions/purchases {store: "revenuecat"}` and the API reads that rider's
+`routify_pro` entitlement from RevenueCat's REST API with `REVENUECAT_SECRET_API_KEY` (never trusting the app).
+Webhooks to `/api/v1/billing/webhooks/revenuecat` (checked against `REVENUECAT_WEBHOOK_AUTH`) trigger the same re-read.
+RevenueCat product ids map onto the catalog's `revenuecat` ids (`monthly` → Pro monthly, `yearly` → Pro annual); other
+ids map by period (`…annual`/`…year…` → annual).
+
 **Free trial.** New riders start with no plan (`inactive`): there is no free trial without a card. The trial runs
 through the store, and its length is the `trialDays` platform setting (7, 14 or 30, set in the admin console). The
 stores run the trial themselves, so keep them matching: in Play Console give each base plan the offers

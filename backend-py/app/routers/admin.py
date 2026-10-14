@@ -284,6 +284,7 @@ class SecuritySettings(Schema):
 class StoreProductIds(Schema):
     apple: Optional[Annotated[str, StringConstraints(strip_whitespace=True, pattern=r"^[A-Za-z0-9._-]{1,200}$")]] = None
     google: Optional[Annotated[str, StringConstraints(strip_whitespace=True, pattern=r"^[a-z0-9_.]{1,100}:[a-z0-9-]{1,63}$")]] = None
+    revenuecat: Optional[Annotated[str, StringConstraints(strip_whitespace=True, pattern=r"^[A-Za-z0-9._:-]{1,200}$")]] = None
 
 
 class CycleProducts(Schema):

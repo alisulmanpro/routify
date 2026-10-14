@@ -46,8 +46,11 @@ def invalid_receipt(message: str = "The purchase could not be verified with the 
     return AppError(422, "INVALID_RECEIPT", message)
 
 
+STORE_LABELS = {"apple": "the App Store", "google": "Google Play", "revenuecat": "RevenueCat", "mock": "the test store"}
+
+
 def store_unavailable(store: str) -> AppError:
-    return AppError(503, "STORE_UNAVAILABLE", f"Could not reach {'the App Store' if store == 'apple' else 'Google Play'}. Please try again shortly.")
+    return AppError(503, "STORE_UNAVAILABLE", f"Could not reach {STORE_LABELS.get(store, store)}. Please try again shortly.")
 
 
 def account_token(user_id: str) -> str:

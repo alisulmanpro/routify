@@ -818,7 +818,7 @@ async def test_openapi_documents_every_body_parameter_and_lock(client):
     spec = app.openapi()
     public = {"/health", "/ready", "/api/v1/auth/register", "/api/v1/auth/login", "/api/v1/auth/refresh", "/api/v1/auth/logout",
               "/api/v1/auth/forgot-password", "/api/v1/auth/reset-password/verify", "/api/v1/auth/reset-password",
-              "/api/v1/billing/webhooks/apple", "/api/v1/billing/webhooks/google",
+              "/api/v1/billing/webhooks/apple", "/api/v1/billing/webhooks/google", "/api/v1/billing/webhooks/revenuecat",
               "/api/v1/config", "/api/v1/files/{kind}/{name}"}
     for route in fr.iter_route_contexts(app.routes):
         if not isinstance(route.original_route, fr.APIRoute):

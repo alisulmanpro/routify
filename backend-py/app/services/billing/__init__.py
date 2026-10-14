@@ -1,4 +1,4 @@
-"""In-app subscriptions through the App Store and Google Play (plus a mock store for testing).
+"""In-app subscriptions through the App Store and Google Play, directly or via RevenueCat (plus a mock store for testing).
 
 Flow: the app asks GET /subscriptions/store for product IDs and the rider's account token, buys through StoreKit or
 Play Billing, then sends the receipt to POST /subscriptions/purchases. The server verifies it with the store and
@@ -11,11 +11,11 @@ from ...config import env
 from ...db import db
 from ...errors import AppError
 from ..settings_service import get_settings
-from . import apple, google, mock
+from . import apple, google, mock, revenuecat
 from .base import LIVE_STATUSES, account_token, catalog
 from .sync import apply_state
 
-STORE_NAMES = {"apple": "the App Store", "google": "Google Play", "mock": "the test store"}
+STORE_NAMES = {"apple": "the App Store", "google": "Google Play", "revenuecat": "RevenueCat", "mock": "the test store"}
 
 
 def _require(store: str) -> None:
@@ -35,8 +35,11 @@ async def store_config(actor: dict) -> dict:
     days = settings["trialDays"]
     for item in products.get("google", []):
         item["trialOfferId"] = trial_offer_id(days)  # the base-plan offer the app asks Google Play for
-    return {"stores": list(env.payment_stores), "accountToken": account_token(actor["id"]), "products": products,
-            "trialEligible": trial_eligible, "trialDays": days}
+    config = {"stores": list(env.payment_stores), "accountToken": account_token(actor["id"]), "products": products,
+              "trialEligible": trial_eligible, "trialDays": days}
+    if "revenuecat" in env.payment_stores:
+        config["entitlement"] = env.REVENUECAT_ENTITLEMENT  # the app checks and unlocks this entitlement
+    return config
 
 
 def trial_offer_id(days: int) -> str:
@@ -56,6 +59,9 @@ async def verify_purchase(actor: dict, store: str, *, receipt: str | None, produ
         trial = trial and not await _has_purchased(actor["id"], "mock")
         days = (await get_settings())["trialDays"] if trial else 0
         await apply_state(mock.purchase(actor["id"], product_id, trial_days=days), actor["id"])
+        return
+    if store == "revenuecat":
+        await sync_revenuecat(actor["id"])
         return
     if not receipt:
         raise AppError(400, "VALIDATION_ERROR", "receipt is required")
@@ -91,4 +97,19 @@ async def handle_google_webhook(authorization: str | None, envelope: dict) -> No
     purchase = await apply_state(state, None)
     if purchase and state.status in LIVE_STATUSES and google.needs_acknowledgement(data):
         await google.acknowledge(state.product_id.split(":")[0], state.purchase_key)
+
+
+async def sync_revenuecat(user_id: str) -> None:
+    """Reads the rider's entitlement from RevenueCat (never from the app) and applies it."""
+    state = await revenuecat.current_state(user_id, await get_settings())
+    if state:
+        await apply_state(state, user_id)
+
+
+async def handle_revenuecat_webhook(authorization: str | None, event: dict) -> None:
+    _require("revenuecat")
+    revenuecat.verify_webhook(authorization)
+    for user_id in revenuecat.webhook_user_ids(event):
+        if await db.user.find_first(where={"id": user_id, "role": "rider"}):
+            await sync_revenuecat(user_id)
 

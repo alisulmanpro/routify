@@ -10,6 +10,10 @@ import { colors, premium, spacing } from './src/lib/theme';
 import Login from './src/screens/Login';
 import Register from './src/screens/Register';
 import ForgotPassword from './src/screens/ForgotPassword';
+import { configureRevenueCat, identifyRider } from './src/lib/revenuecat';
+
+// Once per app launch (no-op in Expo Go or without a key).
+configureRevenueCat();
 import Dashboard from './src/screens/Dashboard';
 import DeliveriesList from './src/screens/DeliveriesList';
 import RouteNavigation from './src/screens/RouteNavigation';
@@ -90,6 +94,9 @@ function TabBar() {
 
 function AuthedApp() {
   const insets = useSafeAreaInsets();
+  const { user } = useAuth();
+  // Purchases follow the Routify account, so RevenueCat knows the rider by their user id.
+  useEffect(() => { if (user?.id) void identifyRider(user.id); }, [user?.id]);
 
   return (
     <NavProvider>

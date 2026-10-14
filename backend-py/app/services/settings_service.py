@@ -21,8 +21,8 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "billing": {"products": {
         "starter": {"monthly": {"apple": "routify.starter.monthly", "google": "routify_starter:monthly"},
                     "annual": {"apple": "routify.starter.annual", "google": "routify_starter:annual"}},
-        "pro": {"monthly": {"apple": "routify.pro.monthly", "google": "routify_pro:monthly"},
-                "annual": {"apple": "routify.pro.annual", "google": "routify_pro:annual"}},
+        "pro": {"monthly": {"apple": "routify.pro.monthly", "google": "routify_pro:monthly", "revenuecat": "monthly"},
+                "annual": {"apple": "routify.pro.annual", "google": "routify_pro:annual", "revenuecat": "yearly"}},
     }},
 }
 

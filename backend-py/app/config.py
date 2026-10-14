@@ -114,6 +114,9 @@ class Settings:
     GOOGLE_SERVICE_ACCOUNT_FILE: str | None
     GOOGLE_PUBSUB_AUDIENCE: str | None
     GOOGLE_PUBSUB_SERVICE_ACCOUNT: str | None
+    REVENUECAT_SECRET_API_KEY: str | None
+    REVENUECAT_WEBHOOK_AUTH: str | None
+    REVENUECAT_ENTITLEMENT: str
 
     @property
     def is_production(self) -> bool:
@@ -188,6 +191,9 @@ def load_settings() -> Settings:
         GOOGLE_SERVICE_ACCOUNT_FILE=_str("GOOGLE_SERVICE_ACCOUNT_FILE"),
         GOOGLE_PUBSUB_AUDIENCE=_str("GOOGLE_PUBSUB_AUDIENCE"),
         GOOGLE_PUBSUB_SERVICE_ACCOUNT=_str("GOOGLE_PUBSUB_SERVICE_ACCOUNT"),
+        REVENUECAT_SECRET_API_KEY=_str("REVENUECAT_SECRET_API_KEY"),
+        REVENUECAT_WEBHOOK_AUTH=_str("REVENUECAT_WEBHOOK_AUTH", min_len=16),
+        REVENUECAT_ENTITLEMENT=_str("REVENUECAT_ENTITLEMENT", "routify_pro") or "routify_pro",
     )
 
     if _problems:
@@ -203,7 +209,7 @@ def load_settings() -> Settings:
     return settings
 
 
-PAYMENT_STORES = ("mock", "apple", "google")
+PAYMENT_STORES = ("mock", "apple", "google", "revenuecat")
 
 
 def _stores(is_production: bool) -> tuple[str, ...]:
@@ -229,6 +235,11 @@ def _check_payments(settings: Settings) -> None:
                    if not getattr(settings, n)]
         if missing:
             raise ConfigError(f"{', '.join(missing)} required when PAYMENT_STORES includes google")
+    if "revenuecat" in stores:
+        if not settings.REVENUECAT_SECRET_API_KEY or not settings.REVENUECAT_WEBHOOK_AUTH:
+            raise ConfigError("REVENUECAT_SECRET_API_KEY and REVENUECAT_WEBHOOK_AUTH are required when PAYMENT_STORES includes revenuecat")
+        if not settings.REVENUECAT_SECRET_API_KEY.startswith("sk_"):
+            raise ConfigError("REVENUECAT_SECRET_API_KEY must be a secret key (sk_...), never the app's public SDK key")
 
 
 def _check_email(settings: Settings) -> None:

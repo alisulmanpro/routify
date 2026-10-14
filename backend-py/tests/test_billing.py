@@ -376,3 +376,105 @@ async def test_google_products_name_the_trial_offer(client, stores):
     config = (await client.get("/api/v1/subscriptions/store", headers=auth)).json()["data"]
     assert all(p["trialOfferId"] == f"free-trial-{config['trialDays']}d" for p in config["products"]["google"])
 
+
+
+# ---------------------------------------------------------------- RevenueCat (REST API stubbed)
+
+from app.services.billing import revenuecat  # noqa: E402
+
+RC_AUTH = "Bearer test-webhook-secret-123456"
+
+
+@pytest.fixture
+def rc(monkeypatch):
+    """Turns RevenueCat on and serves each rider's subscriber JSON from a dict instead of api.revenuecat.com."""
+    saved = (env.payment_stores, env.REVENUECAT_SECRET_API_KEY, env.REVENUECAT_WEBHOOK_AUTH)
+    object.__setattr__(env, "payment_stores", ("mock", "revenuecat"))
+    object.__setattr__(env, "REVENUECAT_SECRET_API_KEY", "sk_test")
+    object.__setattr__(env, "REVENUECAT_WEBHOOK_AUTH", RC_AUTH)
+    subscribers: dict[str, dict] = {}
+
+    async def fetch(app_user_id):
+        return subscribers.get(app_user_id, {})
+
+    monkeypatch.setattr(revenuecat, "fetch_subscriber", fetch)
+    yield subscribers
+    for name, value in zip(("payment_stores", "REVENUECAT_SECRET_API_KEY", "REVENUECAT_WEBHOOK_AUTH"), saved):
+        object.__setattr__(env, name, value)
+
+
+def rc_subscriber(product="monthly", days=30, period="normal", store="test_store", tx="tx-1", **extra):
+    iso = (now() + timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return {"entitlements": {"routify_pro": {"expires_date": iso, "product_identifier": product, "purchase_date": "2026-10-01T00:00:00Z"}},
+            "subscriptions": {product: {"expires_date": iso, "period_type": period, "store": store, "is_sandbox": True,
+                                        "store_transaction_id": tx, "unsubscribe_detected_at": None, "billing_issues_detected_at": None,
+                                        "refunded_at": None, **extra}}}
+
+
+async def rc_webhook(client, user_id, auth=RC_AUTH):
+    return await client.post("/api/v1/billing/webhooks/revenuecat", headers={"Authorization": auth} if auth else {},
+                             json={"api_version": "1.0", "event": {"type": "RENEWAL", "app_user_id": user_id, "id": "evt-1"}})
+
+
+async def test_revenuecat_purchase_trial_renewal_and_refund(client, rc):
+    body, auth = await rider(client, "rc-rider@example.com", subscribed=False)
+    uid = body["user"]["id"]
+    config = (await client.get("/api/v1/subscriptions/store", headers=auth)).json()["data"]
+    assert config["entitlement"] == "routify_pro"
+    assert {(p["productId"], p["billingCycle"]) for p in config["products"]["revenuecat"]} == {("monthly", "monthly"), ("yearly", "annual")}
+
+    # The app says "I bought something": the server only believes RevenueCat's own record.
+    assert (await client.post("/api/v1/subscriptions/purchases", headers=auth, json={"store": "revenuecat"})).json()["data"]["subscription"]["status"] == "inactive"
+    rc[uid] = rc_subscriber(period="trial", days=7)
+    sub = (await client.post("/api/v1/subscriptions/purchases", headers=auth, json={"store": "revenuecat"})).json()["data"]["subscription"]
+    assert sub["status"] == "trialing" and sub["planKey"] == "pro" and sub["billingCycle"] == "monthly"
+    assert await db.payment.count(where={"userId": uid}) == 0
+
+    rc[uid] = rc_subscriber(product="yearly", days=365, tx="tx-2")  # trial converted to yearly, reported by webhook
+    assert (await rc_webhook(client, uid)).status_code == 200
+    sub = (await mine(client, auth))["subscription"]
+    assert sub["status"] == "active" and sub["billingCycle"] == "annual"
+    payment = await db.payment.find_first(where={"userId": uid, "provider": "revenuecat"})
+    assert payment and payment.testMode  # Test Store purchases are never revenue
+
+    rc[uid] = rc_subscriber(product="yearly", days=365, tx="tx-2", refunded_at="2026-10-14T00:00:00Z")
+    await rc_webhook(client, uid)
+    assert (await mine(client, auth))["subscription"]["status"] == "expired"
+    assert await db.payment.count(where={"userId": uid, "status": "refunded"}) == 1
+
+
+async def test_revenuecat_store_specific_product_ids_map_by_period(client, rc):
+    body, auth = await rider(client, "rc-ids@example.com", subscribed=False)
+    rc[body["user"]["id"]] = rc_subscriber(product="routify_pro:annual", store="play_store")
+    sub = (await client.post("/api/v1/subscriptions/purchases", headers=auth, json={"store": "revenuecat"})).json()["data"]["subscription"]
+    assert sub["planKey"] == "pro" and sub["billingCycle"] == "annual"
+
+
+async def test_revenuecat_webhook_requires_its_authorization(client, rc):
+    body, _ = await rider(client, "rc-auth@example.com", subscribed=False)
+    rc[body["user"]["id"]] = rc_subscriber()
+    for bad in (None, "Bearer wrong", RC_AUTH + "x"):
+        res = await rc_webhook(client, body["user"]["id"], auth=bad)
+        assert res.status_code == 401 and res.json()["error"]["code"] == "INVALID_WEBHOOK"
+    assert not await db.storepurchase.count(where={"userId": body["user"]["id"]})
+    # Anonymous / unknown ids (e.g. the dashboard's test event) are acknowledged and ignored.
+    assert (await rc_webhook(client, "$RCAnonymousID:abc")).status_code == 200
+    assert (await rc_webhook(client, "0123456789abcdef01234567")).status_code == 200
+
+
+def test_revenuecat_needs_a_secret_key():
+    import os
+
+    from app.config import ConfigError, load_settings
+
+    saved = {k: os.environ.get(k) for k in ("PAYMENT_STORES", "REVENUECAT_SECRET_API_KEY", "REVENUECAT_WEBHOOK_AUTH")}
+    os.environ.update(PAYMENT_STORES="revenuecat", REVENUECAT_SECRET_API_KEY="test_PublicSdkKey", REVENUECAT_WEBHOOK_AUTH=RC_AUTH)
+    try:
+        with pytest.raises(ConfigError, match="secret key"):
+            load_settings()
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v

@@ -1,5 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { get, post, setAuthChangeHandler, setTokens, getTokens, ApiRequestError } from './api';
+import { forgetRider } from './revenuecat';
 import type { User, Currency } from './types';
 
 type AuthState = { user: User | null; loading: boolean };
@@ -48,6 +49,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const logout = useCallback(async () => {
+    await forgetRider();
     const tokens = await getTokens();
     try { await post('/auth/logout', { refreshToken: tokens?.refreshToken, client: 'mobile' }); } catch { /* clear locally regardless */ }
     await setTokens(null);

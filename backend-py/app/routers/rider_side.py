@@ -213,8 +213,8 @@ async def store_config(request: Request):
 
 
 class PurchaseBody(Schema):
-    store: Literal["apple", "google", "mock"]
-    # apple: the transaction's signed JWS · google: the purchase token · mock: not used
+    store: Literal["apple", "google", "revenuecat", "mock"]
+    # apple: the transaction's signed JWS · google: the purchase token · revenuecat, mock: not used
     receipt: Optional[Annotated[str, StringConstraints(strip_whitespace=True, min_length=10, max_length=20_000)]] = None
     productId: Optional[Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200)]] = None
     # Mock store only: start with a free trial, as a store free-trial offer would. Real stores report trials themselves.

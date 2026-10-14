@@ -1,10 +1,15 @@
 import { Linking, Platform } from 'react-native';
+import RevenueCatUI from 'react-native-purchases-ui';
+import { revenueCatAvailable, syncWithServer } from './revenuecat';
 import { get, post } from './api';
 import type { BillingCycle, PaidPlanKey, StoreConfig, StoreName, SubscriptionInfo } from './types';
 
 /**
  * In-app subscriptions. The plan is bought through the phone's store (Google Play on Android, the App Store on iPhone)
- * and the receipt is sent to the API, which verifies it with the store before activating anything.
+ * and the API verifies it with the store before activating anything.
+ *
+ * With RevenueCat (lib/revenuecat.ts) enabled on the API and a development/release build, purchases go through
+ * RevenueCat's SDK and paywall. In Expo Go, where RevenueCat's native modules are missing, the test store is used.
  *
  * Real store purchases need the expo-iap native module, which only runs in a development build (not Expo Go).
  * Until it is added, NATIVE_STORE_READY stays false and the app buys through the server's test store ("mock"),
@@ -13,7 +18,8 @@ import type { BillingCycle, PaidPlanKey, StoreConfig, StoreName, SubscriptionInf
 const NATIVE_STORE_READY = false;
 const ANDROID_PACKAGE = 'com.azaan890.routify';
 
-export const STORE_LABEL: Record<StoreName, string> = { apple: 'the App Store', google: 'Google Play', mock: 'the test store' };
+const PHONE_STORE = Platform.OS === 'ios' ? 'the App Store' : 'Google Play';
+export const STORE_LABEL: Record<StoreName, string> = { apple: 'the App Store', google: 'Google Play', revenuecat: PHONE_STORE, mock: 'the test store' };
 /** The free-trial length the admin chose (7, 14 or 30 days): "free for 7 days" / "free for one month". */
 export const trialLabel = (days: number) => (days === 30 ? 'one month' : `${days} days`);
 /** The same length as an adjective: "your 7-day free trial" / "your one-month free trial". */
@@ -23,6 +29,7 @@ export const loadStoreConfig = async () => (await get<StoreConfig>('/subscriptio
 
 /** The store this phone buys through, or null when the server has no store this app can use. */
 export function pickStore(config: StoreConfig): StoreName | null {
+  if (config.stores.includes('revenuecat') && revenueCatAvailable()) return 'revenuecat';
   const native: StoreName | null = Platform.OS === 'ios' ? 'apple' : Platform.OS === 'android' ? 'google' : null;
   if (native && NATIVE_STORE_READY && config.stores.includes(native)) return native;
   return config.stores.includes('mock') ? 'mock' : null;
@@ -44,8 +51,20 @@ export async function restore(store: StoreName): Promise<SubscriptionInfo> {
 export type MockEvent = 'renew' | 'cancel' | 'resume' | 'fail_renewal' | 'grace' | 'recover' | 'expire' | 'refund';
 export const mockEvent = async (event: MockEvent) => (await post<SubscriptionInfo>('/subscriptions/mock/events', { event })).data;
 
-/** Store subscriptions are changed and cancelled in the store itself, never inside the app. */
-export function openStoreSubscriptions(store: StoreName, productId?: string) {
+/** Store subscriptions are changed and cancelled in the store itself (or RevenueCat's Customer Center), never inside the app. */
+export async function openStoreSubscriptions(store: StoreName, productId?: string) {
+  if (store === 'revenuecat') {
+    try {
+      // Customer Center: manage, cancel, restore, and (iOS) request a refund. Re-sync afterwards in case anything changed.
+      await RevenueCatUI.presentCustomerCenter({ callbacks: { onRestoreCompleted: () => { void syncWithServer(); } } });
+      await syncWithServer();
+      return;
+    } catch {
+      // Customer Center unavailable (e.g. not on the RevenueCat plan that includes it): fall back to the store's own page.
+      return Linking.openURL(Platform.OS === 'ios' ? 'https://apps.apple.com/account/subscriptions'
+        : `https://play.google.com/store/account/subscriptions?package=${ANDROID_PACKAGE}`);
+    }
+  }
   if (store === 'apple') return Linking.openURL('https://apps.apple.com/account/subscriptions');
   if (store === 'google') {
     const sku = productId ? `&sku=${encodeURIComponent(productId.split(':')[0])}` : '';

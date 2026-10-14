@@ -8,6 +8,7 @@ import type { BillingCycle, PaidPlanKey, Plan, StoreConfig, SubscriptionInfo } f
 import { money } from '../lib/format';
 import { annualSaving, buy, loadStoreConfig, pickStore, restore, STORE_LABEL, trialLabel } from '../lib/billing';
 import { Screen } from '../components/Kit';
+import RevenueCatPaywall from '../components/RevenueCatPaywall';
 import { DARK_ON_PRIMARY, ErrorBanner, PButton, Pill, PRIMARY_GRADIENT, gradient, type McName } from '../components/Premium';
 import { premium as c, premiumRadius as r } from '../lib/theme';
 
@@ -51,6 +52,10 @@ export default function Paywall() {
         {error ? <ErrorBanner text={error} /> : <Text style={{ color: c.textSecondary }}>Loading…</Text>}
       </Screen>
     );
+  }
+  // RevenueCat: its own paywall, designed in the RevenueCat dashboard (offering, prices and trial come from the store).
+  if (store === 'revenuecat') {
+    return <Screen style={{ backgroundColor: c.background }}><RevenueCatPaywall onDone={goBack} /></Screen>;
   }
   if (!store || !selected) {
     return (
