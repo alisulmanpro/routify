@@ -58,16 +58,19 @@ async def overview(days: int = 7) -> dict:
         db.delivery.group_by(by=["serviceDate", "status"], where={"serviceDate": {"gte": since, "lte": today}}, count=True),
         db.subscription.find_many(where={"createdAt": {"gte": day30}}),
         db.payment.find_many(where={"status": "succeeded", "paidAt": {"gte": day30}}),
-        db.payment.group_by(by=["currency"], where={"status": "succeeded", "paidAt": {"gte": month_start}}, sum={"amount": True}),
+        db.payment.group_by(by=["currency"], where={"status": "succeeded", "testMode": False, "paidAt": {"gte": month_start}}, sum={"amount": True}),
         db.delivery.find_many(order=[{"createdAt": "desc"}, {"id": "desc"}], take=8),
         db.route.find_many(where={"status": "active"}, order=[{"startedAt": "desc"}, {"id": "desc"}], take=6),
     )
 
-    subs = {"total": 0, "active": 0, "trialing": 0, "expired": 0, "pastDue": 0, "cancelled": 0,
+    subs = {"total": 0, "active": 0, "trialing": 0, "expired": 0, "pastDue": 0, "cancelled": 0, "inactive": 0,
             "byPlan": {"trial": 0, "starter": 0, "pro": 0}, "byCycle": {"monthly": 0, "annual": 0}}
     for g in sub_groups:
         count, status = g["_count"]["_all"], str(g["status"])
         subs["total"] += count
+        if status == "inactive":  # signed up, never started a plan: not on any plan
+            subs["inactive"] += count
+            continue
         subs["byPlan"][str(g["planKey"])] += count
         if status == "active":
             subs["active"] += count
@@ -243,7 +246,7 @@ def serialize_payment(p: Any, rider_name: str | None = None) -> dict:
     return {
         "id": p.id, "userId": p.userId, "riderName": rider_name, "planKey": str(p.planKey), "billingCycle": str(p.billingCycle),
         "amount": p.amount, "currency": p.currency, "status": str(p.status), "provider": p.provider, "providerRef": p.providerRef,
-        "paidAt": p.paidAt, "createdAt": p.createdAt,
+        "storeTransactionId": p.storeTransactionId, "testMode": p.testMode, "paidAt": p.paidAt, "createdAt": p.createdAt,
     }
 
 
@@ -259,7 +262,8 @@ async def list_payments(q: dict) -> tuple[list[dict], dict, list[dict]]:
     payments, total, totals = await asyncio.gather(
         db.payment.find_many(where=where, order=[{"createdAt": "desc"}, {"id": "desc"}], skip=skip, take=limit),
         db.payment.count(where=where),
-        db.payment.group_by(by=["status", "currency"], count=True, sum={"amount": True}),
+        # Sandbox, test-card and mock payments are listed but never counted as revenue.
+        db.payment.group_by(by=["status", "currency"], where={"testMode": False}, count=True, sum={"amount": True}),
     )
     riders = await user_names([p.userId for p in payments])
     return (

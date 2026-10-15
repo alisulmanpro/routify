@@ -12,16 +12,21 @@ from app.services import geocoding_service
 PASSWORD = "longenough1"
 
 
-async def register(client, email, name="Rider", phone="+92 300 1112223", currency="USD"):
-    res = await client.post("/api/v1/auth/register", json={"fullName": name, "phone": phone, "email": email, "password": PASSWORD,
+async def register(client, email, name="Rider", currency="USD"):
+    res = await client.post("/api/v1/auth/register", json={"fullName": name, "email": email, "password": PASSWORD,
                                                            "confirmPassword": PASSWORD, "currency": currency})
     return res
 
 
-async def rider(client, email, **kw):
+async def rider(client, email, *, subscribed=True, **kw):
+    """A signed-up rider. New accounts start with no plan; `subscribed` puts them on a running free-trial plan
+    (as a store trial would), so tests about deliveries and routes can get straight to work."""
     res = await register(client, email, **kw)
     assert res.status_code == 201, res.text
     body = res.json()["data"]
+    if subscribed:
+        await db.subscription.update_many(where={"userId": body["user"]["id"]},
+                                          data={"status": "trialing", "currentPeriodEnd": datetime.now(timezone.utc) + timedelta(days=14)})
     return body, {"Authorization": f"Bearer {body['accessToken']}"}
 
 
@@ -37,7 +42,7 @@ def delivery(tid, raw="Somewhere real enough", **extra):
 
 
 async def test_rejects_weak_passwords_and_enforces_email_uniqueness(client):
-    weak = await client.post("/api/v1/auth/register", json={"fullName": "A B", "phone": "+92 300 1112223", "email": "weak@example.com", "password": "123", "confirmPassword": "123", "currency": "USD"})
+    weak = await client.post("/api/v1/auth/register", json={"fullName": "A B", "email": "weak@example.com", "password": "123", "confirmPassword": "123", "currency": "USD"})
     assert weak.status_code == 400
     assert (await register(client, "dup@example.com")).status_code == 201
     dup = await register(client, "dup@example.com")
@@ -277,7 +282,7 @@ async def test_admin_records_manual_payment_and_activates_subscription(client):
 
 
 async def test_rider_confirms_detected_city_and_lookups_are_scoped(client):
-    _, auth = await rider(client, "area-rider@example.com", phone="+44 7700 900123", currency="GBP")
+    _, auth = await rider(client, "area-rider@example.com", currency="GBP")
     london = {"city": "London", "country": "United Kingdom", "countryCode": "gb", "latitude": 51.5072, "longitude": -0.1276}
     seen = []
     try:

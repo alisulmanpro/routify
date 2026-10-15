@@ -16,6 +16,12 @@ from .http import dumps
 from .logger import log
 
 _REQUEST_ID_RE = re.compile(r"^[\w-]{8,64}$")
+_SECRET_QUERY = re.compile(r"(?i)(?<![\w])(sig|token|code|refreshToken|password)=[^&]*")
+
+
+def _loggable_url(raw: str) -> str:
+    """The access log keeps the path and query but not credentials such as a signed URL's `sig`."""
+    return _SECRET_QUERY.sub(lambda m: f"{m.group(1)}=[redacted]", raw)
 
 # The same defaults helmet() applied in the Node API.
 HELMET_HEADERS = {
@@ -67,6 +73,12 @@ async def _send_json(send: Send, status: int, body: bytes, extra: dict | None = 
     await send({"type": "http.response.body", "body": body})
 
 
+def _raw_url(scope: Scope) -> str:
+    query = scope.get("query_string", b"")
+    raw = scope.get("raw_path", b"").decode(errors="replace")
+    return f"{raw}?{query.decode(errors='replace')}" if query and raw and "?" not in raw else raw
+
+
 class EdgeMiddleware:
     """Outermost layer: request id, access log, security headers, trailing-slash tolerance and last-resort error handling."""
 
@@ -110,7 +122,7 @@ class EdgeMiddleware:
         finally:
             status = status_holder["status"]
             level = logging.ERROR if status >= 500 else logging.WARNING if status >= 400 else logging.INFO
-            log(level, "request completed", reqId=request_id, method=scope.get("method"), url=scope.get("raw_path", b"").decode(errors="replace") or path,
+            log(level, "request completed", reqId=request_id, method=scope.get("method"), url=_loggable_url(_raw_url(scope)) or path,
                 statusCode=status, responseTime=round((time.perf_counter() - started) * 1000))
 
 
@@ -184,6 +196,8 @@ upload_limiter = RateLimiter("upload", 15 * 60, 120)
 geocode_limiter = RateLimiter("geocode", 15 * 60, 200, "Too many address checks. Wait a moment and try again.")
 # Registration has to say when an email is taken (it signs the rider straight in), so cap how often one IP can learn that.
 email_taken_limiter = RateLimiter("email-taken", 60 * 60, 5, "Too many sign-up attempts. Please try again later or sign in instead.")
+# Keyed by the email address, not the IP: caps the codes one inbox can receive.
+reset_email_limiter = RateLimiter("reset-email", 60 * 60, 5, "Too many reset requests for this email. Please try again later.")
 
 
 async def limit(request: Request, limiter: RateLimiter) -> None:

@@ -76,6 +76,8 @@ enum BillingCycle {
 }
 
 enum SubscriptionStatus {
+  // Signed up but never started a plan: there is no free trial without a card, it starts through the store.
+  inactive
   trialing
   active
   past_due
@@ -98,7 +100,8 @@ enum AuditStatus {
 model User {
   id                   String          @id @db.VarChar(24)
   fullName             String          @db.VarChar(120)
-  phone                String          @db.VarChar(32)
+  // No longer asked for at sign-up; kept (nullable) for older accounts and an optional profile edit.
+  phone                String?         @db.VarChar(32)
   email                String          @unique @db.VarChar(254)
   passwordHash         String
   role                 Role
@@ -130,6 +133,8 @@ model User {
   subscription  Subscription?
   payments      Payment[]
   refreshTokens RefreshToken[]
+  passwordResets PasswordReset[]
+  storePurchases StorePurchase[]
 
   @@index([role])
   @@index([status])
@@ -279,6 +284,8 @@ model Subscription {
   pendingPlanKey     PlanKey?
   pendingBillingCycle BillingCycle?
   pendingPaymentId   String?            @db.VarChar(24)
+  // Set while the plan is billed through the App Store / Google Play: the store, not the rider's app, then changes it.
+  storePurchaseId    String?            @db.VarChar(24)
   createdAt          DateTime           @default(now())
   updatedAt          DateTime           @updatedAt
 
@@ -302,8 +309,12 @@ model Payment {
   amount         Float
   currency       String        @db.VarChar(3)
   status         PaymentStatus @default(pending)
-  provider       String        @default("manual")
+  provider       String        @default("manual") // manual | apple | google | mock
   providerRef    String?
+  // The store's id for this billing period (Apple transactionId / Google order id), so a replayed receipt never pays twice.
+  storeTransactionId String?   @unique @db.VarChar(200)
+  // Sandbox / test-card / mock payments: shown to admins but never counted as revenue.
+  testMode       Boolean       @default(false)
   paidAt         DateTime?
   createdAt      DateTime      @default(now())
   updatedAt      DateTime      @updatedAt
@@ -331,6 +342,48 @@ model RefreshToken {
   @@index([family])
   @@index([expiresAt])
   @@map("refresh_tokens")
+}
+
+// An App Store / Google Play subscription, kept in sync from verified receipts and the stores' server notifications.
+model StorePurchase {
+  id           String       @id @db.VarChar(24)
+  userId       String       @db.VarChar(24)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  store        String       @db.VarChar(16) // apple | google | mock
+  // Stable id of the subscription at the store: Apple originalTransactionId, Google purchaseToken.
+  purchaseKey  String       @db.VarChar(512)
+  productId    String       @db.VarChar(200)
+  planKey      PlanKey
+  billingCycle BillingCycle
+  status       String       @db.VarChar(16) // active | grace | past_due | expired | revoked
+  autoRenew    Boolean      @default(true)
+  expiresAt    DateTime
+  environment  String       @db.VarChar(16) // production | sandbox | mock
+  // Store events can arrive out of order: an older event never overwrites a newer state.
+  lastEventAt  DateTime
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+
+  @@unique([store, purchaseKey])
+  @@index([userId])
+  @@map("store_purchases")
+}
+
+// One-time password reset codes. Only an HMAC of the code is stored; a code dies when used, replaced, expired or guessed wrong too often.
+model PasswordReset {
+  id        String    @id @db.VarChar(24)
+  userId    String    @db.VarChar(24)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  codeHash  String    @db.VarChar(64)
+  attempts  Int       @default(0)
+  expiresAt DateTime
+  usedAt    DateTime?
+  ip        String?   @db.VarChar(64)
+  createdAt DateTime  @default(now())
+
+  @@index([userId, createdAt(sort: Desc)])
+  @@index([expiresAt])
+  @@map("password_resets")
 }
 
 model AuditLog {

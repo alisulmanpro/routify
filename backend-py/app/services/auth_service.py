@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import hashlib
+import hmac
+import secrets
 import uuid
 from datetime import timedelta
 from typing import Any
 
 from prisma.errors import UniqueViolationError
 
+from ..background import spawn
 from ..config import env
 from ..db import db
 from ..errors import AppError, conflict, forbidden, unauthorized, unprocessable, validation_error
@@ -14,8 +18,10 @@ from ..ids import new_id
 from ..security import generate_refresh_token, hash_password, hash_password_sync, hash_token, sign_access_token, verify_password
 from .audit_service import audit
 from .geocoding_service import detect_service_area, find_service_area
+from .mailer import send_email, send_in_background
+from .mailer import templates as emails
 from .settings_service import get_settings
-from .subscription_service import create_trial
+from .subscription_service import create_inactive_subscription
 
 # Same cost as real hashes, so a missing account takes as long to reject as a wrong password.
 DUMMY_HASH = hash_password_sync("not-a-real-password", env.BCRYPT_ROUNDS)
@@ -50,10 +56,11 @@ def serialize_user(u: Any) -> dict:
 async def _assert_password_policy(password: str) -> None:
     minimum = (await get_settings())["security"]["minPasswordLength"]
     if len(password) < minimum:
-        raise validation_error([{"path": "password", "message": f"Password must be at least {minimum} characters"}])
+        message = f"Password must be at least {minimum} characters"
+        raise validation_error([{"path": "password", "message": message}], message)
 
 
-async def create_rider_account(*, full_name: str, phone: str, email: str, password: str, currency: str) -> Any:
+async def create_rider_account(*, full_name: str, email: str, password: str, currency: str, phone: str | None = None) -> Any:
     """Creates a rider account with its own free-trial subscription.
 
     Every rider is fully independent: there is no organization or team concept anywhere in this app.
@@ -77,7 +84,7 @@ async def create_rider_account(*, full_name: str, phone: str, email: str, passwo
     except UniqueViolationError:
         raise conflict("An account with this email already exists", "EMAIL_TAKEN") from None
     try:
-        await create_trial(user_id)
+        await create_inactive_subscription(user_id)
     except Exception:
         await db.user.delete_many(where={"id": user_id})
         raise
@@ -94,7 +101,7 @@ async def _issue_tokens(user: Any, *, family: str | None = None, user_agent: str
 
 
 async def register(data: dict, ctx: dict) -> dict:
-    user = await create_rider_account(full_name=data["fullName"], phone=data["phone"], email=data["email"], password=data["password"], currency=data["currency"])
+    user = await create_rider_account(full_name=data["fullName"], email=data["email"], password=data["password"], currency=data["currency"])
     tokens = await _issue_tokens(user, user_agent=ctx.get("userAgent"))
     return {"user": serialize_user(user), **tokens}
 
@@ -259,10 +266,97 @@ async def confirm_service_area(user_id: str, point: dict) -> dict:
 
 async def change_password(user_id: str, current_password: str, new_password: str, ctx: dict) -> dict:
     """Signs out every other session at once (access tokens included) and returns fresh tokens for this one."""
+    if current_password == new_password:
+        raise unprocessable("Your new password must be different from your current password. "
+                            "Enter your old password in the first box and the new one in the second.", "SAME_PASSWORD")
     await _assert_password_policy(new_password)
     user = await db.user.find_unique(where={"id": user_id})
     if not await verify_password(current_password, user.passwordHash):
         raise unprocessable("Current password is incorrect", "INVALID_CREDENTIALS")
     await db.refreshtoken.update_many(where={"userId": user.id, "revokedAt": None}, data={"revokedAt": now()})
     user = await db.user.update(where={"id": user.id}, data={"passwordHash": await hash_password(new_password), "tokenVersion": {"increment": 1}})
+    await _notify_password_changed(user)
     return {"changed": True, **await _issue_tokens(user, user_agent=ctx.get("userAgent"))}
+
+
+async def _notify_password_changed(user: Any) -> None:
+    platform = (await get_settings())["platform"]
+    send_in_background(emails.password_changed(to=user.email, name=user.fullName, platform=platform["name"], support_email=platform["supportEmail"] or None))
+
+
+# ---------- Forgot password ----------
+# A 6-digit code is emailed (typed into the app, so no deep links are needed). Only its HMAC is stored, each code allows
+# RESET_MAX_ATTEMPTS guesses, and requesting a new code kills the old one, so guessing is hopeless within the code's lifetime.
+
+RESET_MAX_ATTEMPTS = 5
+
+
+def _reset_code_hash(user_id: str, code: str) -> str:
+    return hmac.new(env.JWT_REFRESH_SECRET.encode(), f"password-reset:{user_id}:{code}".encode(), hashlib.sha256).hexdigest()
+
+
+def _invalid_reset_code() -> AppError:
+    return AppError(400, "INVALID_RESET_CODE", "This code is invalid or has expired. Request a new one.")
+
+
+def request_password_reset(email: str, ctx: dict) -> None:
+    """Answers at once and does the work in the background: the response looks and takes the same whether or not the email exists."""
+    spawn(_send_reset_code(email.lower(), ctx.get("ip")), "password reset email")
+
+
+async def _send_reset_code(email: str, ip: str | None) -> None:
+    user = await db.user.find_unique(where={"email": email})
+    if not user or user.status != "active":
+        return
+    code = f"{secrets.randbelow(1_000_000):06d}"
+    await db.passwordreset.update_many(where={"userId": user.id, "usedAt": None}, data={"usedAt": now()})
+    await db.passwordreset.create(data={
+        "id": new_id(), "userId": user.id, "codeHash": _reset_code_hash(user.id, code),
+        "expiresAt": now() + timedelta(minutes=env.PASSWORD_RESET_TTL_MINUTES), "ip": (ip or "")[:64] or None,
+    })
+    platform = (await get_settings())["platform"]
+    await send_email(emails.password_reset_code(to=user.email, name=user.fullName, code=code, minutes=env.PASSWORD_RESET_TTL_MINUTES,
+                                                platform=platform["name"]))
+    await audit({"id": user.id, "email": user.email}, "auth.password_reset_requested", ip=ip)
+
+
+async def _check_reset_code(email: str, code: str) -> tuple[Any, Any]:
+    """Counts the attempt before comparing, so parallel guesses cannot exceed the budget. Every failure looks the same."""
+    user = await db.user.find_unique(where={"email": email.lower()})
+    reset = await db.passwordreset.find_first(where={"userId": user.id, "usedAt": None, "expiresAt": {"gt": now()}},
+                                              order={"createdAt": "desc"}) if user and user.status == "active" else None
+    expected = _reset_code_hash(user.id if user else "-", code)
+    if not reset:
+        raise _invalid_reset_code()
+    claimed = await db.passwordreset.update_many(where={"id": reset.id, "usedAt": None, "attempts": {"lt": RESET_MAX_ATTEMPTS}},
+                                                 data={"attempts": {"increment": 1}})
+    if not claimed:
+        raise _invalid_reset_code()
+    if not hmac.compare_digest(reset.codeHash, expected):
+        if reset.attempts + 1 >= RESET_MAX_ATTEMPTS:
+            await db.passwordreset.update_many(where={"id": reset.id, "usedAt": None}, data={"usedAt": now()})
+        raise _invalid_reset_code()
+    return user, reset
+
+
+async def verify_reset_code(email: str, code: str) -> dict:
+    """Lets the app confirm the code before asking for the new password. The code stays valid for the reset itself."""
+    _, reset = await _check_reset_code(email, code)
+    await db.passwordreset.update(where={"id": reset.id}, data={"attempts": 0})
+    return {"valid": True, "expiresAt": reset.expiresAt}
+
+
+async def reset_password(email: str, code: str, new_password: str, ctx: dict) -> dict:
+    """Sets the new password, signs out every session and clears any login lockout. The rider then signs in normally."""
+    await _assert_password_policy(new_password)
+    user, reset = await _check_reset_code(email, code)
+    if not await db.passwordreset.update_many(where={"id": reset.id, "usedAt": None}, data={"usedAt": now()}):
+        raise _invalid_reset_code()  # a parallel request used it first
+    await db.passwordreset.update_many(where={"userId": user.id, "usedAt": None}, data={"usedAt": now()})
+    await db.refreshtoken.update_many(where={"userId": user.id, "revokedAt": None}, data={"revokedAt": now()})
+    user = await db.user.update(where={"id": user.id}, data={
+        "passwordHash": await hash_password(new_password), "tokenVersion": {"increment": 1}, "failedLoginCount": 0, "lockedUntil": None,
+    })
+    await audit({"id": user.id, "email": user.email}, "auth.password_reset", ip=ctx.get("ip"))
+    await _notify_password_changed(user)
+    return {"reset": True}

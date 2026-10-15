@@ -1,5 +1,6 @@
 import { useState } from 'react';
-import { ScrollView, View } from 'react-native';
+import { View } from 'react-native';
+import { KeyboardAwareScrollView } from '../components/KeyboardAware';
 import { post, ApiRequestError } from '../lib/api';
 import { Screen } from '../components/Kit';
 import { ErrorBanner, Header, PButton, PCard, PInput, SectionLabel } from '../components/Premium';
@@ -34,7 +35,7 @@ export default function AddManual({ onCreated }: { onCreated: () => void }) {
 
   return (
     <Screen style={{ backgroundColor: c.background }}>
-      <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 32, gap: 14 }} keyboardShouldPersistTaps="handled">
+      <KeyboardAwareScrollView contentContainerStyle={{ padding: 16, paddingBottom: 32, gap: 14 }} keyboardShouldPersistTaps="handled">
         <Header eyebrow="New stop" eyebrowIcon="file-document-edit-outline" title="Manual entry" subtitle="Only the parcel ID and address are required." />
         <ErrorBanner text={error} />
 
@@ -65,7 +66,7 @@ export default function AddManual({ onCreated }: { onCreated: () => void }) {
         </PCard>
 
         <PButton title="Add delivery" icon="add-circle-outline" onPress={submit} loading={busy} disabled={!valid} chevron />
-      </ScrollView>
+      </KeyboardAwareScrollView>
     </Screen>
   );
 }

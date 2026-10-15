@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { ActivityIndicator, Animated, Easing, Pressable, ScrollView, StyleSheet, Text, TextInput, View, type ViewStyle } from 'react-native';
+import { KeyboardAwareScrollView, useRevealOnFocus } from '../components/KeyboardAware';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import * as DocumentPicker from 'expo-document-picker';
 import { postFile, post, ApiRequestError } from '../lib/api';
@@ -110,7 +111,7 @@ export default function ImportFile({ onCreated }: { onCreated: () => void }) {
 
   return (
     <Screen style={{ backgroundColor: c.background }}>
-      <ScrollView contentContainerStyle={{ padding: 18 }}>
+      <KeyboardAwareScrollView contentContainerStyle={{ padding: 18 }}>
         <Text style={[s.title, { textAlign: 'left', marginTop: 0 }]}>Review import</Text>
         <Text style={[s.subtitle, { textAlign: 'left', paddingHorizontal: 0, marginBottom: 16 }]}>Found {rows.length} deliveries. Fix anything flagged, then add the ones you want.</Text>
         {error ? <Banner text={error} /> : null}
@@ -144,7 +145,7 @@ export default function ImportFile({ onCreated }: { onCreated: () => void }) {
         <Pressable onPress={() => setRows(null)} style={{ alignItems: 'center', paddingVertical: 14 }}>
           <Text style={{ color: c.textSecondary, fontWeight: '700', fontSize: 14 }}>Cancel</Text>
         </Pressable>
-      </ScrollView>
+      </KeyboardAwareScrollView>
     </Screen>
   );
 }
@@ -192,7 +193,8 @@ const CORNERS: ViewStyle[] = [
 ];
 
 function MiniInput(props: React.ComponentProps<typeof TextInput>) {
-  return <TextInput {...props} placeholderTextColor={c.textMuted} style={s.input} />;
+  const reveal = useRevealOnFocus();
+  return <TextInput {...props} placeholderTextColor={c.textMuted} style={s.input} onFocus={(e) => { reveal(); props.onFocus?.(e); }} />;
 }
 
 const s = StyleSheet.create({
