@@ -17,6 +17,7 @@
     "expo-image-picker": "~57.0.20",
     "expo-location": "~57.0.21",
     "expo-speech-recognition": "^57.1.0",
+    "expo-splash-screen": "~57.0.10",
     "expo-status-bar": "~57.0.1",
     "expo-text-extractor": "^2.0.0",
     "jpeg-js": "^0.4.4",

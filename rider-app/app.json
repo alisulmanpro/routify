@@ -61,6 +61,15 @@
       ],
       "expo-font",
       [
+        "expo-splash-screen",
+        {
+          "image": "./assets/splash-icon.png",
+          "imageWidth": 200,
+          "resizeMode": "contain",
+          "backgroundColor": "#050B18"
+        }
+      ],
+      [
         "expo-speech-recognition",
         {
           "microphonePermission": "Delivery Rider uses the microphone so you can add deliveries by voice.",
@@ -71,9 +80,9 @@
     ],
     "extra": {
       "eas": {
-        "projectId": "a75a3bb2-47ff-4a3b-8645-1b40862ba092"
+        "projectId": "01cf61eb-26c7-4e49-866d-ee8b7c291ae2"
       }
     },
-    "owner": "alisulmanpros-team"
+    "owner": "azaan890"
   }
 }

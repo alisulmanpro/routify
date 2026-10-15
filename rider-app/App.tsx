@@ -1,7 +1,8 @@
 import { StatusBar } from 'expo-status-bar';
 import { SafeAreaView, SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BackHandler, Platform, Pressable, StatusBar as NativeStatusBar, Text, View } from 'react-native';
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
+import * as SplashScreen from 'expo-splash-screen';
 import { AuthProvider, useAuth } from './src/lib/auth';
 import { NavProvider, useNav, type TabName } from './src/lib/nav';
 import { ServiceAreaProvider } from './src/lib/serviceArea';
@@ -11,9 +12,12 @@ import Login from './src/screens/Login';
 import Register from './src/screens/Register';
 import ForgotPassword from './src/screens/ForgotPassword';
 import { configureRevenueCat, identifyRider } from './src/lib/revenuecat';
+import AnimatedSplash from './src/components/AnimatedSplash';
 
 // Once per app launch (no-op in Expo Go or without a key).
 configureRevenueCat();
+// The native splash stays up until AnimatedSplash has drawn its first frame (it takes over seamlessly).
+void SplashScreen.preventAutoHideAsync().catch(() => {});
 import Dashboard from './src/screens/Dashboard';
 import DeliveriesList from './src/screens/DeliveriesList';
 import RouteMapScreen from './src/screens/RouteMapScreen';
@@ -134,12 +138,20 @@ function Gate() {
   const [resetEmail, setResetEmail] = useState('');
   const insets = useSafeAreaInsets();
 
-  if (loading) return <SafeAreaView style={{ flex: 1, backgroundColor: colors.bg, alignItems: 'center', justifyContent: 'center', paddingTop: insets.top }}><Text style={{ color: colors.muted }}>Loading…</Text></SafeAreaView>;
+  // AnimatedSplash covers the screen while the session is restored.
+  if (loading) return <View style={{ flex: 1, backgroundColor: colors.bg, paddingTop: insets.top }} />;
   if (user) return <AuthedApp />;
   if (screen === 'forgot') return <ForgotPassword initialEmail={resetEmail} onBack={() => setScreen('login')} />;
   return screen === 'login'
     ? <Login onGoRegister={() => setScreen('register')} onForgot={(email) => { setResetEmail(email); setScreen('forgot'); }} />
     : <Register onGoLogin={() => setScreen('login')} />;
+}
+
+function Splash() {
+  const { loading } = useAuth();
+  const [done, setDone] = useState(false);
+  const finish = useCallback(() => setDone(true), []);
+  return done ? null : <AnimatedSplash ready={!loading} onFinish={finish} />;
 }
 
 export default function App() {
@@ -154,6 +166,7 @@ export default function App() {
       <AuthProvider>
         <StatusBar style="light" />
         <Gate />
+        <Splash />
       </AuthProvider>
     </SafeAreaProvider>
   );
