@@ -1,0 +1,18 @@
+*{
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+.card{
+    border: 2px solid black;
+    width: 100%;
+}
+
+.card-body{
+    display: flex;
+
+    & > img{
+        height: 5rem;
+    }
+}

@@ -8,8 +8,9 @@ from ..errors import conflict, forbidden, not_found, unprocessable
 from ..http import js_round, now, round2, today_key
 from ..ids import new_id
 from . import geocoding_service as geocoding
+from . import routing_service
 from .geo import haversine_km, normalize_address
-from .route_planner import plan_route
+from .route_planner import START, plan_route
 from .serializers import clean_delivery_address, serialize_delivery
 from .settings_service import get_settings
 
@@ -50,10 +51,14 @@ async def serialize_route(route: Any) -> dict:
     ]
     done = sum(1 for s in stops if s["delivery"]["status"] not in OPEN)
     current = next((s for s in stops if s["delivery"]["status"] in OPEN), None)
+    # Stops added after the route was planned; the app offers to re-optimise to include them.
+    new_stops = 0 if str(route.status) == "completed" else await db.delivery.count(
+        where={"riderId": route.riderId, "status": "pending", "routeId": None, "serviceDate": route.serviceDate})
     return {
         "id": route.id, "status": str(route.status), "preference": str(route.preference), "serviceDate": route.serviceDate,
         "origin": _origin(route),
         "distanceKm": route.distanceKm, "durationMin": route.durationMin, "startedAt": route.startedAt, "completedAt": route.completedAt,
+        "optimization": route.optimization, "newStops": new_stops,
         "stops": stops, "progress": {"total": len(stops), "done": done, "remaining": len(stops) - done},
         "currentStopId": current["delivery"]["id"] if current else None,
         "summary": summarize([by_id[s["delivery"]["id"]] for s in stops], route),
@@ -137,19 +142,27 @@ async def _refresh_delivery_geocodes(deliveries: list[Any], *, retry_approximate
     return out
 
 
-def _plan(deliveries: list[Any], origin: Optional[dict], preference: str, settings: dict) -> tuple[list[dict], float, float]:
+async def _plan(deliveries: list[Any], origin: Optional[dict], preference: str, settings: dict, first_order: int = 1) -> tuple[list[dict], float, float, str]:
+    """Orders the stops. Only verified locations are optimised; unresolved (or approximate) ones go last.
+    Returns (stops, distanceKm, durationMin, optimization) where optimization is "road" or "straight_line"."""
     located = [d for d in deliveries if d.addressGeocoded]
     unlocated = [d for d in deliveries if not d.addressGeocoded]
+    points = ([origin] if origin else []) + [{"latitude": d.addressLatitude, "longitude": d.addressLongitude} for d in located]
+    ids = ([START] if origin else []) + [d.id for d in located]
+    matrix = await routing_service.road_matrix(ids, points) if located else None
     plan = plan_route(
         origin=origin, preference=preference, avg_speed_kmh=settings["route"]["avgSpeedKmh"], service_minutes=settings["route"]["stopServiceMinutes"],
         stops=[{"id": d.id, "latitude": d.addressLatitude, "longitude": d.addressLongitude, "addressKey": normalize_address(d.addressRaw)} for d in located],
+        matrix=matrix,
     )
     stops = [
-        *({"deliveryId": did, "order": i + 1, "legDistanceKm": plan["legs"][i]["distanceKm"], "legDurationMin": plan["legs"][i]["durationMin"]}
+        *({"deliveryId": did, "order": first_order + i, "legDistanceKm": plan["legs"][i]["distanceKm"], "legDurationMin": plan["legs"][i]["durationMin"]}
           for i, did in enumerate(plan["order"])),
-        *({"deliveryId": d.id, "order": len(plan["order"]) + i + 1, "legDistanceKm": 0, "legDurationMin": 0} for i, d in enumerate(unlocated)),
+        *({"deliveryId": d.id, "order": first_order + len(plan["order"]) + i, "legDistanceKm": 0, "legDurationMin": 0} for i, d in enumerate(unlocated)),
     ]
-    return stops, plan["distanceKm"], plan["durationMin"] + len(unlocated) * settings["route"]["stopServiceMinutes"]
+    return (stops, plan["distanceKm"], plan["durationMin"] + len(unlocated) * settings["route"]["stopServiceMinutes"],
+            "road" if matrix else "straight_line")
+
 
 
 async def _assign_stops(route_id: str, rider_id: str, stops: list[dict]) -> None:
@@ -177,12 +190,12 @@ async def build(actor: dict, *, preference: Optional[str] = None, origin: Option
 
     # Geocode before ordering so stop numbers reflect destination order, not entry order.
     deliveries = await _refresh_delivery_geocodes(deliveries, area=await service_area_for(actor, origin))
-    stops, distance_km, duration_min = _plan(deliveries, origin, pref, settings)
+    stops, distance_km, duration_min, optimization = await _plan(deliveries, origin, pref, settings)
 
     route = await db.route.create(data={
         "id": new_id(), "riderId": actor["id"], "serviceDate": date or today_key(), "preference": pref,
         "status": "planned", "originLatitude": origin["latitude"] if origin else None, "originLongitude": origin["longitude"] if origin else None,
-        "distanceKm": distance_km, "durationMin": duration_min,
+        "distanceKm": distance_km, "durationMin": duration_min, "optimization": optimization,
     })
     await db.routestop.create_many(data=[{"routeId": route.id, **s} for s in stops])
     await _assign_stops(route.id, actor["id"], stops)
@@ -206,10 +219,10 @@ async def retry_geocoding(actor: dict, route_id: str) -> dict:
 
     if route.status == "planned":
         pref = str(route.preference) or (str(user.routePreference) if user else None) or settings["route"]["defaultPreference"]
-        stops, distance_km, duration_min = _plan(deliveries, origin, pref, settings)
+        stops, distance_km, duration_min, optimization = await _plan(deliveries, origin, pref, settings)
         await db.routestop.delete_many(where={"routeId": route.id})
         await db.routestop.create_many(data=[{"routeId": route.id, **s} for s in stops])
-        route = await db.route.update(where={"id": route.id}, data={"distanceKm": distance_km, "durationMin": duration_min})
+        route = await db.route.update(where={"id": route.id}, data={"distanceKm": distance_km, "durationMin": duration_min, "optimization": optimization})
         await _assign_stops(route.id, actor["id"], stops)
     else:
         previous = origin
@@ -232,6 +245,40 @@ async def retry_geocoding(actor: dict, route_id: str) -> dict:
         route = await db.route.update(where={"id": route.id}, data={
             "distanceKm": round2(distance_km), "durationMin": travel + len(stop_rows) * settings["route"]["stopServiceMinutes"],
         })
+    return await serialize_route(route)
+
+
+async def optimize(actor: dict, route_id: str, origin: Optional[dict] = None) -> dict:
+    """Re-optimises the open stops of a planned or active route from `origin` (the rider's position;
+    defaults to the route's start). Pulls in stops added since planning; finished stops keep their place."""
+    _require_rider(actor)
+    route = await _find_mine(actor, route_id)
+    if route.status not in ("planned", "active"):
+        raise conflict("Only planned or active routes can be optimised", "INVALID_STATE")
+    stop_rows = sorted(await db.routestop.find_many(where={"routeId": route.id}), key=lambda s: s.order)
+    on_route = await db.delivery.find_many(where={"riderId": actor["id"], "id": {"in": [s.deliveryId for s in stop_rows]}})
+    added = await db.delivery.find_many(where={"riderId": actor["id"], "status": "pending", "routeId": None, "serviceDate": route.serviceDate},
+                                        order=[{"createdAt": "asc"}, {"id": "asc"}])
+    by_id = {d.id: d for d in on_route}
+    finished = [by_id[s.deliveryId] for s in stop_rows if s.deliveryId in by_id and str(by_id[s.deliveryId].status) not in OPEN]
+    open_stops = [by_id[s.deliveryId] for s in stop_rows if s.deliveryId in by_id and str(by_id[s.deliveryId].status) in OPEN] + added
+    start_point = origin or _origin(route)
+
+    open_stops = await _refresh_delivery_geocodes(open_stops, area=await service_area_for(actor, start_point))
+    settings, user = await asyncio.gather(get_settings(), db.user.find_unique(where={"id": actor["id"]}))
+    pref = str(route.preference) or (str(user.routePreference) if user else None) or settings["route"]["defaultPreference"]
+    stops, distance_km, duration_min, optimization = await _plan(open_stops, start_point, pref, settings, first_order=len(finished) + 1)
+
+    keep = {s.deliveryId: s for s in stop_rows}
+    finished_rows = [{"deliveryId": d.id, "order": i + 1, "legDistanceKm": keep[d.id].legDistanceKm, "legDurationMin": keep[d.id].legDurationMin}
+                     for i, d in enumerate(finished)]
+    await db.routestop.delete_many(where={"routeId": route.id})
+    await db.routestop.create_many(data=[{"routeId": route.id, **s} for s in finished_rows + stops])
+    await _assign_stops(route.id, actor["id"], finished_rows + stops)
+    data: dict[str, Any] = {"distanceKm": distance_km, "durationMin": duration_min, "optimization": optimization}
+    if origin:
+        data |= {"originLatitude": origin["latitude"], "originLongitude": origin["longitude"]}
+    route = await db.route.update(where={"id": route.id}, data=data)
     return await serialize_route(route)
 
 

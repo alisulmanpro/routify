@@ -144,6 +144,18 @@ async def update(actor: dict, delivery_id: str, patch: dict) -> dict:
     return serialize_delivery(await save_delivery(delivery, data))
 
 
+async def set_location(actor: dict, delivery_id: str, latitude: float, longitude: float) -> dict:
+    """The rider drops a pin for an address that could not be found (or was found in the wrong place)."""
+    if actor["role"] != "rider":
+        raise forbidden("Only riders edit deliveries")
+    delivery = await find_visible(actor, delivery_id)
+    if delivery.status not in ("pending", "in_progress"):
+        raise conflict("Only open deliveries can be moved on the map", "INVALID_STATE")
+    return serialize_delivery(await save_delivery(delivery, {
+        "addressLatitude": latitude, "addressLongitude": longitude, "addressGeocoded": True, "addressApproximate": False, "geocodeStatus": "found",
+    }))
+
+
 async def remove(actor: dict, delivery_id: str) -> None:
     if actor["role"] != "rider":
         raise forbidden("Only riders delete deliveries")

@@ -200,6 +200,8 @@ model Route {
   originLongitude Float?
   distanceKm      Float           @default(0)
   durationMin     Float           @default(0)
+  /// How the stop order was optimised: "road" (road travel times) or "straight_line" (fallback).
+  optimization    String?         @db.VarChar(20)
   startedAt       DateTime?
   completedAt     DateTime?
   createdAt       DateTime        @default(now())

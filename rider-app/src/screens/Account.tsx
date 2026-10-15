@@ -1,21 +1,16 @@
 import { useState } from 'react';
 import { Alert, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
-import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
+import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../lib/auth';
 import { patch, post, setTokens, ApiRequestError } from '../lib/api';
-import type { Currency, RoutePreference } from '../lib/types';
+import type { Currency } from '../lib/types';
 import { Screen } from '../components/Kit';
-import { ErrorBanner, Header, IconCircle, PButton, PCard, PInput, Pill, SectionLabel, gradient, DARK_ON_PRIMARY, type McName } from '../components/Premium';
+import { ErrorBanner, Header, IconCircle, PButton, PCard, PInput, Pill, SectionLabel, gradient, DARK_ON_PRIMARY } from '../components/Premium';
 import { premium as c, premiumRadius as r } from '../lib/theme';
 import { useNav } from '../lib/nav';
 import { useServiceArea } from '../lib/serviceArea';
 
 const CURRENCIES: Currency[] = ['USD', 'GBP', 'EUR', 'PKR', 'INR'];
-const PREFERENCES: { value: RoutePreference; label: string; hint: string; icon: McName }[] = [
-  { value: 'smart', label: 'Smart', hint: 'Balances distance and stop order', icon: 'brain' },
-  { value: 'nearest_first', label: 'Nearest first', hint: 'Always go to the closest stop next', icon: 'map-marker-radius-outline' },
-  { value: 'shortest', label: 'Shortest', hint: 'Lowest total distance', icon: 'map-marker-distance' },
-];
 
 export default function Account() {
   const { user, logout, refreshProfile } = useAuth();
@@ -151,26 +146,6 @@ export default function Account() {
           </View>
         </PCard>
 
-        {/* Route preference */}
-        <PCard>
-          <SectionLabel>Route preference</SectionLabel>
-          <View style={{ gap: 8 }}>
-            {PREFERENCES.map((p) => {
-              const on = user.routePreference === p.value;
-              return (
-                <Pressable key={p.value} disabled={saving} onPress={() => updateField({ routePreference: p.value })} style={[s.option, on && s.optionOn]}>
-                  <MaterialCommunityIcons name={p.icon} size={20} color={on ? c.primary : c.textSecondary} />
-                  <View style={{ flex: 1 }}>
-                    <Text style={{ color: c.text, fontSize: 14, fontWeight: '700' }}>{p.label}</Text>
-                    <Text style={{ color: c.textMuted, fontSize: 11, marginTop: 1 }}>{p.hint}</Text>
-                  </View>
-                  <View style={[s.radio, on && { borderColor: c.primary }]}>{on ? <View style={s.radioDot} /> : null}</View>
-                </Pressable>
-              );
-            })}
-          </View>
-        </PCard>
-
         {/* Password */}
         <PCard style={{ paddingVertical: showPassword ? 16 : 14 }}>
           <Pressable onPress={() => setShowPassword((v) => !v)} style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
@@ -205,8 +180,4 @@ const s = StyleSheet.create({
   orText: { color: c.textMuted, fontSize: 10, fontWeight: '800', letterSpacing: 1 },
   chip: { paddingHorizontal: 16, paddingVertical: 9, borderRadius: r.pill, borderWidth: 1, borderColor: c.border, backgroundColor: c.surfaceSoft },
   chipOn: { borderColor: c.primary, backgroundColor: 'rgba(255,170,50,0.14)' },
-  option: { flexDirection: 'row', alignItems: 'center', gap: 12, padding: 12, borderRadius: r.medium, borderWidth: 1, borderColor: c.border, backgroundColor: c.surfaceSoft },
-  optionOn: { borderColor: 'rgba(255,170,50,0.55)', backgroundColor: 'rgba(255,170,50,0.08)' },
-  radio: { width: 20, height: 20, borderRadius: 10, borderWidth: 2, borderColor: c.border, alignItems: 'center', justifyContent: 'center' },
-  radioDot: { width: 10, height: 10, borderRadius: 5, backgroundColor: c.primary },
 });

@@ -411,3 +411,105 @@ async def test_pdf_import_reads_a_real_pdf(client):
     assert res.status_code == 200, res.text
     assert res.json()["data"]["fileType"] == "csv"
     assert res.json()["data"]["items"][0]["trackingId"] == "ORD-3001"
+
+
+async def test_geocode_check_looks_up_an_address_without_saving(client):
+    _, auth = await rider(client, "geocode-check@example.com")
+    try:
+        async def found(address, area):
+            return {"latitude": 31.52, "longitude": 74.35, "normalized": "Mall Road, Lahore", "approximate": False}
+        geocoding_service.set_geocoder_for_tests(found)
+        hit = await client.post("/api/v1/deliveries/geocode-check", headers=auth, json={"address": "12 Mall Road Lahore"})
+        assert hit.status_code == 200, hit.text
+        assert hit.json()["data"] == {"found": True, "approximate": False, "latitude": 31.52, "longitude": 74.35, "normalized": "Mall Road, Lahore"}
+
+        async def nothing(address, area):
+            return None
+        geocoding_service.set_geocoder_for_tests(nothing)
+        miss = await client.post("/api/v1/deliveries/geocode-check", headers=auth, json={"address": "nowhere at all 999"})
+        assert miss.status_code == 200
+        assert miss.json()["data"]["found"] is False
+
+        bad = await client.post("/api/v1/deliveries/geocode-check", headers=auth, json={"address": "ab"})
+        assert bad.status_code == 400
+        listed = await client.get("/api/v1/deliveries", headers=auth)
+        assert listed.json()["data"] == [], "checking an address must not create a delivery"
+    finally:
+        geocoding_service.set_geocoder_for_tests()
+
+
+async def test_optimize_reorders_open_stops_includes_new_ones_and_puts_unresolved_last(client):
+    from app.services import routing_service
+    _, auth = await rider(client, "optimize-rider@example.com")
+    places = {"Near street 1": (53.35, -6.26), "Far street 2": (53.40, -6.26), "Mid street 3": (53.37, -6.26)}
+    try:
+        async def geocode(address, area):
+            hit = places.get(address)
+            return {"latitude": hit[0], "longitude": hit[1], "normalized": address, "approximate": False} if hit else None
+        geocoding_service.set_geocoder_for_tests(geocode)
+        calls = []
+
+        async def matrix(points):
+            calls.append(len(points))
+            return None  # router down: straight-line fallback
+        routing_service.set_matrix_for_tests(matrix)
+
+        for tid, raw in (("OPT-1", "Far street 2"), ("OPT-2", "Near street 1"), ("OPT-3", "Unknown place 9")):
+            await client.post("/api/v1/deliveries/manual", headers=auth, json=delivery(tid, raw))
+        origin = {"latitude": 53.34, "longitude": -6.26}
+        route = (await client.post("/api/v1/routes/build", headers=auth, json={"origin": origin})).json()["data"]
+        assert [s["delivery"]["trackingId"] for s in route["stops"]] == ["OPT-2", "OPT-1", "OPT-3"], "unresolved address goes last"
+        assert route["optimization"] == "straight_line" and calls, "router was asked, fallback recorded"
+
+        await client.post("/api/v1/deliveries/manual", headers=auth, json=delivery("OPT-4", "Mid street 3"))
+        current = (await client.get("/api/v1/routes/current", headers=auth)).json()["data"]
+        assert current["newStops"] == 1
+
+        optimized = await client.post(f"/api/v1/routes/{route['id']}/optimize", headers=auth, json={"origin": origin})
+        assert optimized.status_code == 200, optimized.text
+        data = optimized.json()["data"]
+        assert [s["delivery"]["trackingId"] for s in data["stops"]] == ["OPT-2", "OPT-4", "OPT-1", "OPT-3"]
+        assert data["newStops"] == 0
+    finally:
+        geocoding_service.set_geocoder_for_tests()
+        routing_service.set_matrix_for_tests()
+
+
+async def test_eircode_is_looked_up_first_and_unfound_stops_can_be_pinned(client):
+    _, auth = await rider(client, "eircode-rider@example.com")
+    address_queries = []
+    try:
+        async def by_code(code):
+            # Exact Eircode hit far outside the rider's city (Galway); still counts as found.
+            return {"latitude": 53.2785, "longitude": -9.0610, "normalized": "University Rd, Galway, H91 TK33", "approximate": False} if code == "H91 TK33" else None
+
+        async def by_address(address, area):
+            address_queries.append(address)
+            return {"latitude": 53.3494, "longitude": -6.2603, "normalized": address, "approximate": False} if "O'Connell" in address else None
+        geocoding_service.set_eircode_geocoder_for_tests(by_code)
+        geocoding_service.set_geocoder_for_tests(by_address)
+
+        for tid, raw in (("EIR-1", "University Road, Galway, Co. Galway, H91 TK33, Ireland"),
+                         ("EIR-2", "General Post Office, O'Connell St, Dublin 1, D01 X9X9"),  # Eircode unknown → address
+                         ("EIR-3", "Nowhere Lane, Atlantis, Z99 ZZZZ")):
+            assert (await client.post("/api/v1/deliveries/manual", headers=auth, json=delivery(tid, raw))).status_code == 201
+        route = (await client.post("/api/v1/routes/build", headers=auth, json={"origin": {"latitude": 53.3498, "longitude": -6.2603}})).json()["data"]
+        by_tid = {s["delivery"]["trackingId"]: s["delivery"] for s in route["stops"]}
+        assert by_tid["EIR-1"]["address"]["geocodeStatus"] == "found" and by_tid["EIR-1"]["address"]["latitude"] == 53.2785
+        assert not any("H91" in q for q in address_queries), "an Eircode hit skips the address lookup"
+        assert by_tid["EIR-2"]["address"]["geocodeStatus"] == "found"
+        assert by_tid["EIR-3"]["address"]["geocodeStatus"] == "not_found" and "location_not_found" in by_tid["EIR-3"]["flags"]
+        assert [s["delivery"]["trackingId"] for s in route["stops"]] == ["EIR-2", "EIR-1", "EIR-3"]
+
+        bad = await client.post(f"/api/v1/deliveries/{by_tid['EIR-3']['id']}/location", headers=auth, json={"latitude": 95, "longitude": 0})
+        assert bad.status_code == 400
+        pinned = await client.post(f"/api/v1/deliveries/{by_tid['EIR-3']['id']}/location", headers=auth, json={"latitude": 53.36, "longitude": -6.26})
+        assert pinned.status_code == 200, pinned.text
+        p = pinned.json()["data"]
+        assert p["address"]["geocodeStatus"] == "found" and p["address"]["geocoded"] is True and p["flags"] == []
+
+        optimized = (await client.post(f"/api/v1/routes/{route['id']}/optimize", headers=auth, json={})).json()["data"]
+        assert [s["delivery"]["trackingId"] for s in optimized["stops"]] == ["EIR-2", "EIR-3", "EIR-1"], "the pinned stop joins the order"
+    finally:
+        geocoding_service.set_eircode_geocoder_for_tests()
+        geocoding_service.set_geocoder_for_tests()

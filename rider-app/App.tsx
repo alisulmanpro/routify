@@ -1,6 +1,6 @@
 import { StatusBar } from 'expo-status-bar';
 import { SafeAreaView, SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Platform, Pressable, StatusBar as NativeStatusBar, Text, View } from 'react-native';
+import { BackHandler, Platform, Pressable, StatusBar as NativeStatusBar, Text, View } from 'react-native';
 import { useEffect, useState } from 'react';
 import { AuthProvider, useAuth } from './src/lib/auth';
 import { NavProvider, useNav, type TabName } from './src/lib/nav';
@@ -11,12 +11,13 @@ import Login from './src/screens/Login';
 import Register from './src/screens/Register';
 import Dashboard from './src/screens/Dashboard';
 import DeliveriesList from './src/screens/DeliveriesList';
-import RouteNavigation from './src/screens/RouteNavigation';
+import RouteMapScreen from './src/screens/RouteMapScreen';
 import DeliveryDetail from './src/screens/DeliveryDetail';
 import AddDelivery from './src/screens/AddDelivery';
 import AddManual from './src/screens/AddManual';
 import ImportFile from './src/screens/ImportFile';
 import ScanDelivery from './src/screens/ScanDelivery';
+import CameraAdd from './src/screens/CameraAdd';
 import VoiceEntry from './src/screens/VoiceEntry';
 import History from './src/screens/History';
 import Reports from './src/screens/Reports';
@@ -39,12 +40,13 @@ function ScreenRouter() {
   switch (current.name) {
     case 'Dashboard': return <Dashboard />;
     case 'DeliveriesList': return <DeliveriesList />;
-    case 'RouteNavigation': return <RouteNavigation />;
+    case 'RouteMapScreen': return <RouteMapScreen />;
     case 'DeliveryDetail': return <DeliveryDetail id={current.params!.id as string} onDone={() => { goBack(); refresh(); }} />;
     case 'AddDelivery': return <AddDelivery />;
     case 'AddManual': return <AddManual onCreated={refresh} />;
     case 'ImportFile': return <ImportFile onCreated={refresh} />;
     case 'ScanDelivery': return <ScanDelivery onCreated={refresh} />;
+    case 'CameraAdd': return <CameraAdd onCreated={refresh} />;
     case 'VoiceEntry': return <VoiceEntry onCreated={refresh} />;
     case 'History': return <History />;
     case 'Reports': return <Reports />;
@@ -54,12 +56,25 @@ function ScreenRouter() {
   }
 }
 
+// Screens whose Back leaves the add-deliveries flow for the Deliveries list (all route stops).
+const BACK_TO_DELIVERIES = new Set(['CameraAdd']);
+
+function useBack() {
+  const { current, canGoBack, goBack, openDeliveries } = useNav();
+  return { canGoBack, back: BACK_TO_DELIVERIES.has(current.name) ? openDeliveries : goBack };
+}
+
 function BackBar() {
-  const { canGoBack, goBack } = useNav();
+  const { canGoBack, back } = useBack();
+  // Android's back button/gesture does the same as the Back bar.
+  useEffect(() => {
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => { if (!canGoBack) return false; back(); return true; });
+    return () => sub.remove();
+  }, [canGoBack, back]);
   if (!canGoBack) return null;
   return (
     <View style={{ paddingHorizontal: spacing(5), paddingTop: spacing(3), backgroundColor: colors.bg }}>
-      <Pressable onPress={goBack} hitSlop={10} style={{ alignSelf: 'flex-start', backgroundColor: colors.surfaceRaised, paddingHorizontal: 12, paddingVertical: 8, borderRadius: 99 }}><Text style={{ color: '#CFC5FF', fontWeight: '800', fontSize: 13 }}>‹  Back</Text></Pressable>
+      <Pressable onPress={back} hitSlop={10} style={{ alignSelf: 'flex-start', backgroundColor: colors.surfaceRaised, paddingHorizontal: 12, paddingVertical: 8, borderRadius: 99 }}><Text style={{ color: '#CFC5FF', fontWeight: '800', fontSize: 13 }}>‹  Back</Text></Pressable>
     </View>
   );
 }

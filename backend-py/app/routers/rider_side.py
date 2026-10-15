@@ -92,6 +92,19 @@ async def retry_geocoding(request: Request):
     return respond(await routes.retry_geocoding(actor, params.id))
 
 
+class OptimizeBody(Schema):
+    origin: Optional[Point] = None
+
+
+@routes_router.post("/{id}/optimize")
+async def optimize_route(request: Request):
+    """Re-orders the open stops by road travel time from the rider's position, including newly added stops."""
+    actor = await authenticate(request, "rider")
+    valid = await validate(request, params=IdParams, body=OptimizeBody)
+    body = valid["body"]
+    return respond(await routes.optimize(actor, valid["params"].id, origin=body.origin.model_dump() if body.origin else None))
+
+
 @routes_router.get("/{id}")
 async def get_route(request: Request):
     actor = await authenticate(request, "rider")

@@ -7,10 +7,12 @@ from pydantic import Field, StringConstraints, model_validator
 
 from ..auth import authenticate
 from ..http import respond
-from ..middleware import limit, upload_limiter
+from ..middleware import geocode_limiter, limit, upload_limiter
 from ..services import delivery_service as deliveries
+from ..services import geocoding_service as geocoding
 from ..services.file_import import build_draft_from_file
 from ..services.pdf_import import build_draft
+from ..services.route_service import service_area_for
 from ..services.serializers import serialize_delivery
 from ..uploads import DOCUMENT, PDF, PHOTO, receive
 from ..validation import DateKey, IdParams, Pagination, Phone, Schema, Trimmed, validate
@@ -66,6 +68,18 @@ class ListQuery(Pagination):
     sort: Optional[Literal["route", "recent"]] = None
 
 
+class GeocodeCheckBody(Schema):
+    address: Trimmed(5, 400)
+    # The rider's GPS position, used to pick their city when they have not confirmed one yet.
+    latitude: Optional[Annotated[float, Field(ge=-90, le=90)]] = None
+    longitude: Optional[Annotated[float, Field(ge=-180, le=180)]] = None
+
+
+class LocationBody(Schema):
+    latitude: Annotated[float, Field(ge=-90, le=90)]
+    longitude: Annotated[float, Field(ge=-180, le=180)]
+
+
 class DeliverBody(Schema):
     note: Optional[Text(1000)] = None
     allowSkip: Optional[bool] = None
@@ -115,6 +129,21 @@ async def create_bulk(request: Request):
     return respond(await deliveries.create_many(actor, [_item(i) for i in body.items]), 201)
 
 
+@router.post("/geocode-check")
+async def geocode_check(request: Request):
+    """Looks an address up on the map without saving anything (used by the camera before adding a stop)."""
+    actor = await authenticate(request, "rider")
+    await limit(request, geocode_limiter)
+    body = (await validate(request, body=GeocodeCheckBody))["body"]
+    origin = {"latitude": body.latitude, "longitude": body.longitude} if body.latitude is not None and body.longitude is not None else None
+    area = await service_area_for(actor, origin)
+    hit = await geocoding.geocode_address(body.address, area=area)
+    if not hit or hit.get("latitude") is None or hit.get("longitude") is None:
+        return respond({"found": False, "approximate": False, "latitude": None, "longitude": None, "normalized": None})
+    return respond({"found": True, "approximate": bool(hit.get("approximate")), "latitude": hit["latitude"],
+                    "longitude": hit["longitude"], "normalized": hit.get("normalized")})
+
+
 @router.get("")
 async def list_deliveries(request: Request):
     actor = await authenticate(request, "rider")
@@ -142,6 +171,14 @@ async def update_delivery(request: Request):
     valid = await validate(request, params=IdParams, body=PatchBody)
     patch = valid["body"].model_dump(exclude_unset=True)
     return respond(await deliveries.update(actor, valid["params"].id, patch))
+
+
+@router.post("/{id}/location")
+async def set_location(request: Request):
+    actor = await authenticate(request, "rider")
+    valid = await validate(request, params=IdParams, body=LocationBody)
+    body = valid["body"]
+    return respond(await deliveries.set_location(actor, valid["params"].id, body.latitude, body.longitude))
 
 
 @router.delete("/{id}")

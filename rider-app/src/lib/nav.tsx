@@ -12,6 +12,8 @@ type NavContextValue = {
   navigate: (name: string, params?: Record<string, unknown>) => void;
   goBack: () => void;
   resetTab: (tab: TabName) => void;
+  /** Leaves the current flow for the Deliveries tab's list (the route's start page). */
+  openDeliveries: () => void;
 };
 
 const TAB_ROOTS: Record<TabName, string> = { home: 'Dashboard', deliveries: 'DeliveriesList', history: 'History', reports: 'Reports', account: 'Account' };
@@ -32,10 +34,15 @@ export function NavProvider({ children }: { children: ReactNode }) {
     setStacks((s) => (s[tab].length > 1 ? { ...s, [tab]: s[tab].slice(0, -1) } : s));
   }, [tab]);
 
+  const openDeliveries = useCallback(() => {
+    setStacks((s) => ({ ...s, [tab]: [{ name: TAB_ROOTS[tab] }], deliveries: [{ name: TAB_ROOTS.deliveries }] }));
+    setTab('deliveries');
+  }, [tab]);
+
   const stack = stacks[tab];
   const value = useMemo<NavContextValue>(() => ({
-    tab, current: stack[stack.length - 1], canGoBack: stack.length > 1, switchTab, navigate, goBack, resetTab,
-  }), [tab, stack, switchTab, navigate, goBack, resetTab]);
+    tab, current: stack[stack.length - 1], canGoBack: stack.length > 1, switchTab, navigate, goBack, resetTab, openDeliveries,
+  }), [tab, stack, switchTab, navigate, goBack, resetTab, openDeliveries]);
 
   return <NavContext.Provider value={value}>{children}</NavContext.Provider>;
 }

@@ -32,6 +32,10 @@ export type Route = {
   origin: { latitude: number; longitude: number } | null; distanceKm: number; durationMin: number;
   startedAt: string | null; completedAt: string | null; stops: RouteStop[];
   progress: { total: number; done: number; remaining: number }; currentStopId: string | null; summary: RouteSummary;
+  /** How the order was optimised: road travel times, or straight-line distance when routing was unavailable. */
+  optimization: 'road' | 'straight_line' | null;
+  /** Pending stops added after planning, not yet on this route. */
+  newStops: number;
 };
 
 export type Dashboard = {

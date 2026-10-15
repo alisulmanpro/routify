@@ -180,6 +180,8 @@ class RateLimiter:
 api_limiter = RateLimiter("api", 15 * 60, 1000)
 auth_limiter = RateLimiter("auth", 15 * 60, 40)
 upload_limiter = RateLimiter("upload", 15 * 60, 120)
+# The camera checks each label it reads; this keeps a stuck scan loop from flooding the geocoder.
+geocode_limiter = RateLimiter("geocode", 15 * 60, 200, "Too many address checks. Wait a moment and try again.")
 # Registration has to say when an email is taken (it signs the rider straight in), so cap how often one IP can learn that.
 email_taken_limiter = RateLimiter("email-taken", 60 * 60, 5, "Too many sign-up attempts. Please try again later or sign in instead.")
 
