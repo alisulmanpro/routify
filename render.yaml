@@ -1,0 +1,71 @@
+# Render Blueprint: the Routify API (backend-py) for client testing.
+# Render > New > Blueprint > pick this repo. Values marked `sync: false` are asked for once in the dashboard;
+# `generateValue` secrets are created by Render. The database is Neon (DATABASE_URL), not a Render database.
+services:
+  - type: web
+    name: routify-api
+    runtime: python
+    plan: free                     # sleeps after 15 min idle; uploaded photos/PDFs are lost on restart (no disk on free)
+    region: ohio                   # same area as the Neon database (aws us-east-2)
+    rootDir: backend-py
+    # Migrations run during the build (pre-deploy commands need a paid plan). They only ever add to the schema.
+    buildCommand: pip install -r requirements.txt && prisma generate && prisma migrate deploy
+    startCommand: python -m app
+    healthCheckPath: /ready
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: LOG_LEVEL
+        value: info
+      # Render keeps only the project folder between build and runtime, so Prisma's engines must be downloaded there.
+      - key: PRISMA_BINARY_CACHE_DIR
+        value: /opt/render/project/src/backend-py/.prisma-cache/binaries
+      - key: PRISMA_NODEENV_CACHE_DIR
+        value: /opt/render/project/src/backend-py/.prisma-cache/nodeenv
+      # Render's proxy adds the caller's IP to X-Forwarded-For: trust one hop so rate limits apply per client.
+      - key: TRUST_PROXY
+        value: "1"
+
+      - key: DATABASE_URL           # Neon connection string (...?sslmode=require&channel_binding=require)
+        sync: false
+      - key: JWT_ACCESS_SECRET
+        generateValue: true
+      - key: JWT_REFRESH_SECRET
+        generateValue: true
+      - key: FILE_SIGNING_SECRET
+        generateValue: true
+      # Allowed browser origins (the admin console). The mobile app does not need CORS.
+      - key: CORS_ORIGINS
+        value: http://localhost:5173
+
+      - key: GEOCODING_PROVIDER
+        value: google
+      - key: GOOGLE_MAPS_API_KEY
+        sync: false
+
+      - key: PAYMENT_STORES
+        value: revenuecat
+      - key: REVENUECAT_SECRET_API_KEY  # sk_... (V1) from RevenueCat > Project settings > API keys
+        sync: false
+      - key: REVENUECAT_WEBHOOK_AUTH    # copy this value into RevenueCat > Integrations > Webhooks > Authorization
+        generateValue: true
+      - key: REVENUECAT_ENTITLEMENT
+        value: routify_pro
+
+      # Password reset emails through Brevo SMTP. EMAIL_FROM must be a verified sender in Brevo.
+      - key: EMAIL_PROVIDER
+        value: smtp
+      - key: EMAIL_FROM
+        sync: false
+      - key: EMAIL_FROM_NAME
+        value: Routify
+      - key: SMTP_HOST
+        value: smtp-relay.brevo.com
+      - key: SMTP_PORT
+        value: "587"
+      - key: SMTP_SECURITY
+        value: starttls
+      - key: SMTP_USERNAME            # Brevo > SMTP & API > SMTP > Login
+        sync: false
+      - key: SMTP_PASSWORD            # Brevo SMTP key (xsmtpsib-...)
+        sync: false

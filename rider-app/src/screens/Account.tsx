@@ -1,10 +1,11 @@
 import { useState } from 'react';
-import { Alert, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Alert, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../lib/auth';
 import { patch, post, setTokens, ApiRequestError } from '../lib/api';
 import type { Currency } from '../lib/types';
 import { Screen } from '../components/Kit';
+import { KeyboardAwareScrollView } from '../components/KeyboardAware';
 import { ErrorBanner, Header, IconCircle, PButton, PCard, PInput, Pill, SectionLabel, gradient, DARK_ON_PRIMARY } from '../components/Premium';
 import { premium as c, premiumRadius as r } from '../lib/theme';
 import { useNav } from '../lib/nav';

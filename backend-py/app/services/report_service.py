@@ -5,7 +5,7 @@ import io
 from typing import Any
 from xml.sax.saxutils import escape
 
-from ..db import as_json, db, lock_rider
+from ..db import as_json, db, lock_rider, transaction
 from ..errors import forbidden, not_found, unprocessable
 from ..http import iso, now
 from ..ids import new_id
@@ -128,7 +128,7 @@ async def generate(actor: dict, date: str) -> dict:
     try:
         # Rendering runs unlocked (it can take seconds); the limit check and the save are serialised per rider,
         # so parallel requests cannot both slip under the monthly report limit.
-        async with db.tx() as tx:
+        async with transaction() as tx:
             await lock_rider(tx, actor["id"])
             existing = await tx.report.find_unique(where={"riderId_date": {"riderId": actor["id"], "date": date}})
             await assert_can_create_report(actor, not existing, tx)

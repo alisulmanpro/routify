@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from ..db import db, lock_rider
+from ..db import db, lock_rider, transaction
 from ..errors import conflict, forbidden, not_found
 from ..http import now, page_meta, paginate, today_key
 from ..ids import new_id
@@ -44,7 +44,7 @@ async def create_many(actor: dict, items: list[dict]) -> list[dict]:
 
     rows = [_to_row(actor, item) for item in items]
     # One rider's creates run one at a time, so parallel requests cannot both pass the plan limit.
-    async with db.tx() as tx:
+    async with transaction() as tx:
         await lock_rider(tx, actor["id"])
         await assert_can_create_deliveries(actor, len(items), tx)
 

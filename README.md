@@ -35,12 +35,12 @@ code, the code changed and the doc slipped; please fix the doc.
 
 ## Quick start
 
-**Backend** (needs PostgreSQL; `docker compose up -d` in `backend-py/` starts one on port 5433):
+**Backend** (needs PostgreSQL; we use a hosted [Neon](https://neon.tech) database, so no Docker):
 ```bash
 cd backend-py
 python -m venv .venv && .venv\Scripts\activate   # macOS/Linux: source .venv/bin/activate
 pip install -r requirements-dev.txt
-cp .env.example .env      # fill in JWT/refresh/file-signing secrets + DATABASE_URL
+cp .env.example .env      # fill in JWT/refresh/file-signing secrets + DATABASE_URL (Neon connection string)
 prisma migrate deploy     # create the tables
 python -m scripts.seed_admin   # requires ADMIN_EMAIL + ADMIN_PASSWORD (10+ chars) in .env
 python -m app             # http://localhost:4000

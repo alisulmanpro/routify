@@ -9,3 +9,4 @@ tests/tmp-uploads/
 *.log
 secrets/
 *service-account*.json
+.prisma-cache/

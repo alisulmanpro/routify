@@ -7,28 +7,31 @@ envelopes, error codes, cookies, signed file URLs and JWT format. Neither app ne
 ## Run it
 
 ```bash
-docker compose up -d                       # PostgreSQL 16 on localhost:5433
 python -m venv .venv
 .venv\Scripts\activate                     # macOS/Linux: source .venv/bin/activate
 pip install -r requirements-dev.txt
-cp .env.example .env                       # fill in the three secrets + DATABASE_URL
+cp .env.example .env                       # fill in the three secrets + DATABASE_URL (Neon)
 prisma migrate deploy                      # create the tables
 python -m scripts.seed_admin               # first platform admin (ADMIN_EMAIL / ADMIN_PASSWORD)
 python -m app                              # http://localhost:4000 (reloads on code changes)
 ```
+
+The database is hosted on [Neon](https://neon.tech) (serverless PostgreSQL); no local database or Docker
+is needed. Copy the connection string from the Neon console into `DATABASE_URL`.
 
 API docs are served at `http://localhost:4000/docs` outside production.
 
 ## Tests
 
 ```bash
-docker exec routify-postgres psql -U routify -c "CREATE DATABASE routify_test;"   # once
+psql "$DATABASE_URL" -c "CREATE DATABASE neondb_test;"   # once (or create it in the Neon console)
 pytest
 ```
 
 The 15 tests ported from the Node API run alongside 17 contract tests: auth cookies and refresh
 rotation, error envelopes, ID and date formats, uploads, signed URLs and PDF/CSV import. The suite
-resets the `routify_test` database on every run and never touches your dev data.
+resets the test database on every run and never touches your dev data. It uses `TEST_DATABASE_URL`,
+or the `DATABASE_URL` database name with `_test` appended, and refuses to run against the dev database.
 
 ## Moving data from the old MongoDB
 
@@ -93,6 +96,24 @@ through the store, and its length is the `trialDays` platform setting (7, 14 or 
 stores run the trial themselves, so keep them matching: in Play Console give each base plan the offers
 `free-trial-7d`, `free-trial-14d` and `free-trial-30d` (the app asks for the one named in `trialOfferId`); in App Store
 Connect set each subscription's introductory offer to the same length (1 week, 2 weeks or 1 month).
+
+## Deploy to Render
+
+`render.yaml` at the repo root is a Render Blueprint for this API (free plan, Ohio, next to the Neon database).
+
+1. Push the repo to GitHub, then in Render choose **New > Blueprint** and pick the repo.
+2. Fill in the values it asks for: `DATABASE_URL` (Neon), `GOOGLE_MAPS_API_KEY`, `REVENUECAT_SECRET_API_KEY` (`sk_...`),
+   and for Brevo email `EMAIL_FROM` (a verified Brevo sender), `SMTP_USERNAME` and `SMTP_PASSWORD` (the SMTP key).
+   Render generates the JWT, file-signing and webhook secrets itself.
+3. The build installs the requirements, generates the Prisma client and runs `prisma migrate deploy`. Render checks `/ready`.
+4. In RevenueCat > Integrations > Webhooks, set the URL to `https://<service>.onrender.com/api/v1/billing/webhooks/revenuecat`
+   and the Authorization value to the `REVENUECAT_WEBHOOK_AUTH` Render generated (Environment tab).
+5. Create the first admin from your machine (it uses the same Neon database): `python -m scripts.seed_admin`.
+
+It runs with `NODE_ENV=production`: no `/docs`, secure cookies, RevenueCat as the only store, and password-reset emails
+sent through Brevo SMTP. Leave Brevo's "block unauthorized IPs" off: Render's outgoing IPs are shared and can change. On the free plan the service sleeps after 15 minutes idle (the first request then
+takes about a minute) and the disk is temporary, so proof photos and report PDFs disappear when it restarts. For real users,
+move to a paid instance with a persistent disk and set `STORAGE_DIR` to the disk's mount path.
 
 ## Changing the schema
 
