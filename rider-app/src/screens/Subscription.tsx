@@ -54,6 +54,10 @@ export default function Subscription() {
   const sub = info.subscription;
   const storeManaged = Boolean(sub?.storeManaged && info.store);
   const trial = Boolean(store && !storeManaged && config?.trialEligible[store]);
+  // Manual plans (admin-confirmed payments) only when the server sells through no store at all. When it does but this
+  // build cannot reach that store (e.g. RevenueCat has no key for this platform), say so instead of a dead-end request.
+  const manualMode = !store && !config?.stores.length;
+  const storeUnreachable = !store && !storeManaged && Boolean(config?.stores.length);
 
   return (
     <Screen style={{ backgroundColor: c.background }}>
@@ -63,7 +67,7 @@ export default function Subscription() {
 
         {sub && sub.status === 'inactive' ? <NoPlanYet /> : null}
         {sub && sub.status !== 'inactive' ? (
-          <CurrentPlan info={info} storeManaged={storeManaged} manualMode={!store} busy={busy}
+          <CurrentPlan info={info} storeManaged={storeManaged} manualMode={manualMode} busy={busy}
             onCancel={() => run('cancel', async () => { await post('/subscriptions/cancel'); return reloadMine(); }, 'Could not cancel')}
             onManage={() => { if (info.store) void openStoreSubscriptions(info.store.store, info.store.productId).then(load); }}
             onChangePlan={() => navigate('Paywall')} />
@@ -76,7 +80,9 @@ export default function Subscription() {
 
         {store && !storeManaged ? <UpgradeCard trial={trial} trialText={trialLabel(config?.trialDays ?? 14)} onOpen={() => navigate('Paywall')} /> : null}
 
-        {!store ? (
+        {storeUnreachable ? <StoreUnavailable /> : null}
+
+        {manualMode ? (
           <ManualPlans info={info} busy={busy}
             onRequest={(key, cycle) => run(`${key}-${cycle}`, async () => { await post('/subscriptions', { planKey: key, billingCycle: cycle }); return reloadMine(); }, 'Could not request this plan')} />
         ) : null}
@@ -170,6 +176,21 @@ function NoPlanYet() {
           <Text style={s.meta}>Start a plan to add deliveries, plan routes and get reports.</Text>
         </View>
         <Pill text="Not started" tone="muted" />
+      </View>
+    </PCard>
+  );
+}
+
+function StoreUnavailable() {
+  const storeName = Platform.OS === 'ios' ? 'the App Store' : 'Google Play';
+  return (
+    <PCard>
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+        <IconCircle icon="store-off-outline" color={c.warning} bg="rgba(255,179,64,0.12)" />
+        <View style={{ flex: 1 }}>
+          <Text style={s.planName}>Purchases unavailable</Text>
+          <Text style={s.meta}>Plans are bought through {storeName}, which this version of the app cannot reach yet. Please try again after updating the app.</Text>
+        </View>
       </View>
     </PCard>
   );
