@@ -155,22 +155,47 @@ async def _provider_nominatim(address: str, area: Any) -> Optional[dict]:
     return _strip_broad(approximate, True) if approximate else None
 
 
-async def _provider_google(address: str, area: Any) -> Optional[dict]:
-    params = {"address": address, "key": env.GOOGLE_MAPS_API_KEY}
-    if area:
-        min_lon, min_lat, max_lon, max_lat = area_box(area)
-        params["bounds"] = f"{min_lat},{min_lon}|{max_lat},{max_lon}"
-        params["components"] = f"country:{_area(area, 'countryCode')}"
+async def google_geocode(params: dict) -> list[dict]:
+    """Calls the Google Geocoding API (forward or reverse). Returns its results; [] when nothing matched."""
     async with httpx.AsyncClient(timeout=TIMEOUT) as client:
-        res = await client.get("https://maps.googleapis.com/maps/api/geocode/json", params=params)
+        res = await client.get("https://maps.googleapis.com/maps/api/geocode/json", params={**params, "key": env.GOOGLE_MAPS_API_KEY})
     if res.status_code >= 400:
         raise RuntimeError(f"Google Geocoding responded {res.status_code}")
     body = res.json()
     if body.get("status") == "ZERO_RESULTS":
-        return None
+        return []
     if body.get("status") != "OK":
-        raise RuntimeError(f"Google Geocoding status {body.get('status')}")
-    hit = body["results"][0]
+        raise RuntimeError(f"Google Geocoding status {body.get('status')}: {body.get('error_message', '')}")
+    return body["results"]
+
+
+def _google_component(result: dict, *types: str, short: bool = False) -> Optional[str]:
+    for wanted in types:
+        for part in result.get("address_components", []):
+            if wanted in part.get("types", []):
+                return part["short_name" if short else "long_name"]
+    return None
+
+
+def _google_area(result: dict, latitude: float, longitude: float) -> Optional[dict]:
+    country_code = _google_component(result, "country", short=True)
+    if not country_code:
+        return None
+    city = _google_component(result, "locality", "postal_town", "administrative_area_level_2", "administrative_area_level_1")
+    return {"city": strip_suffix(city), "country": _google_component(result, "country"), "countryCode": country_code.lower(),
+            "latitude": latitude, "longitude": longitude}
+
+
+async def _provider_google(address: str, area: Any) -> Optional[dict]:
+    params = {"address": address}
+    if area:
+        min_lon, min_lat, max_lon, max_lat = area_box(area)
+        params["bounds"] = f"{min_lat},{min_lon}|{max_lat},{max_lon}"
+        params["components"] = f"country:{_area(area, 'countryCode')}"
+    results = await google_geocode(params)
+    if not results:
+        return None
+    hit = results[0]
     loc = hit["geometry"]["location"]
     result = {"latitude": loc["lat"], "longitude": loc["lng"], "normalized": hit.get("formatted_address")}
     return {**result, "approximate": hit["geometry"].get("location_type") == "APPROXIMATE" or not is_inside_area(result, area)}
@@ -187,6 +212,73 @@ def set_geocoder_for_tests(fn=None) -> None:
     _lookup = fn or PROVIDERS[env.GEOCODING_PROVIDER]
 
 
+# ---- Eircodes (Irish postcodes) ----
+# Each Eircode belongs to one building, so a match is exact anywhere in Ireland: it is tried before the
+# address text, and is not flagged approximate for lying outside the rider's service area.
+
+_EIRCODE = re.compile(r"\b([AC-FHKNPRTV-Y]\d{2}|D6W)\s?([0-9AC-FHKNPRTV-Y]{4})\b", re.IGNORECASE)
+
+
+def find_eircode(raw: str) -> Optional[str]:
+    """The Eircode in an address, formatted "D01 F5P2", or None."""
+    match = _EIRCODE.search(str(raw or ""))
+    return f"{match.group(1)} {match.group(2)}".upper() if match else None
+
+
+def _same_code(a: Any, b: str) -> bool:
+    return re.sub(r"\s+", "", str(a or "")).upper() == b.replace(" ", "")
+
+
+async def _eircode_google(code: str) -> Optional[dict]:
+    for hit in await google_geocode({"address": f"{code}, Ireland", "components": "country:IE"}):
+        # Google sometimes answers with just the routing area ("Dublin 1"); only a full match counts.
+        if _same_code(_google_component(hit, "postal_code"), code):
+            loc = hit["geometry"]["location"]
+            return {"latitude": loc["lat"], "longitude": loc["lng"], "normalized": hit.get("formatted_address"), "approximate": False}
+    return None
+
+
+async def _eircode_nominatim(code: str) -> Optional[dict]:
+    hits = await nominatim("search", {"postalcode": code, "countrycodes": "ie", "limit": "1"})
+    hit = hits[0] if hits else None
+    if not hit or not _same_code((hit.get("address") or {}).get("postcode"), code):
+        return None
+    return {"latitude": float(hit["lat"]), "longitude": float(hit["lon"]), "normalized": hit.get("display_name"), "approximate": False}
+
+
+EIRCODE_PROVIDERS: dict[str, Callable[[str], Awaitable[Optional[dict]]]] = {
+    "none": lambda code: _provider_none(code, None), "nominatim": _eircode_nominatim, "google": _eircode_google,
+}
+# Tests never call the network unless they swap a fake in.
+_eircode_lookup = EIRCODE_PROVIDERS["none" if env.is_test else env.GEOCODING_PROVIDER]
+
+
+def set_eircode_geocoder_for_tests(fn=None) -> None:
+    global _eircode_lookup
+    _eircode_lookup = fn or EIRCODE_PROVIDERS["none" if env.is_test else env.GEOCODING_PROVIDER]
+
+
+async def geocode_eircode(code: str) -> Optional[dict]:
+    """{latitude, longitude, normalized, approximate=False} for an exact Eircode match, else None (never raises)."""
+    key = hashlib.sha1(f"v1|eircode|{code}".encode()).hexdigest()
+    cached = await db.geocodecache.find_unique(where={"key": key})
+    if cached and cached.expiresAt > now() and cached.found:
+        return {"latitude": cached.latitude, "longitude": cached.longitude, "normalized": cached.normalized, "approximate": False}
+    try:
+        result = await _eircode_lookup(code)
+    except Exception:  # noqa: BLE001 - the full address is tried next
+        log(logging.WARNING, "Eircode lookup failed; trying the full address", exc_info=True)
+        return None
+    if result:
+        data = {"found": True, "latitude": result["latitude"], "longitude": result["longitude"], "normalized": result.get("normalized"),
+                "approximate": False, "provider": env.GEOCODING_PROVIDER, "expiresAt": now() + timedelta(days=180)}
+        try:
+            await db.geocodecache.upsert(where={"key": key}, data={"create": {"key": key, **data}, "update": data})
+        except Exception:  # noqa: BLE001
+            pass
+    return result
+
+
 # The same text means different places in different cities, so the rider's area is part of the key.
 def _area_key(area: Any) -> str:
     if not area:
@@ -199,7 +291,11 @@ def cache_key(raw: str, area: Any) -> str:
 
 
 async def geocode_address(raw: str, *, retry_approximate: bool = False, area: Any = None) -> Optional[dict]:
-    """Returns {latitude, longitude, normalized, approximate} or None. Provider errors are not cached."""
+    """Returns {latitude, longitude, normalized, approximate} or None. Provider errors are not cached.
+    An Eircode in the address is looked up first; the full address only when that finds nothing."""
+    code = find_eircode(raw)
+    if code and (hit := await geocode_eircode(code)):
+        return hit
     key = cache_key(raw, area)
     cached = await db.geocodecache.find_unique(where={"key": key})
     if cached and cached.expiresAt > now() and cached.found and (not retry_approximate or not cached.approximate):
@@ -264,6 +360,9 @@ async def _resolve_area_from_nominatim(point: dict) -> Optional[dict]:
     if env.GEOCODING_PROVIDER == "none":
         return None
     latitude, longitude = point["latitude"], point["longitude"]
+    if env.GEOCODING_PROVIDER == "google":
+        results = await google_geocode({"latlng": f"{latitude},{longitude}"})
+        return _google_area(results[0], latitude, longitude) if results else None
     coords = {"lat": _js_number(latitude), "lon": _js_number(longitude)}
     local = await nominatim("reverse", {**coords, "zoom": "10"})
     if not ((local or {}).get("address") or {}).get("country_code"):
@@ -306,6 +405,16 @@ async def find_service_area(query: str) -> Optional[dict]:
     """Finds a city typed by the rider, e.g. "London" or "Narowal, Pakistan"."""
     if env.GEOCODING_PROVIDER == "none":
         return None
+    if env.GEOCODING_PROVIDER == "google":
+        try:
+            results = await google_geocode({"address": query})
+        except Exception:  # noqa: BLE001
+            log(logging.WARNING, "Service area search failed", exc_info=True)
+            raise AppError(503, "GEOCODING_UNAVAILABLE", "Could not look up that city right now. Check your connection and try again.") from None
+        if not results:
+            return None
+        loc = results[0]["geometry"]["location"]
+        return _google_area(results[0], loc["lat"], loc["lng"])
     try:
         hits = await nominatim("search", {"q": query, "limit": "1", "featureType": "settlement"})
     except Exception:  # noqa: BLE001

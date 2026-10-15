@@ -1,7 +1,7 @@
 {
   "expo": {
     "name": "Routify",
-    "slug": "delivery-rider",
+    "slug": "delivery-planner",
     "version": "1.0.0",
     "orientation": "portrait",
     "androidStatusBar": {
@@ -15,7 +15,9 @@
       "infoPlist": {
         "NSCameraUsageDescription": "Delivery Rider uses the camera to capture proof-of-delivery photos.",
         "NSPhotoLibraryUsageDescription": "Delivery Rider needs photo library access to attach a delivery proof photo.",
-        "ITSAppUsesNonExemptEncryption": false
+        "ITSAppUsesNonExemptEncryption": false,
+        "NSSpeechRecognitionUsageDescription": "Delivery Rider converts your speech to text to fill in delivery details.",
+        "NSMicrophoneUsageDescription": "Delivery Rider uses the microphone so you can add deliveries by voice."
       },
       "bundleIdentifier": "com.azaan890.deliveryrider"
     },
@@ -69,8 +71,9 @@
     ],
     "extra": {
       "eas": {
-        "projectId": "222e0ed9-09b1-412e-a590-4e0fe41cd3b9"
+        "projectId": "a75a3bb2-47ff-4a3b-8645-1b40862ba092"
       }
-    }
+    },
+    "owner": "alisulmanpros-team"
   }
 }

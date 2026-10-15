@@ -5,6 +5,7 @@ import { CameraView, useCameraPermissions, type BarcodeType } from 'expo-camera'
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { post, ApiRequestError } from '../lib/api';
 import { NATIVE_BUILD_HINT, loadVoicePanel, readTextFromImage } from '../lib/optionalNative';
+import { PHONE_RX, findParcelLine, isPhone, looksLikeAddress, unwrapCode } from '../lib/labelText';
 import { premium as c, premiumRadius as r } from '../lib/theme';
 import { DARK_ON_PRIMARY, ErrorBanner, IconCircle, PButton, PCard, Pill, type McName } from './Premium';
 
@@ -28,14 +29,6 @@ const TWO_D = /qr|matrix|pdf417|aztec/i;
 const REQUIRED_HITS = 2;
 const VoicePanel = loadVoicePanel();
 
-const PHONE_RX = /\+?\d[\d\s\-()]{7,}\d/;
-/** Phone numbers have 9-15 digits; shorter digit runs on labels are usually parcel IDs. */
-const isPhone = (text: string) => {
-  const digits = text.match(PHONE_RX)?.[0].replace(/\D/g, '').length ?? 0;
-  return digits >= 9 && digits <= 15;
-};
-const PARCEL_RX = /^[A-Z0-9][A-Z0-9\-_/]{4,}$/i;
-
 /** Normalises raw input per field: IDs are compact and upper-case, phones keep only dial characters. */
 function clean(key: FieldKey, raw: string) {
   const value = raw.replace(/[\u0000-\u001F\u007F]/g, ' ').trim();
@@ -44,27 +37,6 @@ function clean(key: FieldKey, raw: string) {
   return value.replace(/\s+/g, ' ');
 }
 
-/** QR labels often wrap the ID in JSON or a tracking URL. */
-function unwrapCode(value: string) {
-  if (value.startsWith('{')) {
-    try {
-      const obj = JSON.parse(value);
-      const id = obj.parcelId ?? obj.trackingId ?? obj.tracking_id ?? obj.tracking ?? obj.awb ?? obj.id ?? obj.orderId;
-      if (id) return String(id);
-    } catch { /* not JSON */ }
-  }
-  if (/^https?:\/\//i.test(value)) {
-    try {
-      const url = new URL(value);
-      const param = ['parcelId', 'trackingId', 'tracking_id', 'tracking', 'awb', 'id', 'order'].map((k) => url.searchParams.get(k)).find(Boolean);
-      return param ?? url.pathname.split('/').filter(Boolean).pop() ?? value;
-    } catch { /* keep raw */ }
-  }
-  return value;
-}
-
-const looksLikeAddress = (text: string) => text.length >= 8 && /[a-z]/i.test(text) && /\s/.test(text) && !/^https?:\/\//i.test(text);
-
 /** Picks the OCR lines most likely to be the value for this step, so the rider usually just confirms. */
 function guessLines(key: FieldKey, lines: string[]) {
   if (key === 'phone') {
@@ -72,10 +44,7 @@ function guessLines(key: FieldKey, lines: string[]) {
     return i >= 0 ? [i] : [];
   }
   if (key === 'parcel') {
-    const candidate = (l: string) => PARCEL_RX.test(l.replace(/\s+/g, '')) && /\d/.test(l);
-    // Prefer IDs mixing letters and digits; fall back to digit-only codes that aren't phone numbers.
-    let i = lines.findIndex((l) => candidate(l) && /[a-z]/i.test(l));
-    if (i < 0) i = lines.findIndex((l) => candidate(l) && !isPhone(l));
+    const i = findParcelLine(lines);
     return i >= 0 ? [i] : [];
   }
   return [];

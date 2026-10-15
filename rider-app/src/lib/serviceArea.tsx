@@ -4,6 +4,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Location from 'expo-location';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { get, put, ApiRequestError } from './api';
+import { TEST_LOCATION } from './location';
 import { useAuth } from './auth';
 import type { ServiceArea } from './types';
 import { premium as c, premiumRadius as r, premiumShadow } from './theme';
@@ -32,6 +33,7 @@ const sameCity = (a: Detected, b: ServiceArea | null) => !!b && a.countryCode ==
   && (a.city.toLowerCase() === b.city.toLowerCase() || distanceKm(a, b) < SAME_CITY_KM);
 
 async function currentPoint(askPermission: boolean) {
+  if (TEST_LOCATION) return TEST_LOCATION;
   let permission = await Location.getForegroundPermissionsAsync();
   if (!permission.granted && askPermission && permission.canAskAgain) permission = await Location.requestForegroundPermissionsAsync();
   if (!permission.granted) return null;

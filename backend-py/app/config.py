@@ -90,6 +90,9 @@ class Settings:
     GEOCODING_PROVIDER: str
     GEOCODING_USER_AGENT: str | None
     GOOGLE_MAPS_API_KEY: str | None
+    ROUTING_PROVIDER: str
+    ROUTING_TRAVEL_MODE: str
+    OSRM_URL: str
     ADMIN_EMAIL: str | None
     ADMIN_PASSWORD: str | None
     ADMIN_NAME: str
@@ -166,6 +169,9 @@ def load_settings() -> Settings:
         GEOCODING_PROVIDER=_enum("GEOCODING_PROVIDER", ("nominatim", "google", "none"), "nominatim"),
         GEOCODING_USER_AGENT=_str("GEOCODING_USER_AGENT"),
         GOOGLE_MAPS_API_KEY=_str("GOOGLE_MAPS_API_KEY"),
+        ROUTING_PROVIDER=_enum("ROUTING_PROVIDER", ("google", "osrm", "none"), "google" if _str("GOOGLE_MAPS_API_KEY") else "osrm"),
+        ROUTING_TRAVEL_MODE=_enum("ROUTING_TRAVEL_MODE", ("BICYCLE", "DRIVE", "TWO_WHEELER"), "BICYCLE"),
+        OSRM_URL=_str("OSRM_URL", "https://router.project-osrm.org") or "https://router.project-osrm.org",
         ADMIN_EMAIL=admin_email,
         ADMIN_PASSWORD=admin_password,
         ADMIN_NAME=_str("ADMIN_NAME", "Platform Admin") or "Platform Admin",
@@ -202,6 +208,8 @@ def load_settings() -> Settings:
         raise ConfigError("GEOCODING_USER_AGENT is required for Nominatim (identify your app + contact email)")
     if settings.GEOCODING_PROVIDER == "google" and not settings.GOOGLE_MAPS_API_KEY:
         raise ConfigError("GOOGLE_MAPS_API_KEY is required when GEOCODING_PROVIDER=google")
+    if settings.ROUTING_PROVIDER == "google" and not settings.GOOGLE_MAPS_API_KEY:
+        raise ConfigError("GOOGLE_MAPS_API_KEY is required when ROUTING_PROVIDER=google")
     if is_production and settings.COOKIE_SAMESITE == "none" and cookie_secure is False:
         raise ConfigError("COOKIE_SAMESITE=none requires COOKIE_SECURE=true")
     _check_email(settings)

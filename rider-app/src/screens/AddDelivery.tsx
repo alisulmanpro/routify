@@ -8,7 +8,8 @@ import { useNav } from '../lib/nav';
 type McIcon = ComponentProps<typeof MaterialCommunityIcons>['name'];
 
 const OPTIONS: { screen: string; icon: McIcon; title: string; subtitle: string }[] = [
-  { screen: 'ScanDelivery', icon: 'camera', title: 'Scan with camera', subtitle: 'Scan the address, then the parcel ID — QR codes, barcodes or printed text' },
+  { screen: 'CameraAdd', icon: 'camera', title: 'Add via camera', subtitle: 'Point at a parcel label. The address is read and checked on the map automatically' },
+  { screen: 'ScanDelivery', icon: 'barcode-scan', title: 'Scan step by step', subtitle: 'Scan the address, then the parcel ID — QR codes, barcodes or printed text' },
   { screen: 'VoiceEntry', icon: 'microphone', title: 'Voice entry', subtitle: 'Say the address, parcel ID and details one by one' },
   { screen: 'AddManual', icon: 'file-document-edit-outline', title: 'Manual entry', subtitle: 'Type a single delivery' },
   { screen: 'ImportFile', icon: 'file-document', title: 'Import from file', subtitle: 'Pick a courier manifest — PDF, Word or Excel. We’ll pull out parcel IDs, addresses and customer details for you to review before adding them.' },
