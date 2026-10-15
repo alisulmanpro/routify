@@ -43,8 +43,12 @@ services:
       - key: GOOGLE_MAPS_API_KEY
         sync: false
 
+      # Client testing: the mock store activates real subscriptions without payment (the app shows "Test store").
+      # Remove mock and ALLOW_MOCK_STORE before launch so only RevenueCat sells plans.
       - key: PAYMENT_STORES
-        value: revenuecat
+        value: revenuecat,mock
+      - key: ALLOW_MOCK_STORE
+        value: "true"
       - key: REVENUECAT_SECRET_API_KEY  # sk_... (V1) from RevenueCat > Project settings > API keys
         sync: false
       - key: REVENUECAT_WEBHOOK_AUTH    # copy this value into RevenueCat > Integrations > Webhooks > Authorization

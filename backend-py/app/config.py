@@ -110,6 +110,7 @@ class Settings:
     SMTP_SECURITY: str
     PASSWORD_RESET_TTL_MINUTES: int
     payment_stores: tuple[str, ...]
+    ALLOW_MOCK_STORE: bool
     APPLE_BUNDLE_ID: str | None
     APPLE_APP_ID: int | None
     APPLE_ENVIRONMENT: str
@@ -190,6 +191,7 @@ def load_settings() -> Settings:
         SMTP_SECURITY=_enum("SMTP_SECURITY", ("starttls", "ssl", "none"), "starttls"),
         PASSWORD_RESET_TTL_MINUTES=_int("PASSWORD_RESET_TTL_MINUTES", 15, lo=5, hi=60),
         payment_stores=_stores(is_production),
+        ALLOW_MOCK_STORE=_bool("ALLOW_MOCK_STORE") or False,
         APPLE_BUNDLE_ID=_str("APPLE_BUNDLE_ID"),
         APPLE_APP_ID=_int("APPLE_APP_ID", 0, lo=0) or None,
         APPLE_ENVIRONMENT=_enum("APPLE_ENVIRONMENT", ("sandbox", "production"), "sandbox"),
@@ -231,8 +233,10 @@ def _stores(is_production: bool) -> tuple[str, ...]:
 
 def _check_payments(settings: Settings) -> None:
     stores = settings.payment_stores
-    if "mock" in stores and settings.is_production:
-        raise ConfigError("PAYMENT_STORES=mock is not allowed in production (it grants paid plans without payment)")
+    # A staging/demo server may opt in explicitly: the mock store grants paid plans without any payment.
+    if "mock" in stores and settings.is_production and not settings.ALLOW_MOCK_STORE:
+        raise ConfigError("PAYMENT_STORES=mock is not allowed in production (it grants paid plans without payment); "
+                          "set ALLOW_MOCK_STORE=true only on a test/demo server")
     if "apple" in stores:
         if not settings.APPLE_BUNDLE_ID:
             raise ConfigError("APPLE_BUNDLE_ID is required when PAYMENT_STORES includes apple")

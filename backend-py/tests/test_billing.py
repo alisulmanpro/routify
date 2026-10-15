@@ -478,3 +478,24 @@ def test_revenuecat_needs_a_secret_key():
                 os.environ.pop(k, None)
             else:
                 os.environ[k] = v
+
+
+def test_mock_store_in_production_needs_an_explicit_opt_in():
+    import os
+
+    from app.config import ConfigError, load_settings
+
+    saved = {k: os.environ.get(k) for k in ("NODE_ENV", "PAYMENT_STORES", "ALLOW_MOCK_STORE", "EMAIL_PROVIDER")}
+    os.environ.update(NODE_ENV="production", PAYMENT_STORES="mock", EMAIL_PROVIDER="disabled")
+    try:
+        os.environ.pop("ALLOW_MOCK_STORE", None)
+        with pytest.raises(ConfigError, match="ALLOW_MOCK_STORE"):
+            load_settings()
+        os.environ["ALLOW_MOCK_STORE"] = "true"
+        assert load_settings().payment_stores == ("mock",)
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
