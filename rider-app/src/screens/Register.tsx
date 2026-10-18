@@ -14,7 +14,7 @@ const ALL_CURRENCIES: Currency[] = ['USD', 'GBP', 'EUR', 'PKR', 'INR'];
 export default function Register({ onGoLogin }: { onGoLogin: () => void }) {
   const { register } = useAuth();
   const [config, setConfig] = useState<PublicConfig | null>(null);
-  const [form, setForm] = useState({ fullName: '', phone: '', email: '', password: '', confirmPassword: '', currency: 'USD' as Currency });
+  const [form, setForm] = useState({ fullName: '', email: '', password: '', confirmPassword: '', currency: 'USD' as Currency });
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const set = (key: keyof typeof form) => (value: string) => setForm((f) => ({ ...f, [key]: value }));
@@ -47,7 +47,6 @@ export default function Register({ onGoLogin }: { onGoLogin: () => void }) {
           <ErrorBanner text={error} />
           <PCard style={{ gap: 14 }}>
             <View><SectionLabel>Full name</SectionLabel><PInput icon="person-outline" value={form.fullName} onChangeText={set('fullName')} placeholder="Ali Hassan" autoCapitalize="words" /></View>
-            <View><SectionLabel>Phone</SectionLabel><PInput icon="call-outline" keyboardType="phone-pad" value={form.phone} onChangeText={set('phone')} placeholder="+92 300 1234567" /></View>
             <View><SectionLabel>Email</SectionLabel><PInput icon="mail-outline" autoCapitalize="none" keyboardType="email-address" value={form.email} onChangeText={set('email')} placeholder="you@example.com" /></View>
           </PCard>
 
@@ -69,7 +68,7 @@ export default function Register({ onGoLogin }: { onGoLogin: () => void }) {
             </View>
           </PCard>
 
-          <PButton title="Create account" icon="person-add-outline" onPress={submit} loading={busy} disabled={!form.fullName || !form.phone || !form.email || !form.password} chevron style={{ marginTop: 20 }} />
+          <PButton title="Create account" icon="person-add-outline" onPress={submit} loading={busy} disabled={!form.fullName || !form.email || !form.password} chevron style={{ marginTop: 20 }} />
           <Pressable onPress={onGoLogin} style={{ alignItems: 'center', paddingVertical: 18 }}>
             <Text style={{ color: c.textSecondary, fontSize: 14 }}>Already have an account? <Text style={{ color: c.primary, fontWeight: '800' }}>Sign in</Text></Text>
           </Pressable>

@@ -218,3 +218,12 @@ async def test_same_password_in_both_boxes_gets_a_clear_message(client):
     _, auth = await rider(client, "same-twice@example.com")
     res = await client.post("/api/v1/auth/change-password", headers=auth, json={"currentPassword": NEW_PASSWORD, "newPassword": NEW_PASSWORD})
     assert res.status_code == 422 and res.json()["error"]["code"] == "SAME_PASSWORD"
+
+
+async def test_new_riders_get_a_welcome_email(client, outbox):
+    await rider(client, "welcome-me@example.com", name="Ali <b>Raza</b>")
+    await background.wait_all()
+    welcome = [m for m in outbox.sent if m.to == "welcome-me@example.com"]
+    assert len(welcome) == 1 and welcome[0].subject.startswith("Welcome to")
+    assert "Hi Ali" in welcome[0].text and "Add a route" in welcome[0].text
+    assert "<b>Raza" not in welcome[0].html, "the name must be escaped in the HTML part"

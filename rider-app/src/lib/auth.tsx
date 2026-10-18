@@ -4,7 +4,7 @@ import { forgetRider } from './revenuecat';
 import type { User, Currency } from './types';
 
 type AuthState = { user: User | null; loading: boolean };
-type RegisterInput = { fullName: string; phone: string; email: string; password: string; confirmPassword: string; currency: Currency };
+type RegisterInput = { fullName: string; email: string; password: string; confirmPassword: string; currency: Currency };
 type AuthContextValue = AuthState & {
   login: (email: string, password: string) => Promise<void>;
   register: (input: RegisterInput) => Promise<void>;

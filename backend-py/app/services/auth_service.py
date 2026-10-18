@@ -103,7 +103,14 @@ async def _issue_tokens(user: Any, *, family: str | None = None, user_agent: str
 async def register(data: dict, ctx: dict) -> dict:
     user = await create_rider_account(full_name=data["fullName"], email=data["email"], password=data["password"], currency=data["currency"])
     tokens = await _issue_tokens(user, user_agent=ctx.get("userAgent"))
+    await _send_welcome(user)
     return {"user": serialize_user(user), **tokens}
+
+
+async def _send_welcome(user: Any) -> None:
+    """Sent in the background: sign-up never waits on (or fails because of) the email provider."""
+    platform = (await get_settings())["platform"]
+    send_in_background(emails.welcome(to=user.email, name=user.fullName, platform=platform["name"], support_email=platform["supportEmail"] or None))
 
 
 CLIENT_ROLE = {"mobile": "rider", "web": "owner_admin"}

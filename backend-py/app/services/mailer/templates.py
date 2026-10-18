@@ -42,5 +42,27 @@ def password_changed(*, to: str, name: str, platform: str, support_email: str | 
     return EmailMessage(to=to, to_name=_single_line(name), subject=f"Your {_single_line(platform)} password was changed", text=text, html=html)
 
 
+def welcome(*, to: str, name: str, platform: str, support_email: str | None) -> EmailMessage:
+    first = name.split()[0] if name.split() else name
+    steps = [
+        ("Add a route", "Tap Add route on Home, give it a name and pick the day. You can plan tomorrow's route tonight."),
+        ("Add your stops", "Type, scan, speak or pin each address. Parcel IDs are optional."),
+        ("Plan and go", "Choose Smartest, Nearest first or Most efficient, then follow the live navigation."),
+    ]
+    help_text = f"Questions? Reply to this email or write to {support_email}." if support_email else "Questions? Just reply to this email."
+    text = (f"Hi {first},\n\nWelcome to {platform}! Your rider account is ready.\n\n"
+            + "".join(f"{i}. {title}: {body}\n" for i, (title, body) in enumerate(steps, 1))
+            + f"\n{help_text}\n\nSafe riding,\nThe {platform} team\n")
+    rows = "".join(f"""
+<tr><td style="padding:0 12px 14px 0;vertical-align:top"><span style="display:inline-block;width:24px;height:24px;line-height:24px;border-radius:12px;background:{ORANGE};color:#ffffff;font-weight:bold;font-size:13px;text-align:center">{i}</span></td>
+<td style="padding:0 0 14px;font-size:14px"><strong>{escape(title)}</strong><br><span style="color:#475569">{escape(body)}</span></td></tr>"""
+                   for i, (title, body) in enumerate(steps, 1))
+    html = _layout(platform, f"Welcome, {first}!", f"""
+<p style="margin:0 0 18px;font-size:14px">Your {escape(platform)} rider account is ready. Here is how to get going:</p>
+<table role="presentation" cellspacing="0" cellpadding="0">{rows}</table>
+<p style="margin:8px 0 0;font-size:12px;color:#64748b">{escape(help_text)}</p>""")
+    return EmailMessage(to=to, to_name=_single_line(name), subject=f"Welcome to {_single_line(platform)}", text=text, html=html)
+
+
 def _single_line(value: str) -> str:
     return " ".join(value.split())[:120]
