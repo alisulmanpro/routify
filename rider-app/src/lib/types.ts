@@ -28,7 +28,7 @@ export type Delivery = {
 export type RouteStop = { order: number; legDistanceKm: number; legDurationMin: number; delivery: Delivery };
 export type RouteSummary = { total: number; delivered: number; failed: number; pending: number; distanceKm: number; routeMinutes: number | null };
 export type Route = {
-  id: string; status: 'planned' | 'active' | 'completed'; preference: RoutePreference; serviceDate: string;
+  id: string; name: string | null; status: 'planned' | 'active' | 'completed'; preference: RoutePreference; serviceDate: string;
   origin: { latitude: number; longitude: number } | null; distanceKm: number; durationMin: number;
   startedAt: string | null; completedAt: string | null; stops: RouteStop[];
   progress: { total: number; done: number; remaining: number }; currentStopId: string | null; summary: RouteSummary;
@@ -47,6 +47,9 @@ export type Dashboard = {
 export type HistoryDay = { date: string; total: number; delivered: number; failed: number; pending: number; distanceKm: number; hasReport: boolean };
 
 export type ReportRow = { id: string; date: string; summary: Record<string, number | string | null>; downloadUrl: string; viewUrl: string; generatedAt: string; fileSize: number };
+
+/** A matching address for what the rider typed, from POST /deliveries/geocode-suggest. */
+export type AddressSuggestion = { label: string; latitude: number; longitude: number; approximate: boolean };
 
 export type ImportDraftItem = { trackingId: string; customerName: string; phone: string; address: string; note: string; flags: string[] };
 export type ImportDraft = { fileType: string; items: ImportDraftItem[] };

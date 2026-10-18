@@ -29,10 +29,14 @@ async def save_delivery(d: Any, data: dict) -> Any:
 def _to_row(actor: dict, item: dict) -> dict:
     customer = item.get("customer") or {}
     row = {
-        "id": new_id(), "riderId": actor["id"], "trackingId": item["trackingId"],
+        "id": new_id(), "riderId": actor["id"], "trackingId": item.get("trackingId") or None,
         "customerName": customer.get("name") or "", "customerPhone": customer.get("phone") or "",
         "addressRaw": item["address"]["raw"], **FRESH_ADDRESS, "serviceDate": item.get("serviceDate") or today_key(),
     }
+    # A picked suggestion or a dropped pin is an exact location, so route planning needs no lookup.
+    if location := item.get("location"):
+        row.update(addressLatitude=location["latitude"], addressLongitude=location["longitude"], addressNormalized=item["address"]["raw"],
+                   addressGeocoded=True, geocodeStatus="found")
     if item.get("note"):
         row["note"] = item["note"]
     return row
@@ -48,12 +52,14 @@ async def create_many(actor: dict, items: list[dict]) -> list[dict]:
         await lock_rider(tx, actor["id"])
         await assert_can_create_deliveries(actor, len(items), tx)
 
-        ids = [i["trackingId"] for i in items]
-        existing = {d.trackingId for d in await tx.delivery.find_many(where={"riderId": actor["id"], "trackingId": {"in": ids}})}
+        ids = [i["trackingId"] for i in items if i.get("trackingId")]
+        existing = {d.trackingId for d in await tx.delivery.find_many(where={"riderId": actor["id"], "trackingId": {"in": ids}})} if ids else set()
         in_batch: set[str] = set()
         details = []
         for index, item in enumerate(items):
-            tid = item["trackingId"]
+            tid = item.get("trackingId")
+            if not tid:
+                continue
             if tid in existing:
                 details.append({"index": index, "path": "trackingId", "code": "DUPLICATE", "message": f"Parcel ID {tid} already exists"})
             elif tid in in_batch:
@@ -125,7 +131,9 @@ async def update(actor: dict, delivery_id: str, patch: dict) -> dict:
         raise conflict("Only pending deliveries can be edited", "INVALID_STATE")
 
     data: dict[str, Any] = {}
-    if patch.get("trackingId") and patch["trackingId"] != delivery.trackingId:
+    if patch.get("trackingId") == "" and delivery.trackingId:
+        data["trackingId"] = None
+    elif patch.get("trackingId") and patch["trackingId"] != delivery.trackingId:
         taken = await db.delivery.find_first(where={"riderId": delivery.riderId, "trackingId": patch["trackingId"], "NOT": [{"id": delivery.id}]})
         if taken:
             raise conflict(f"Parcel ID {patch['trackingId']} already exists", "DUPLICATE_TRACKING_ID")

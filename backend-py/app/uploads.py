@@ -36,7 +36,8 @@ DOCUMENT = UploadSpec("file", 10 * MB, (
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     "application/vnd.ms-excel",
     "text/csv",
-), ("pdf", "docx", "doc", "xlsx", "xls", "csv"))
+    "text/plain",
+), ("pdf", "docx", "doc", "xlsx", "xls", "csv", "txt"))
 
 
 def _ext(name: str | None) -> str:
@@ -100,7 +101,7 @@ def detect_document_type(data: Optional[bytes], filename: Optional[str]) -> str:
     if not data:
         raise unprocessable("No file was uploaded", "FILE_REQUIRED")
     ext = _ext(filename) if filename and "." in filename else ""
-    if ext not in ("pdf", "docx", "doc", "xlsx", "xls", "csv"):
+    if ext not in ("pdf", "docx", "doc", "xlsx", "xls", "csv", "txt"):
         raise AppError(415, "UNSUPPORTED_FILE", "Unsupported file type")
     if ext == "pdf" and data[:5] != b"%PDF-":
         raise AppError(415, "INVALID_FILE", "File does not appear to be a valid PDF")
@@ -108,4 +109,6 @@ def detect_document_type(data: Optional[bytes], filename: Optional[str]) -> str:
         raise AppError(415, "INVALID_FILE", "File does not appear to be a valid Office document")
     if ext in ("doc", "xls") and data[:2] != b"\xd0\xcf":
         raise AppError(415, "INVALID_FILE", "File does not appear to be a valid Office document")
+    if ext == "txt" and b"\x00" in data[:4096]:
+        raise AppError(415, "INVALID_FILE", "File does not appear to be a plain text file")
     return ext

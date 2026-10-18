@@ -192,11 +192,28 @@ def extract_pdf_text(data: bytes) -> tuple[str, int]:
     return text, pages
 
 
+ADDRESS_HEADER = re.compile(r"^(delivery\s*)?(address(es)?|stops?|locations?)\s*:?$", I)
+
+
+def extract_addresses_from_lines(text: str) -> list[dict]:
+    """Pure function: a plain list of stops, one address per line (a .txt file or a one-column sheet)."""
+    items = []
+    for raw in text.replace("\r", "").split("\n"):
+        line = re.sub(r"^\d{1,3}[.)]\s+", "", re.sub(r"\s+", " ", raw).strip(" ,;\t"))  # drops "1. " numbering
+        if len(line) < 5 or len(line) > 400 or ADDRESS_HEADER.match(line) or not re.search(r"[A-Za-z]", line):
+            continue
+        items.append({"trackingId": "", "customerName": "", "phone": "", "address": line, "note": "", "flags": []})
+    return items[:300]
+
+
 async def flag_duplicates(actor: dict, items: list[dict]) -> None:
-    rows = await db.delivery.find_many(where={"riderId": actor["id"], "trackingId": {"in": [i["trackingId"] for i in items]}})
+    ids = [i["trackingId"] for i in items if i["trackingId"]]
+    rows = await db.delivery.find_many(where={"riderId": actor["id"], "trackingId": {"in": ids}}) if ids else []
     existing = {r.trackingId for r in rows}
     seen: set[str] = set()
     for item in items:
+        if not item["trackingId"]:
+            continue
         if item["trackingId"] in existing or item["trackingId"] in seen:
             item["flags"].append("duplicate")
         seen.add(item["trackingId"])
@@ -211,7 +228,7 @@ async def build_draft(actor: dict, file: Optional[UploadedFile]) -> dict[str, An
     text, pages = await asyncio.to_thread(extract_pdf_text, file.data)
     if not text.strip():
         raise unprocessable("No text found. Scanned/image PDFs are not supported — add these deliveries manually.", "PDF_NO_TEXT")
-    items = extract_deliveries_from_text(text)
+    items = extract_deliveries_from_text(text) or extract_addresses_from_lines(text)
     if not items:
         raise unprocessable("No deliveries were recognised in this PDF. Add them manually instead.", "PDF_NO_DELIVERIES")
     await flag_duplicates(actor, items)

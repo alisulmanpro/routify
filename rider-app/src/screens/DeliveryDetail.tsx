@@ -6,7 +6,7 @@ import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useFocusEffect } from '../lib/useFocusEffect';
 import { get, post, del, postFile, fileUrl, ApiRequestError } from '../lib/api';
 import type { Delivery, FailureReason, Route } from '../lib/types';
-import { FAILURE_LABELS, timeOnly } from '../lib/format';
+import { FAILURE_LABELS, stopLabel, timeOnly, todayKey } from '../lib/format';
 import { Screen } from '../components/Kit';
 import { ErrorBanner, IconCircle, PButton, PCard, PInput, Pill, SectionLabel, type PillTone } from '../components/Premium';
 import { premium as c, premiumRadius as r } from '../lib/theme';
@@ -69,7 +69,7 @@ export default function DeliveryDetail({ id, onDone }: { id: string; onDone: () 
   const deliver = async () => {
     if (!delivery?.routeId) { confirmDelivery(); return; }
     try {
-      const route = (await get<Route | null>('/routes/current')).data;
+      const route = (await get<Route | null>('/routes/current', { date: todayKey() })).data;
       const current = route?.stops.find((stop) => stop.delivery.id === delivery.id);
       const earlier = current && route
         ? route.stops.find((stop) => stop.order < current.order && (stop.delivery.status === 'pending' || stop.delivery.status === 'in_progress'))
@@ -77,7 +77,7 @@ export default function DeliveryDetail({ id, onDone }: { id: string; onDone: () 
       if (earlier && current) {
         Alert.alert(
           'Earlier delivery still open',
-          `Delivery no. ${earlier.order} (parcel ${earlier.delivery.trackingId}) is not finished. Continue with delivery no. ${current.order}?`,
+          `Delivery no. ${earlier.order} (${stopLabel(earlier.delivery)}) is not finished. Continue with delivery no. ${current.order}?`,
           [
             { text: 'Cancel', style: 'cancel' },
             { text: 'Continue anyway', style: 'destructive', onPress: () => confirmDelivery(true) },
@@ -122,10 +122,10 @@ export default function DeliveryDetail({ id, onDone }: { id: string; onDone: () 
         {/* Parcel header */}
         <PCard accent>
           <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
-            <View style={s.parcelTag}><Text style={s.parcelTagText}>Parcel ID{delivery.stopOrder ? ` · Stop ${delivery.stopOrder}` : ''}</Text></View>
+            <View style={s.parcelTag}><Text style={s.parcelTagText}>{delivery.trackingId ? 'Parcel ID' : 'Stop'}{delivery.stopOrder ? ` · Stop ${delivery.stopOrder}` : ''}</Text></View>
             <Pill text={status.label} tone={status.tone} />
           </View>
-          <Text style={s.parcelId} selectable>{delivery.trackingId}</Text>
+          <Text style={s.parcelId} selectable numberOfLines={2}>{delivery.trackingId || stopLabel(delivery)}</Text>
           {delivery.deliveredAt ? <Text style={s.meta}>Delivered at {timeOnly(delivery.deliveredAt)}</Text> : null}
           {delivery.failedAt ? <Text style={s.meta}>Failed at {timeOnly(delivery.failedAt)}</Text> : null}
         </PCard>

@@ -2,17 +2,17 @@
 
 stops: [{id, latitude, longitude, addressKey}] (all geocoded).
 
-Every route is ordered nearest-next: start → nearest stop → nearest of the remaining → … .
-With a road `matrix` (metres and seconds between every pair of points, from routing_service) "nearest"
-means shortest road distance; without one, straight-line (haversine) distance.
-preference 'smart' additionally visits stops at the same address one after another; 'nearest_first'
-and 'shortest' are kept for stored settings and behave the same as each other.
-
-solve_open_path (exact / 2-opt optimisation) is kept for a possible "shortest total" mode but is not
-used for ordering.
+The three route types the rider chooses from:
+- 'nearest_first': start → nearest stop → nearest of the remaining → … (greedy, by distance).
+- 'shortest' ("most efficient"): the order with the least total distance (solve_open_path).
+- 'smart' ("smartest"): the order with the least total travel time, visiting stops at the same address
+  one after another.
+With a road `matrix` (metres and seconds between every pair of points, from routing_service) costs are
+road distances / travel times; without one, straight-line (haversine) distance stands in for both.
 """
 from __future__ import annotations
 
+import time
 from typing import Optional
 
 from ..http import js_round, round2
@@ -21,6 +21,8 @@ from .geo import haversine_km
 ROAD_FACTOR = 1.3  # straight-line → typical urban road distance
 CLUSTER_KM = 0.05
 EXACT_LIMIT = 12
+# Longest the optimiser may search for a better order on a big route; the best order found so far is used.
+SEARCH_SECONDS = 2.0
 START = "__start__"
 
 
@@ -38,7 +40,7 @@ def plan_route(*, origin: dict | None, stops: list[dict], preference: str, avg_s
         a_id = START if a is None else a.get("id") or a["members"][0]["id"]
         b_id = b.get("id") or b["members"][0]["id"]
         if road and (hit := road(a_id, b_id)):
-            return hit[0] / 1000  # road km
+            return hit[1] / 60 if preference == "smart" else hit[0] / 1000  # road minutes / road km
         if a is None:
             return haversine_km(origin, b) if origin else 0.0
         return haversine_km(a, b)
@@ -52,7 +54,7 @@ def plan_route(*, origin: dict | None, stops: list[dict], preference: str, avg_s
             if i != j:
                 table[i + 1][j + 1] = cost(nodes[i], nodes[j])
 
-    path = _nearest_neighbour(table, first=None)
+    path = _nearest_neighbour(table, first=None) if preference == "nearest_first" else solve_open_path(table)
 
     order: list[str] = []
     legs: list[dict] = []
@@ -108,9 +110,14 @@ def solve_open_path(table: list[list[float]]) -> list[int]:
         return min(options, key=lambda p: path_cost(table, p))
     if n <= EXACT_LIMIT:
         return _held_karp(table)
+    # Local search from a few greedy starts (from the start point, then from the nearest stops), within a time budget.
+    deadline = time.monotonic() + SEARCH_SECONDS
+    starts: list[Optional[int]] = [None, *sorted(range(1, n + 1), key=lambda j: table[0][j])[:max(0, min(n, 600 // n) - 1)]]
     best: list[int] | None = None
-    for first in range(1, n + 1):
-        candidate = _improve(table, _nearest_neighbour(table, first=first))
+    for first in starts:
+        if best is not None and time.monotonic() > deadline:
+            break
+        candidate = _improve(table, _nearest_neighbour(table, first=first), deadline)
         if best is None or path_cost(table, candidate) < path_cost(table, best) - 1e-9:
             best = candidate
     return best or []
@@ -165,34 +172,60 @@ def _nearest_neighbour(table: list[list[float]], first: int | None) -> list[int]
     return path
 
 
-def _improve(table: list[list[float]], path: list[int]) -> list[int]:
-    """2-opt (segment reversal) and Or-opt (move 1-3 stops elsewhere) until neither helps."""
-    best = path[:]
-    best_cost = path_cost(table, best)
-    n = len(best)
-    for _ in range(50):
+def _improve(table: list[list[float]], path: list[int], deadline: Optional[float] = None) -> list[int]:
+    """2-opt (segment reversal) and Or-opt (move 1-3 stops elsewhere) until neither helps or `deadline` passes.
+    Each candidate move is priced in O(1) from prefix sums, so costs may be asymmetric (one-way streets)."""
+    seq = [0] + path  # seq[0] is the start; the path is open (no return)
+    n = len(seq)
+    eps = 1e-9
+    for _ in range(100):
+        if deadline is not None and time.monotonic() > deadline:
+            break
         improved = False
-        for i in range(n - 1):
+        # fwd[k]: cost of seq[0..k] as driven; rev[k]: the same edges driven backwards.
+        fwd, rev = [0.0] * n, [0.0] * n
+        for k in range(1, n):
+            fwd[k] = fwd[k - 1] + table[seq[k - 1]][seq[k]]
+            rev[k] = rev[k - 1] + table[seq[k]][seq[k - 1]]
+        # 2-opt: reverse seq[i..j].
+        for i in range(1, n - 1):
+            a, first = seq[i - 1], seq[i]
             for j in range(i + 1, n):
-                cand = best[:i] + best[i:j + 1][::-1] + best[j + 1:]
-                c = path_cost(table, cand)
-                if c < best_cost - 1e-9:
-                    best, best_cost, improved = cand, c, True
+                last = seq[j]
+                after = seq[j + 1] if j + 1 < n else None
+                old = table[a][first] + (fwd[j] - fwd[i]) + (table[last][after] if after is not None else 0.0)
+                new = table[a][last] + (rev[j] - rev[i]) + (table[first][after] if after is not None else 0.0)
+                if new < old - eps:
+                    seq[i:j + 1] = seq[i:j + 1][::-1]
+                    improved = True
+                    break
+            if improved:
+                break
+        if improved:
+            continue
+        # Or-opt: move seq[i..i+size-1] (kept in order) to another gap.
         for size in (1, 2, 3):
-            for i in range(n - size + 1):
-                seg = best[i:i + size]
-                rest = best[:i] + best[i + size:]
-                for j in range(len(rest) + 1):
-                    if j == i:
-                        continue
-                    cand = rest[:j] + seg + rest[j:]
-                    c = path_cost(table, cand)
-                    if c < best_cost - 1e-9:
-                        best, best_cost, improved = cand, c, True
+            for i in range(1, n - size + 1):
+                head, tail = seq[i], seq[i + size - 1]
+                before, after = seq[i - 1], seq[i + size] if i + size < n else None
+                gain = table[before][head] + (table[tail][after] - table[before][after] if after is not None else 0.0)
+                rest = seq[:i] + seq[i + size:]
+                for k in range(len(rest)):
+                    if k == i - 1:
+                        continue  # its current place
+                    x, y = rest[k], rest[k + 1] if k + 1 < len(rest) else None
+                    cost = table[x][head] + (table[tail][y] - table[x][y] if y is not None else 0.0)
+                    if cost < gain - eps:
+                        seq = rest[:k + 1] + seq[i:i + size] + rest[k + 1:]
+                        improved = True
                         break
+                if improved:
+                    break
+            if improved:
+                break
         if not improved:
             break
-    return best
+    return seq[1:]
 
 
 def _cluster(stops: list[dict]) -> list[dict]:

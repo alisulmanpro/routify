@@ -55,7 +55,7 @@ async def serialize_route(route: Any) -> dict:
     new_stops = 0 if str(route.status) == "completed" else await db.delivery.count(
         where={"riderId": route.riderId, "status": "pending", "routeId": None, "serviceDate": route.serviceDate})
     return {
-        "id": route.id, "status": str(route.status), "preference": str(route.preference), "serviceDate": route.serviceDate,
+        "id": route.id, "name": route.name or None, "status": str(route.status), "preference": str(route.preference), "serviceDate": route.serviceDate,
         "origin": _origin(route),
         "distanceKm": route.distanceKm, "durationMin": route.durationMin, "startedAt": route.startedAt, "completedAt": route.completedAt,
         "optimization": route.optimization, "newStops": new_stops,
@@ -70,8 +70,9 @@ def _require_rider(actor: dict) -> None:
         raise forbidden("Only riders manage routes")
 
 
-async def _release_planned(actor: dict) -> None:
-    planned = await db.route.find_many(where={"riderId": actor["id"], "status": "planned"})
+async def _release_planned(actor: dict, date: str) -> None:
+    """Replanning a day replaces that day's unstarted route; routes planned for other days stay."""
+    planned = await db.route.find_many(where={"riderId": actor["id"], "status": "planned", "serviceDate": date})
     if not planned:
         return
     ids = [r.id for r in planned]
@@ -150,7 +151,9 @@ async def _plan(deliveries: list[Any], origin: Optional[dict], preference: str, 
     points = ([origin] if origin else []) + [{"latitude": d.addressLatitude, "longitude": d.addressLongitude} for d in located]
     ids = ([START] if origin else []) + [d.id for d in located]
     matrix = await routing_service.road_matrix(ids, points) if located else None
-    plan = plan_route(
+    # Ordering is CPU work (up to an exact search), so it runs off the event loop.
+    plan = await asyncio.to_thread(
+        plan_route,
         origin=origin, preference=preference, avg_speed_kmh=settings["route"]["avgSpeedKmh"], service_minutes=settings["route"]["stopServiceMinutes"],
         stops=[{"id": d.id, "latitude": d.addressLatitude, "longitude": d.addressLongitude, "addressKey": normalize_address(d.addressRaw)} for d in located],
         matrix=matrix,
@@ -172,11 +175,14 @@ async def _assign_stops(route_id: str, rider_id: str, stops: list[dict]) -> None
 
 
 async def build(actor: dict, *, preference: Optional[str] = None, origin: Optional[dict] = None, delivery_ids: Optional[list[str]] = None,
-                date: Optional[str] = None) -> dict:
+                date: Optional[str] = None, name: Optional[str] = None) -> dict:
     _require_rider(actor)
-    if await db.route.find_first(where={"riderId": actor["id"], "status": "active"}):
+    date = date or today_key()
+    active = await db.route.find_first(where={"riderId": actor["id"], "status": "active"})
+    # A route for a later day can be planned while today's is underway (e.g. tomorrow's, the night before).
+    if active and active.serviceDate >= date:
         raise conflict("Finish or end your active route before planning a new one", "ROUTE_ACTIVE")
-    await _release_planned(actor)
+    await _release_planned(actor, date)
 
     where: dict[str, Any] = {"riderId": actor["id"], "status": "pending", "routeId": None}
     if delivery_ids:
@@ -193,7 +199,7 @@ async def build(actor: dict, *, preference: Optional[str] = None, origin: Option
     stops, distance_km, duration_min, optimization = await _plan(deliveries, origin, pref, settings)
 
     route = await db.route.create(data={
-        "id": new_id(), "riderId": actor["id"], "serviceDate": date or today_key(), "preference": pref,
+        "id": new_id(), "riderId": actor["id"], "serviceDate": date, "name": name or None, "preference": pref,
         "status": "planned", "originLatitude": origin["latitude"] if origin else None, "originLongitude": origin["longitude"] if origin else None,
         "distanceKm": distance_km, "durationMin": duration_min, "optimization": optimization,
     })
@@ -294,11 +300,21 @@ async def get_by_id(actor: dict, route_id: str) -> dict:
     return await serialize_route(await _find_mine(actor, route_id))
 
 
-async def get_current(actor: dict) -> Optional[dict]:
+async def get_current(actor: dict, date: Optional[str] = None) -> Optional[dict]:
+    """The route underway, else the one planned for today (routes planned for later days are "upcoming")."""
     _require_rider(actor)
     route = (await db.route.find_first(where={"riderId": actor["id"], "status": "active"})
-             or await db.route.find_first(where={"riderId": actor["id"], "status": "planned"}, order=[{"createdAt": "desc"}, {"id": "desc"}]))
+             or await db.route.find_first(where={"riderId": actor["id"], "status": "planned", "serviceDate": {"lte": date or today_key()}},
+                                          order=[{"createdAt": "desc"}, {"id": "desc"}]))
     return await serialize_route(route) if route else None
+
+
+async def list_upcoming(actor: dict, date: Optional[str] = None) -> list[dict]:
+    """Routes planned for days after `date` (default today), soonest first."""
+    _require_rider(actor)
+    routes = await db.route.find_many(where={"riderId": actor["id"], "status": "planned", "serviceDate": {"gt": date or today_key()}},
+                                      order=[{"serviceDate": "asc"}, {"createdAt": "asc"}])
+    return [await serialize_route(r) for r in routes]
 
 
 async def start(actor: dict, route_id: str) -> dict:

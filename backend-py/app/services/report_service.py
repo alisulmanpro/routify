@@ -58,7 +58,7 @@ def _render_pdf(*, rider_name: str, date: str, summary: dict, deliveries: list[A
     for index, d in enumerate(deliveries):
         status = str(d.status)
         block: list = [HRFlowable(width="100%", thickness=0.5, color=HexColor("#dddddd"), spaceAfter=6),
-                       Paragraph(t(f"{index + 1}. Parcel {d.trackingId} - {status.upper().replace('_', ' ', 1)}"), bold)]
+                       Paragraph(t(f"{index + 1}. {f'Parcel {d.trackingId}' if d.trackingId else 'Stop'} - {status.upper().replace('_', ' ', 1)}"), bold)]
         customer = "  ".join(x for x in [d.customerName, f"({d.customerPhone})" if d.customerPhone else ""] if x)
         if customer:
             block.append(Paragraph(t(f"Customer: {customer}"), body))

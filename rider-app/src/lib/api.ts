@@ -102,11 +102,13 @@ export const patch = <T,>(path: string, body?: unknown) => api<T>(path, { method
 export const put = <T,>(path: string, body?: unknown) => api<T>(path, { method: 'PUT', body });
 export const del = <T,>(path: string) => api<T>(path, { method: 'DELETE' });
 
-export async function postFile<T>(path: string, fileUri: string, fieldName: string, mimeType: string) {
+/** Uploads a local file. Pass `fileName` for documents: the server reads the type from its extension. */
+export async function postFile<T>(path: string, fileUri: string, fieldName: string, mimeType: string, fileName?: string) {
   await loadTokens();
   if (!cacheDirectory) throw new Error('The app cache directory is unavailable');
 
-  const extension = mimeType === 'application/pdf' ? 'pdf' : mimeType === 'image/png' ? 'png' : 'jpg';
+  const named = fileName?.match(/\.([a-z0-9]{1,5})$/i)?.[1]?.toLowerCase();
+  const extension = named || (mimeType === 'application/pdf' ? 'pdf' : mimeType === 'image/png' ? 'png' : 'jpg');
   const stagedUri = `${cacheDirectory}upload-${Date.now()}-${Math.random().toString(36).slice(2)}.${extension}`;
   await copyAsync({ from: fileUri, to: stagedUri });
   const url = `${API_URL}/api/v1${path}`;

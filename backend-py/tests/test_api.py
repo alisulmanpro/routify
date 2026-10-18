@@ -418,6 +418,76 @@ async def test_pdf_import_reads_a_real_pdf(client):
     assert res.json()["data"]["items"][0]["trackingId"] == "ORD-3001"
 
 
+async def test_stops_need_only_an_address_and_routes_keep_their_name(client):
+    _, auth = await rider(client, "add-route@example.com")
+    # Two stops with no parcel ID do not clash; one carries the location the rider picked.
+    first = await client.post("/api/v1/deliveries/manual", headers=auth, json={"address": {"raw": "10 Main Street, Dublin"},
+                                                                             "location": {"latitude": 53.35, "longitude": -6.26}})
+    second = await client.post("/api/v1/deliveries/manual", headers=auth, json={"trackingId": "", "address": {"raw": "5 Grafton Street, Dublin"}})
+    assert first.status_code == 201 and second.status_code == 201, (first.text, second.text)
+    assert first.json()["data"]["trackingId"] == "" and second.json()["data"]["trackingId"] == ""
+    assert first.json()["data"]["address"]["geocodeStatus"] == "found"
+    assert first.json()["data"]["address"]["latitude"] == 53.35
+
+    ids = [first.json()["data"]["id"], second.json()["data"]["id"]]
+    built = await client.post("/api/v1/routes/build", headers=auth, json={"name": "Friday north", "preference": "shortest", "deliveryIds": ids})
+    assert built.status_code == 201, built.text
+    route = built.json()["data"]
+    assert route["name"] == "Friday north" and route["preference"] == "shortest"
+    assert sorted(s["delivery"]["id"] for s in route["stops"]) == sorted(ids)
+
+
+async def test_tomorrows_route_can_be_planned_tonight_without_touching_today(client):
+    from datetime import date, timedelta
+
+    _, auth = await rider(client, "plan-ahead@example.com")
+    today, tomorrow = date.today().isoformat(), (date.today() + timedelta(days=1)).isoformat()
+    now_stop = await client.post("/api/v1/deliveries/manual", headers=auth, json={"address": {"raw": "1 Today Street, Dublin"}, "serviceDate": today})
+    later_stop = await client.post("/api/v1/deliveries/manual", headers=auth, json={"address": {"raw": "2 Tomorrow Road, Dublin"}, "serviceDate": tomorrow})
+    today_route = await client.post("/api/v1/routes/build", headers=auth, json={"name": "Today", "date": today, "deliveryIds": [now_stop.json()["data"]["id"]]})
+    later_route = await client.post("/api/v1/routes/build", headers=auth, json={"name": "Tomorrow", "date": tomorrow, "deliveryIds": [later_stop.json()["data"]["id"]]})
+    assert today_route.status_code == 201 and later_route.status_code == 201, (today_route.text, later_route.text)
+
+    # Planning tomorrow kept today's planned route, and "current" is still today's.
+    current = (await client.get("/api/v1/routes/current", headers=auth, params={"date": today})).json()["data"]
+    assert current["id"] == today_route.json()["data"]["id"]
+    upcoming = (await client.get("/api/v1/routes/upcoming", headers=auth, params={"date": today})).json()["data"]
+    assert [r["name"] for r in upcoming] == ["Tomorrow"] and upcoming[0]["serviceDate"] == tomorrow
+
+    # Today's dashboard does not count tomorrow's stop yet.
+    dash = (await client.get("/api/v1/rider/dashboard", headers=auth, params={"date": today})).json()["data"]
+    assert dash["total"] == 1 and dash["routeId"] == today_route.json()["data"]["id"]
+
+
+async def test_plain_text_address_list_imports_without_parcel_ids(client):
+    _, auth = await rider(client, "txt-import@example.com")
+    txt = b"10 Main Street, Dublin\n5 Grafton Street, Dublin 2\n"
+    res = await client.post("/api/v1/deliveries/import/file", headers=auth, files={"file": ("stops.txt", txt, "text/plain")})
+    assert res.status_code == 200, res.text
+    assert res.json()["data"]["fileType"] == "txt"
+    assert [i["address"] for i in res.json()["data"]["items"]] == ["10 Main Street, Dublin", "5 Grafton Street, Dublin 2"]
+
+
+async def test_address_suggestions_come_from_the_provider(client):
+    from app.services import geocoding_service
+
+    _, auth = await rider(client, "suggest@example.com")
+    geocoding_service.set_suggester_for_tests(lambda query, area: _async([
+        {"label": f"{query}, Dublin", "latitude": 53.34, "longitude": -6.26, "approximate": False},
+        {"label": f"{query}, Cork", "latitude": 51.9, "longitude": -8.47, "approximate": True},
+    ]))
+    try:
+        res = await client.post("/api/v1/deliveries/geocode-suggest", headers=auth, json={"query": "Main St", "latitude": 53.35, "longitude": -6.26})
+    finally:
+        geocoding_service.set_suggester_for_tests()
+    assert res.status_code == 200, res.text
+    assert [s["label"] for s in res.json()["data"]] == ["Main St, Dublin", "Main St, Cork"]
+
+
+async def _async(value):
+    return value
+
+
 async def test_geocode_check_looks_up_an_address_without_saving(client):
     _, auth = await rider(client, "geocode-check@example.com")
     try:

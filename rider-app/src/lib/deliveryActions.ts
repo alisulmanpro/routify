@@ -1,6 +1,7 @@
 import { Alert, Linking, Platform } from 'react-native';
 import { post, ApiRequestError } from './api';
 import type { Delivery } from './types';
+import { stopLabel } from './format';
 
 /** Opens Google Maps turn-by-turn directions to a delivery. */
 export function openDirections(delivery: Delivery) {
@@ -24,7 +25,7 @@ const confirm = (title: string, message: string, action: string) => new Promise<
  * if earlier stops on the route are still open. Resolves true when it was marked delivered.
  */
 export async function markDelivered(delivery: Delivery): Promise<boolean> {
-  const name = delivery.customer.name || `parcel ${delivery.trackingId}`;
+  const name = stopLabel(delivery);
   if (!(await confirm('Mark as delivered?', `Confirm the parcel was handed over to ${name}. A proof photo can be added from the delivery details.`, 'Delivered'))) return false;
   if (delivery.status === 'pending') await post(`/deliveries/${delivery.id}/arrive`);
   try {
@@ -37,11 +38,3 @@ export async function markDelivered(delivery: Delivery): Promise<boolean> {
   return true;
 }
 
-/** Saves a scanned label as a delivery: the same request the camera's label review form sends. */
-export async function saveScannedLabel({ parcelId, name, phone, address }: { parcelId: string; name: string; phone: string; address: string }) {
-  await post('/deliveries/manual', {
-    trackingId: parcelId.trim().toUpperCase(),
-    customer: { name: name.trim(), phone: phone.trim() },
-    address: { raw: address },
-  });
-}

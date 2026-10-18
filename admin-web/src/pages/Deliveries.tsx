@@ -46,7 +46,7 @@ export default function Deliveries() {
               <tbody>
                 {rows.map((d) => (
                   <tr key={d.id}>
-                    <td><strong>{d.trackingId}</strong></td>
+                    <td><strong>{d.trackingId || '—'}</strong></td>
                     <td>{d.customer.name || '—'}{d.customer.phone && <><br /><small className="muted-small">{d.customer.phone}</small></>}</td>
                     <td>{d.riderName || 'Unknown'}</td>
                     <td>{d.address.raw}{!d.address.geocoded && <><br /><small className="muted-small warn">Location not found</small></>}</td>

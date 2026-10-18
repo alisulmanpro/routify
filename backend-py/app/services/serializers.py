@@ -40,7 +40,7 @@ def serialize_delivery(d: Any) -> dict:
     address["raw"] = clean_delivery_address(d.addressRaw, d.payment)
     return {
         "id": d.id, "riderId": d.riderId,
-        "trackingId": d.trackingId,
+        "trackingId": d.trackingId or "",
         "customer": {"name": d.customerName or "", "phone": d.customerPhone or ""},
         "address": address,
         "status": str(d.status),

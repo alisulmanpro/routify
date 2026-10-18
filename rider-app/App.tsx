@@ -19,15 +19,12 @@ configureRevenueCat();
 // The native splash stays up until AnimatedSplash has drawn its first frame (it takes over seamlessly).
 void SplashScreen.preventAutoHideAsync().catch(() => {});
 import Dashboard from './src/screens/Dashboard';
-import DeliveriesList from './src/screens/DeliveriesList';
 import RouteMapScreen from './src/screens/RouteMapScreen';
+import NewRoute from './src/screens/NewRoute';
+import AddStops from './src/screens/AddStops';
+import RoutePreview from './src/screens/RoutePreview';
+import LiveNavigation from './src/screens/LiveNavigation';
 import DeliveryDetail from './src/screens/DeliveryDetail';
-import AddDelivery from './src/screens/AddDelivery';
-import AddManual from './src/screens/AddManual';
-import ImportFile from './src/screens/ImportFile';
-import ScanDelivery from './src/screens/ScanDelivery';
-import CameraAdd from './src/screens/CameraAdd';
-import VoiceEntry from './src/screens/VoiceEntry';
 import History from './src/screens/History';
 import Reports from './src/screens/Reports';
 import SubscriptionScreen from './src/screens/Subscription';
@@ -37,7 +34,6 @@ import Account from './src/screens/Account';
 type IconName = React.ComponentProps<typeof Ionicons>['name'];
 const TABS: { key: TabName; label: string; icon: IconName; activeIcon: IconName }[] = [
   { key: 'home', label: 'Home', icon: 'home-outline', activeIcon: 'home' },
-  { key: 'deliveries', label: 'Deliveries', icon: 'cube-outline', activeIcon: 'cube' },
   { key: 'history', label: 'History', icon: 'time-outline', activeIcon: 'time' },
   { key: 'reports', label: 'Reports', icon: 'reader-outline', activeIcon: 'reader' },
   { key: 'account', label: 'Account', icon: 'person-outline', activeIcon: 'person' },
@@ -49,15 +45,12 @@ function ScreenRouter() {
 
   switch (current.name) {
     case 'Dashboard': return <Dashboard />;
-    case 'DeliveriesList': return <DeliveriesList />;
-    case 'RouteMapScreen': return <RouteMapScreen />;
+    case 'RouteMapScreen': return <RouteMapScreen reveal={!!current.params?.reveal} routeId={current.params?.routeId as string | undefined} />;
+    case 'NewRoute': return <NewRoute />;
+    case 'AddStops': return <AddStops name={current.params!.name as string} date={current.params!.date as string} />;
+    case 'RoutePreview': return <RoutePreview name={current.params!.name as string} date={current.params!.date as string} ids={current.params!.ids as string[]} />;
+    case 'LiveNavigation': return <LiveNavigation />;
     case 'DeliveryDetail': return <DeliveryDetail id={current.params!.id as string} onDone={() => { goBack(); refresh(); }} />;
-    case 'AddDelivery': return <AddDelivery />;
-    case 'AddManual': return <AddManual onCreated={refresh} />;
-    case 'ImportFile': return <ImportFile onCreated={refresh} />;
-    case 'ScanDelivery': return <ScanDelivery onCreated={refresh} />;
-    case 'CameraAdd': return <CameraAdd onCreated={refresh} />;
-    case 'VoiceEntry': return <VoiceEntry onCreated={refresh} />;
     case 'History': return <History />;
     case 'Reports': return <Reports />;
     case 'SubscriptionScreen': return <SubscriptionScreen />;
@@ -67,16 +60,8 @@ function ScreenRouter() {
   }
 }
 
-// Screens whose Back leaves the add-deliveries flow for the Deliveries list (all route stops).
-const BACK_TO_DELIVERIES = new Set(['CameraAdd']);
-
-function useBack() {
-  const { current, canGoBack, goBack, openDeliveries } = useNav();
-  return { canGoBack, back: BACK_TO_DELIVERIES.has(current.name) ? openDeliveries : goBack };
-}
-
 function BackBar() {
-  const { canGoBack, back } = useBack();
+  const { canGoBack, goBack: back } = useNav();
   // Android's back button/gesture does the same as the Back bar.
   useEffect(() => {
     const sub = BackHandler.addEventListener('hardwareBackPress', () => { if (!canGoBack) return false; back(); return true; });

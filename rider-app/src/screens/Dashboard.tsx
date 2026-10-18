@@ -4,7 +4,7 @@ import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useFocusEffect } from '../lib/useFocusEffect';
 import { get, post, ApiRequestError } from '../lib/api';
 import type { Dashboard as DashboardType, Route } from '../lib/types';
-import { todayKey } from '../lib/format';
+import { dayLabel, todayKey } from '../lib/format';
 import { getRouteOrigin } from '../lib/location';
 import { Banner, Screen } from '../components/Kit';
 import { PButton } from '../components/Premium';
@@ -19,7 +19,7 @@ type McIcon = ComponentProps<typeof MaterialCommunityIcons>['name'];
 const gradient = (value: string): ViewStyle => ({ experimental_backgroundImage: value } as ViewStyle);
 
 const ACTION_HINT: Record<DashboardType['nextAction'], string> = {
-  setup: 'No stops yet. Tap to add deliveries',
+  setup: 'No stops yet. Tap Add route to start',
   start: 'Ready to go. Tap to start your route',
   continue: 'Route in progress. Keep going!',
   complete: 'You’re all caught up!',
@@ -33,17 +33,23 @@ function greeting() {
 }
 
 export default function Dashboard() {
-  const { switchTab, navigate } = useNav();
+  const { navigate } = useNav();
   const [planning, setPlanning] = useState(false);
   const [data, setData] = useState<DashboardType | null>(null);
+  // Routes planned ahead for later days (e.g. tomorrow's, planned the night before).
+  const [upcoming, setUpcoming] = useState<Route[]>([]);
   const [error, setError] = useState('');
   const [refreshing, setRefreshing] = useState(false);
   const [starting, setStarting] = useState(false);
 
   const load = useCallback(async () => {
     try {
-      const res = await get<DashboardType>('/rider/dashboard', { date: todayKey() });
+      const [res, ahead] = await Promise.all([
+        get<DashboardType>('/rider/dashboard', { date: todayKey() }),
+        get<Route[]>('/routes/upcoming', { date: todayKey() }),
+      ]);
       setData(res.data);
+      setUpcoming(ahead.data);
       setError('');
     } catch (err) {
       setError(err instanceof ApiRequestError ? err.message : 'Could not load your dashboard');
@@ -62,7 +68,7 @@ export default function Dashboard() {
         const origin = await getRouteOrigin();
         const planned = await post<Route>('/routes/build', origin ? { origin } : {});
         await post<Route>(`/routes/${planned.data.id}/start`);
-        switchTab('deliveries');
+        navigate('RouteMapScreen');
       } catch (err) {
         setError(err instanceof ApiRequestError ? err.message : 'Could not start a delivery route');
       } finally {
@@ -70,20 +76,20 @@ export default function Dashboard() {
       }
       return;
     }
-    switchTab('deliveries');
+    navigate('RouteMapScreen');
   };
 
-  // Plans (but does not start) a route from today's open stops, then shows it in Deliveries.
+  // Plans (but does not start) a route from today's open stops, then shows it on the route map.
   const planRoute = async () => {
     if (!data || planning) return;
-    if (data.routeStatus === 'planned') { switchTab('deliveries'); return; }
-    if (data.pending === 0) { navigate('AddDelivery'); return; }
+    if (data.routeStatus === 'planned') { navigate('RouteMapScreen'); return; }
+    if (data.pending === 0) return;
     setPlanning(true);
     setError('');
     try {
       const origin = await getRouteOrigin();
       await post<Route>('/routes/build', origin ? { origin } : {});
-      switchTab('deliveries');
+      navigate('RouteMapScreen');
     } catch (err) {
       setError(err instanceof ApiRequestError ? err.message : 'Could not plan a route');
     } finally {
@@ -155,17 +161,35 @@ export default function Dashboard() {
           </View>
         </Pressable>
 
-        {/* Plan route: only when no route is underway */}
-        {!hasActiveRoute ? (
+        {/* Add route: name it, add stops, choose the route type, plan it on the map */}
+        <PButton title="Add route" icon="add-circle" onPress={() => navigate('NewRoute')} chevron style={{ marginBottom: 10 }} />
+        {hasActiveRoute ? (
+          <PButton title="Continue navigation" icon="navigate" variant="secondary" onPress={() => navigate('LiveNavigation')} chevron style={{ marginBottom: 16 }} />
+        ) : data.routeStatus === 'planned' || data.pending > 0 ? (
           <PButton
-            title={data.routeStatus === 'planned' ? 'View planned route' : data.pending > 0 ? `Plan route · ${data.pending} stop${data.pending === 1 ? '' : 's'}` : 'Plan route · add deliveries'}
-            icon={data.pending > 0 ? 'git-network-outline' : 'add-circle-outline'}
+            title={data.routeStatus === 'planned' ? 'View planned route' : `Plan route · ${data.pending} stop${data.pending === 1 ? '' : 's'}`}
+            icon="git-network-outline"
+            variant="secondary"
             onPress={planRoute}
             loading={planning}
             chevron
             style={{ marginBottom: 16 }}
           />
-        ) : null}
+        ) : <View style={{ height: 6 }} />}
+
+        {upcoming.map((route) => (
+          <Pressable key={route.id} onPress={() => navigate('RouteMapScreen', { routeId: route.id })} style={({ pressed }) => [s.card, s.routeCard, pressed && { opacity: 0.9 }]}>
+            <View style={s.routeIcon}>
+              <MaterialCommunityIcons name="calendar-check-outline" size={22} color={c.primary} />
+            </View>
+            <View style={{ flex: 1, marginLeft: 14, marginRight: 10 }}>
+              <Text style={[s.label, { color: c.primary }]}>{dayLabel(route.serviceDate)} · Planned</Text>
+              <Text style={s.routeTitle} numberOfLines={1}>{route.name || 'Planned route'}</Text>
+              <Text style={{ color: c.textSecondary, fontSize: 12, marginTop: 2 }}>{route.stops.length} stop{route.stops.length === 1 ? '' : 's'} · {route.distanceKm} km</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={20} color={c.text} />
+          </Pressable>
+        ))}
 
         {/* Stats */}
         <View style={{ flexDirection: 'row', gap: 12, marginBottom: 16 }}>
@@ -183,7 +207,7 @@ export default function Dashboard() {
         </View>
 
         {/* Route completion */}
-        <Pressable onPress={() => switchTab('deliveries')} style={({ pressed }) => [s.card, s.routeCard, pressed && { opacity: 0.9 }]}>
+        <Pressable onPress={() => navigate('RouteMapScreen')} style={({ pressed }) => [s.card, s.routeCard, pressed && { opacity: 0.9 }]}>
           <View style={s.routeIcon}>
             <MaterialCommunityIcons name="map-marker-path" size={24} color={c.primary} />
           </View>

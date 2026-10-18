@@ -146,7 +146,8 @@ model Delivery {
   id         String @id @db.VarChar(24)
   riderId    String @db.VarChar(24)
   rider      User   @relation(fields: [riderId], references: [id], onDelete: Cascade)
-  trackingId String @db.VarChar(80)
+  // Optional: riders can add a stop with only an address. Postgres lets many rows share a NULL here.
+  trackingId String? @db.VarChar(80)
 
   customerName  String @default("") @db.VarChar(160)
   customerPhone String @default("") @db.VarChar(32)
@@ -199,6 +200,8 @@ model Route {
   riderId         String          @db.VarChar(24)
   rider           User            @relation(fields: [riderId], references: [id], onDelete: Cascade)
   serviceDate     String          @db.VarChar(10)
+  /// The name the rider gives the route when creating it (e.g. "Monday north").
+  name            String?         @db.VarChar(80)
   preference      RoutePreference
   status          RouteStatus     @default(planned)
   originLatitude  Float?

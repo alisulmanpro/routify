@@ -18,6 +18,13 @@ export type GoogleRouteMapProps = {
   // Pin mode: a fixed pin sits in the middle of the map and the rider moves the map under it.
   pinning?: boolean;
   onCenterChange?: (center: Coordinates) => void;
+  // Where pin mode starts when there are no stops yet (e.g. the rider's city).
+  initialCenter?: Coordinates | null;
+  // Shows only the first `reveal` stops (pins drop in one by one); the camera still frames them all.
+  reveal?: number;
+  // Navigation: the camera follows the rider, rotated to their direction of travel.
+  follow?: boolean;
+  heading?: number | null;
 };
 
 const EDGE = { top: 60, right: 50, bottom: 60, left: 50 };
@@ -28,7 +35,7 @@ const MARKER_COLORS: Record<MapStop['kind'], { bg: string; fg: string; border: s
   failed: { bg: c.danger, fg: '#fff', border: '#fff' },
 };
 
-export default function GoogleRouteMap({ stops, position, path, order, focus, style, pinning, onCenterChange }: GoogleRouteMapProps) {
+export default function GoogleRouteMap({ stops, position, path, order, focus, style, pinning, onCenterChange, initialCenter, reveal, follow, heading }: GoogleRouteMapProps) {
   const map = useRef<MapView>(null);
   const [ready, setReady] = useState(false);
   // Android draws custom marker views once; keep redrawing briefly so they appear, then stop for speed.
@@ -40,11 +47,11 @@ export default function GoogleRouteMap({ stops, position, path, order, focus, st
   useEffect(() => {
     const timer = setTimeout(() => setRedraw(false), 800);
     return () => clearTimeout(timer);
-  }, [stops]);
+  }, [stops, reveal]);
   useEffect(() => {
     const timer = setTimeout(() => setRedraw(true), 0);
     return () => clearTimeout(timer);
-  }, [stops]);
+  }, [stops, reveal]);
 
   // Every marker (all stops and the rider) in view.
   const fit = (animated: boolean) => {
@@ -59,7 +66,7 @@ export default function GoogleRouteMap({ stops, position, path, order, focus, st
   // Re-fit when the stops or their order change (new route, re-optimised, a stop pinned).
   const fitKey = stops.map((s) => `${s.id}@${s.latitude},${s.longitude}`).join('|');
   useEffect(() => {
-    if (!ready || userMoved.current || pinning || (!stops.length && !position)) return;
+    if (!ready || userMoved.current || pinning || follow || (!stops.length && !position)) return;
     fit(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ready, fitKey, pinning]);
@@ -67,7 +74,7 @@ export default function GoogleRouteMap({ stops, position, path, order, focus, st
   // The map grows and shrinks with the list below; fit again once its size settles.
   const onLayout = (_e: LayoutChangeEvent) => {
     if (layoutTimer.current) clearTimeout(layoutTimer.current);
-    layoutTimer.current = setTimeout(() => { if (ready && !userMoved.current && !pinning) fit(true); }, 250);
+    layoutTimer.current = setTimeout(() => { if (ready && !userMoved.current && !pinning && !follow) fit(true); }, 250);
   };
   useEffect(() => () => { if (layoutTimer.current) clearTimeout(layoutTimer.current); }, []);
 
@@ -78,7 +85,15 @@ export default function GoogleRouteMap({ stops, position, path, order, focus, st
     map.current?.animateCamera({ center: focus, zoom: 16 }, { duration: 500 });
   }, [ready, focus]);
 
-  const start = position || stops[0] || { latitude: 0, longitude: 0 };
+  // Navigation keeps the rider in view, a little zoomed in, facing the way they travel.
+  useEffect(() => {
+    if (!ready || !follow || !position || userMoved.current) return;
+    map.current?.animateCamera({ center: position, zoom: 17, heading: heading ?? 0, pitch: 35 }, { duration: 600 });
+  }, [ready, follow, position, heading]);
+
+  const start = position || stops[0] || initialCenter || { latitude: 0, longitude: 0 };
+  const shown = reveal == null ? stops : stops.slice(0, reveal);
+  const revealing = reveal != null && reveal < stops.length;
 
   return (
     <View onLayout={onLayout} style={[{ height: 300, overflow: 'hidden', backgroundColor: c.surface }, style]}>
@@ -86,7 +101,7 @@ export default function GoogleRouteMap({ stops, position, path, order, focus, st
         ref={map}
         provider={PROVIDER_GOOGLE}
         style={{ flex: 1 }}
-        initialRegion={{ ...start, latitudeDelta: 0.05, longitudeDelta: 0.05 }}
+        initialRegion={{ ...start, latitudeDelta: start === initialCenter ? 0.2 : 0.05, longitudeDelta: start === initialCenter ? 0.2 : 0.05 }}
         customMapStyle={DARK_STYLE}
         onMapReady={() => setReady(true)}
         onRegionChangeComplete={(region, details) => {
@@ -95,16 +110,16 @@ export default function GoogleRouteMap({ stops, position, path, order, focus, st
         }}
         toolbarEnabled={false}
         showsCompass={false}
-        rotateEnabled={false}
-        pitchEnabled={false}
+        rotateEnabled={!!follow}
+        pitchEnabled={!!follow}
       >
-        {path.length > 1 ? (
+        {revealing ? null : path.length > 1 ? (
           <Polyline coordinates={path} strokeColor={c.primary} strokeWidth={5} />
         ) : order.length > 1 || (position && order.length) ? (
           <Polyline coordinates={position ? [position, ...order] : order} strokeColor={c.primary} strokeWidth={3} lineDashPattern={[10, 8]} />
         ) : null}
 
-        {stops.map((s) => {
+        {shown.map((s) => {
           const col = MARKER_COLORS[s.kind];
           const big = s.kind === 'next';
           return (
@@ -136,7 +151,7 @@ export default function GoogleRouteMap({ stops, position, path, order, focus, st
         </View>
       ) : null}
 
-      <Pressable onPress={() => { userMoved.current = false; fit(true); }} hitSlop={6} style={{ position: 'absolute', right: 12, top: 12, width: 40, height: 40, borderRadius: 20, backgroundColor: 'rgba(13,22,41,0.92)', borderWidth: 1, borderColor: c.border, alignItems: 'center', justifyContent: 'center' }}>
+      <Pressable onPress={() => { userMoved.current = false; if (follow && position) map.current?.animateCamera({ center: position, zoom: 17, heading: heading ?? 0, pitch: 35 }, { duration: 400 }); else fit(true); }} hitSlop={6} style={{ position: 'absolute', right: 12, top: 12, width: 40, height: 40, borderRadius: 20, backgroundColor: 'rgba(13,22,41,0.92)', borderWidth: 1, borderColor: c.border, alignItems: 'center', justifyContent: 'center' }}>
         <MaterialCommunityIcons name="crosshairs-gps" size={19} color={c.primary} />
       </Pressable>
     </View>

@@ -9,11 +9,12 @@ from .route_service import OPEN, summarize
 
 
 async def dashboard(actor: dict, date: str) -> dict:
+    # Today's work plus anything still open from earlier days; stops planned for later days are not counted yet.
     user, deliveries, active, planned = await asyncio.gather(
         db.user.find_unique(where={"id": actor["id"]}),
-        db.delivery.find_many(where={"riderId": actor["id"], "OR": [{"serviceDate": date}, {"status": {"in": list(OPEN)}}]}),
+        db.delivery.find_many(where={"riderId": actor["id"], "OR": [{"serviceDate": date}, {"status": {"in": list(OPEN)}, "serviceDate": {"lte": date}}]}),
         db.route.find_first(where={"riderId": actor["id"], "status": "active"}, order=[{"createdAt": "desc"}, {"id": "desc"}]),
-        db.route.find_first(where={"riderId": actor["id"], "status": "planned"}, order=[{"createdAt": "desc"}, {"id": "desc"}]),
+        db.route.find_first(where={"riderId": actor["id"], "status": "planned", "serviceDate": {"lte": date}}, order=[{"createdAt": "desc"}, {"id": "desc"}]),
     )
     route = active or planned
     s = summarize(deliveries, route if route and route.status == "active" else None)

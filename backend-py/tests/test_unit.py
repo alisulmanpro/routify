@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from app.services.geocoding_service import is_inside_area, locality_queries
-from app.services.pdf_import import extract_deliveries_from_text
+from app.services.pdf_import import extract_addresses_from_lines, extract_deliveries_from_text
 from app.services.route_planner import plan_route
 from app.services.serializers import clean_delivery_address
 
@@ -205,7 +205,7 @@ def test_finds_eircodes_in_address_text():
 
 def test_test_cartons_go_nearest_next_from_dublin_city_centre():
     stops = [stop(code, lat, lon) for code, (_, lat, lon) in TEST_CARTONS.items()]
-    plan = plan_route(origin=TEST_LOCATION, stops=stops, preference="smart")
+    plan = plan_route(origin=TEST_LOCATION, stops=stops, preference="nearest_first")
     names = [TEST_CARTONS[code][0] for code in plan["order"]]
     assert names[:6] == ["GPO", "Trinity", "Guinness", "Croke Park", "DCU", "Maynooth"]
     assert sorted(names) == sorted(p[0] for p in TEST_CARTONS.values())
@@ -254,3 +254,50 @@ async def test_google_route_matrix_is_read_in_blocks_by_index(monkeypatch):
     assert sorted(seen) == sorted([(25, 25), (25, 5), (5, 25), (5, 5)])
     assert result["distances"][0][29] == 29000 and result["distances"][29][3] == 26000
     assert result["durations"][2][7] == 300 and result["distances"][4][4] == 0
+
+
+# ---- route types the rider chooses from ----
+
+def test_most_efficient_beats_nearest_first_on_total_distance():
+    # From 0: nearest-first goes 1 -> 3 -> -2 (8 units); the shortest total is -2 -> 1 -> 3 (7 units).
+    stops = [stop("a", 0, 1), stop("b", 0, -2), stop("c", 0, 3)]
+    origin = {"latitude": 0, "longitude": 0}
+    nearest = plan_route(origin=origin, stops=stops, preference="nearest_first", service_minutes=0)
+    shortest = plan_route(origin=origin, stops=stops, preference="shortest", service_minutes=0)
+    assert nearest["order"] == ["a", "c", "b"]
+    assert shortest["order"] == ["b", "a", "c"]
+    assert shortest["distanceKm"] < nearest["distanceKm"]
+
+
+def test_smartest_minimises_travel_time_not_distance():
+    # By distance "b" first is shorter; by road time (a slow road to "b") "a" first is quicker.
+    stops = [stop("a", 0, 0.02), stop("b", 0, 0.01)]
+    matrix = {
+        "ids": ["__start__", "a", "b"],
+        "durations": [[0, 120, 1500], [120, 0, 120], [1500, 1500, 0]],
+        "distances": [[0, 2000, 1000], [2000, 0, 1500], [1000, 1500, 0]],
+    }
+    origin = {"latitude": 0, "longitude": 0}
+    assert plan_route(origin=origin, stops=stops, preference="shortest", matrix=matrix)["order"] == ["b", "a"]
+    assert plan_route(origin=origin, stops=stops, preference="smart", matrix=matrix)["order"] == ["a", "b"]
+
+
+def test_big_routes_are_optimised_quickly():
+    import time
+
+    from app.services.route_planner import _nearest_neighbour, path_cost, solve_open_path
+    table = _random_table(150, 7)
+    started = time.monotonic()
+    path = solve_open_path(table)
+    assert time.monotonic() - started < 4
+    assert sorted(path) == list(range(1, 151))
+    assert path_cost(table, path) < path_cost(table, _nearest_neighbour(table, first=None))
+
+
+# ---- plain address lists (txt / one-column sheets) ----
+
+def test_reads_one_address_per_line_and_skips_headers_and_numbering():
+    text = "Addresses\n1. 10 Main Street, Dublin\n\n2) 5 Grafton St, Dublin 2\n123\nD02 X285\n"
+    items = extract_addresses_from_lines(text)
+    assert [i["address"] for i in items] == ["10 Main Street, Dublin", "5 Grafton St, Dublin 2", "D02 X285"]
+    assert all(i["trackingId"] == "" for i in items)

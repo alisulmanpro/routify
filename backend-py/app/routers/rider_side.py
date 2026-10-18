@@ -64,6 +64,7 @@ class BuildBody(Schema):
     origin: Optional[Point] = None
     deliveryIds: Optional[Annotated[list[ObjectId], Field(max_length=300)]] = None
     date: Optional[DateKey] = None
+    name: Optional[Annotated[str, StringConstraints(strip_whitespace=True, max_length=80)]] = None
 
 
 @routes_router.post("/build")
@@ -71,13 +72,27 @@ async def build_route(request: Request):
     actor = await authenticate(request, "rider")
     body = (await validate(request, body=BuildBody))["body"]
     return respond(await routes.build(actor, preference=body.preference, origin=body.origin.model_dump() if body.origin else None,
-                                      delivery_ids=body.deliveryIds, date=body.date), 201)
+                                      delivery_ids=body.deliveryIds, date=body.date, name=body.name), 201)
+
+
+class DayQuery(Schema):
+    # The rider's local date, so "today" follows their clock rather than the server's (UTC).
+    date: Optional[DateKey] = None
 
 
 @routes_router.get("/current")
 async def current_route(request: Request):
     actor = await authenticate(request, "rider")
-    return respond(await routes.get_current(actor))
+    query = (await validate(request, query=DayQuery))["query"]
+    return respond(await routes.get_current(actor, query.date))
+
+
+@routes_router.get("/upcoming")
+async def upcoming_routes(request: Request):
+    """Routes planned for later days, e.g. tomorrow's route planned the night before."""
+    actor = await authenticate(request, "rider")
+    query = (await validate(request, query=DayQuery))["query"]
+    return respond(await routes.list_upcoming(actor, query.date))
 
 
 @routes_router.get("")

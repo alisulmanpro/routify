@@ -193,12 +193,42 @@ async def _provider_google(address: str, area: Any) -> Optional[dict]:
         params["bounds"] = f"{min_lat},{min_lon}|{max_lat},{max_lon}"
         params["components"] = f"country:{_area(area, 'countryCode')}"
     results = await google_geocode(params)
-    if not results:
-        return None
-    hit = results[0]
-    loc = hit["geometry"]["location"]
-    result = {"latitude": loc["lat"], "longitude": loc["lng"], "normalized": hit.get("formatted_address")}
-    return {**result, "approximate": hit["geometry"].get("location_type") == "APPROXIMATE" or not is_inside_area(result, area)}
+    result = None
+    if results:
+        hit = results[0]
+        loc = hit["geometry"]["location"]
+        result = {"latitude": loc["lat"], "longitude": loc["lng"], "normalized": hit.get("formatted_address")}
+        result["approximate"] = hit["geometry"].get("location_type") == "APPROXIMATE" or not is_inside_area(result, area)
+    # Place names ("railway station", "City Hospital") are what Geocoding is worst at: look them up as places in the city.
+    if area and (not result or result["approximate"]):
+        try:
+            places = await google_places(address, area, limit=1)
+        except Exception:  # noqa: BLE001 - the geocoding answer (if any) still stands
+            log(logging.WARNING, "Places lookup failed", exc_info=True)
+            places = []
+        if places:
+            p = places[0]
+            return {"latitude": p["latitude"], "longitude": p["longitude"], "normalized": p["label"], "approximate": False}
+    return result
+
+
+async def google_places(query: str, area: Any, *, limit: int) -> list[dict]:
+    """Places API (New) Text Search, restricted to the rider's service area. [{label, latitude, longitude}]."""
+    min_lon, min_lat, max_lon, max_lat = area_box(area)
+    body = {"textQuery": query, "pageSize": limit,
+            "locationRestriction": {"rectangle": {"low": {"latitude": min_lat, "longitude": min_lon}, "high": {"latitude": max_lat, "longitude": max_lon}}}}
+    headers = {"X-Goog-Api-Key": env.GOOGLE_MAPS_API_KEY, "X-Goog-FieldMask": "places.displayName,places.formattedAddress,places.location"}
+    async with httpx.AsyncClient(timeout=TIMEOUT) as client:
+        res = await client.post("https://places.googleapis.com/v1/places:searchText", json=body, headers=headers)
+    if res.status_code >= 400:
+        raise RuntimeError(f"Google Places responded {res.status_code}")
+    out = []
+    for place in res.json().get("places", []):
+        name = (place.get("displayName") or {}).get("text") or ""
+        address = place.get("formattedAddress") or ""
+        label = address if not name or address.lower().startswith(name.lower()) else f"{name}, {address}" if address else name
+        out.append({"label": label, "latitude": place["location"]["latitude"], "longitude": place["location"]["longitude"]})
+    return out
 
 
 PROVIDERS: dict[str, Callable[[str, Any], Awaitable[Optional[dict]]]] = {
@@ -339,6 +369,107 @@ async def geocode_many(addresses: list[str], **options) -> dict[str, Optional[di
 
         await asyncio.gather(*(worker() for _ in range(min(5, len(queue)))))
     return out
+
+
+# ---- Suggestions while typing, and the address at a dropped pin ----
+
+SUGGEST_LIMIT = 5
+
+
+def _suggestion(label: Any, latitude: float, longitude: float, area: Any, *, precise: bool) -> dict:
+    point = {"latitude": latitude, "longitude": longitude}
+    return {"label": str(label or ""), "latitude": latitude, "longitude": longitude,
+            "approximate": not precise or not is_inside_area(point, area)}
+
+
+async def _suggest_google(query: str, area: Any) -> list[dict]:
+    """Places in the rider's city first (best for names like "railway station"), then street addresses.
+    Matches outside the city are only offered when nothing inside it matched, and are flagged."""
+    out: list[dict] = []
+    if area:
+        try:
+            out += [{**p, "approximate": False} for p in await google_places(query, area, limit=SUGGEST_LIMIT)]
+        except Exception:  # noqa: BLE001 - street address matches below still help
+            log(logging.WARNING, "Places suggestions failed", exc_info=True)
+    params = {"address": query}
+    if area:
+        min_lon, min_lat, max_lon, max_lat = area_box(area)
+        params["bounds"] = f"{min_lat},{min_lon}|{max_lat},{max_lon}"
+        if _area(area, "countryCode"):
+            params["components"] = f"country:{_area(area, 'countryCode')}"
+    addresses = []
+    for hit in (await google_geocode(params))[:SUGGEST_LIMIT]:
+        loc = hit["geometry"]["location"]
+        addresses.append(_suggestion(hit.get("formatted_address"), loc["lat"], loc["lng"], area,
+                                     precise=hit["geometry"].get("location_type") != "APPROXIMATE"))
+    inside = [a for a in addresses if not a["approximate"]]
+    return out + (inside if out or inside else addresses)
+
+
+async def _suggest_nominatim(query: str, area: Any) -> list[dict]:
+    params = {"q": query, "limit": str(SUGGEST_LIMIT)}
+    if area and _area(area, "countryCode"):
+        params["countrycodes"] = _area(area, "countryCode")
+
+    def parse(hits: list) -> list[dict]:
+        return [_suggestion(h.get("display_name"), float(h["lat"]), float(h["lon"]), area,
+                            precise=str(h.get("addresstype") or "").lower() not in BROAD_ADDRESS_TYPES) for h in hits]
+
+    if area:
+        # Inside the rider's city first; the rest of the country only when the city has no match.
+        inside = parse(await nominatim("search", {**params, "viewbox": ",".join(_js_number(n) for n in area_box(area)), "bounded": "1"}))
+        if inside:
+            return inside
+    return parse(await nominatim("search", params))
+
+
+async def _suggest_none(query: str, area: Any) -> list[dict]:
+    return []
+
+
+SUGGEST_PROVIDERS: dict[str, Callable[[str, Any], Awaitable[list[dict]]]] = {
+    "none": _suggest_none, "nominatim": _suggest_nominatim, "google": _suggest_google,
+}
+_suggest = SUGGEST_PROVIDERS["none" if env.is_test else env.GEOCODING_PROVIDER]
+
+
+def set_suggester_for_tests(fn=None) -> None:
+    global _suggest
+    _suggest = fn or SUGGEST_PROVIDERS["none" if env.is_test else env.GEOCODING_PROVIDER]
+
+
+async def suggest_addresses(query: str, *, area: Any = None, near: Optional[dict] = None) -> list[dict]:
+    """[{label, latitude, longitude, approximate}] for a street address, place name or postcode, closest to the rider first."""
+    out: list[dict] = []
+    code = find_eircode(query)
+    if code and (hit := await geocode_eircode(code)):
+        out.append({"label": hit.get("normalized") or code, "latitude": hit["latitude"], "longitude": hit["longitude"], "approximate": False})
+    # Riders without a saved city still get results around where they are.
+    area = area or ({"latitude": near["latitude"], "longitude": near["longitude"], "countryCode": None} if near else None)
+    try:
+        out += await _suggest(query, area)
+    except Exception:  # noqa: BLE001
+        log(logging.WARNING, "Address suggestions failed", exc_info=True)
+        raise AppError(503, "GEOCODING_UNAVAILABLE", "Address search is temporarily unavailable. Check your connection and try again.") from None
+    unique = list({(round(s["latitude"], 5), round(s["longitude"], 5)): s for s in reversed(out)}.values())[::-1]
+    # Matches in the rider's city first; otherwise keep the provider's relevance order.
+    unique.sort(key=lambda s: s["approximate"])
+    return unique[:SUGGEST_LIMIT]
+
+
+async def reverse_geocode(latitude: float, longitude: float) -> Optional[str]:
+    """The street address at a point, or None when the provider has none (never raises)."""
+    try:
+        if env.is_test or env.GEOCODING_PROVIDER == "none":
+            return None
+        if env.GEOCODING_PROVIDER == "google":
+            results = await google_geocode({"latlng": f"{latitude},{longitude}"})
+            return results[0].get("formatted_address") if results else None
+        hit = await nominatim("reverse", {"lat": _js_number(latitude), "lon": _js_number(longitude), "zoom": "18"})
+        return (hit or {}).get("display_name")
+    except Exception:  # noqa: BLE001 - the rider can still type the address for the pin
+        log(logging.WARNING, "Reverse geocoding failed", exc_info=True)
+        return None
 
 
 # ---- Rider service area (the city a rider delivers in) ----

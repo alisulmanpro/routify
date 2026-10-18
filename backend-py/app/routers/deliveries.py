@@ -7,7 +7,7 @@ from pydantic import Field, StringConstraints, model_validator
 
 from ..auth import authenticate
 from ..http import respond
-from ..middleware import geocode_limiter, limit, upload_limiter
+from ..middleware import geocode_limiter, limit, suggest_limiter, upload_limiter
 from ..services import delivery_service as deliveries
 from ..services import geocoding_service as geocoding
 from ..services.file_import import build_draft_from_file
@@ -22,6 +22,13 @@ router = APIRouter(prefix="/deliveries")
 Text = lambda hi: Annotated[str, StringConstraints(strip_whitespace=True, max_length=hi)]  # noqa: E731
 # Customer name and phone are optional: a scanned label often only has the address and parcel ID.
 OptionalPhone = Optional[Union[Literal[""], Phone]]
+# The parcel ID is optional too: a stop can be just an address. "" means none.
+OptionalParcel = Optional[Union[Literal[""], Trimmed(3, 80)]]
+
+
+class Coordinates(Schema):
+    latitude: Annotated[float, Field(ge=-90, le=90)]
+    longitude: Annotated[float, Field(ge=-180, le=180)]
 
 
 class CustomerInput(Schema):
@@ -34,9 +41,11 @@ class AddressInput(Schema):
 
 
 class DeliveryInput(Schema):
-    trackingId: Trimmed(3, 80)
+    trackingId: OptionalParcel = None
     customer: CustomerInput = Field(default_factory=CustomerInput)
     address: AddressInput
+    # Set when the rider picked a suggested address or dropped a pin: the stop is saved already located.
+    location: Optional[Coordinates] = None
     note: Optional[Text(1000)] = None
     serviceDate: Optional[DateKey] = None
 
@@ -47,7 +56,7 @@ class BulkBody(Schema):
 
 class PatchBody(Schema):
     nullable_fields = frozenset({"note"})
-    trackingId: Optional[Trimmed(3, 80)] = None
+    trackingId: OptionalParcel = None
     customer: Optional[CustomerInput] = None
     address: Optional[AddressInput] = None
     note: Optional[Text(1000)] = None
@@ -75,9 +84,13 @@ class GeocodeCheckBody(Schema):
     longitude: Optional[Annotated[float, Field(ge=-180, le=180)]] = None
 
 
-class LocationBody(Schema):
-    latitude: Annotated[float, Field(ge=-90, le=90)]
-    longitude: Annotated[float, Field(ge=-180, le=180)]
+class SuggestBody(Schema):
+    query: Trimmed(2, 400)
+    latitude: Optional[Annotated[float, Field(ge=-90, le=90)]] = None
+    longitude: Optional[Annotated[float, Field(ge=-180, le=180)]] = None
+
+
+LocationBody = Coordinates
 
 
 class DeliverBody(Schema):
@@ -142,6 +155,26 @@ async def geocode_check(request: Request):
         return respond({"found": False, "approximate": False, "latitude": None, "longitude": None, "normalized": None})
     return respond({"found": True, "approximate": bool(hit.get("approximate")), "latitude": hit["latitude"],
                     "longitude": hit["longitude"], "normalized": hit.get("normalized")})
+
+
+@router.post("/geocode-suggest")
+async def geocode_suggest(request: Request):
+    """Up to 5 matching addresses for what the rider is typing (street, place name or postcode), nearest their city first."""
+    actor = await authenticate(request, "rider")
+    await limit(request, suggest_limiter)
+    body = (await validate(request, body=SuggestBody))["body"]
+    origin = {"latitude": body.latitude, "longitude": body.longitude} if body.latitude is not None and body.longitude is not None else None
+    area = await service_area_for(actor, origin)
+    return respond(await geocoding.suggest_addresses(body.query, area=area, near=origin))
+
+
+@router.post("/geocode-reverse")
+async def geocode_reverse(request: Request):
+    """The street address at a pin the rider dropped on the map (null when none is known)."""
+    await authenticate(request, "rider")
+    await limit(request, geocode_limiter)
+    body = (await validate(request, body=Coordinates))["body"]
+    return respond({"address": await geocoding.reverse_geocode(body.latitude, body.longitude)})
 
 
 @router.get("")

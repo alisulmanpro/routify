@@ -9,7 +9,7 @@ from typing import Any, Optional
 
 from ..errors import unprocessable
 from ..uploads import UploadedFile, detect_document_type
-from .pdf_import import extract_deliveries_from_text, extract_pdf_text, flag_duplicates
+from .pdf_import import extract_addresses_from_lines, extract_deliveries_from_text, extract_pdf_text, flag_duplicates
 from .subscription_service import assert_can_create_deliveries
 
 
@@ -115,6 +115,11 @@ def _extract_text(data: bytes, ext: str) -> str:
         return _extract_from_word(data, ext)
     if ext in ("xlsx", "xls", "csv"):
         return _extract_from_spreadsheet(data, ext)
+    if ext == "txt":
+        try:
+            return data.decode("utf-8-sig")
+        except UnicodeDecodeError:
+            return data.decode("latin-1")
     raise unprocessable("Unsupported file type", "UNSUPPORTED_FILE")
 
 
@@ -125,7 +130,8 @@ async def build_draft_from_file(actor: dict, file: Optional[UploadedFile]) -> di
     text = await asyncio.to_thread(_extract_text, file.data, ext)
     if not text.strip():
         raise unprocessable("No text found in this file. Try a different file or add deliveries manually.", "FILE_NO_TEXT")
-    items = extract_deliveries_from_text(text)
+    # A courier manifest (parcel IDs, names, phones) first; otherwise a plain list with one address per line.
+    items = extract_deliveries_from_text(text) or extract_addresses_from_lines(text)
     if not items:
         raise unprocessable("No deliveries were recognised in this file. Add them manually instead.", "FILE_NO_DELIVERIES")
     await flag_duplicates(actor, items)

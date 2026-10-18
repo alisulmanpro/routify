@@ -5,10 +5,10 @@ import * as Location from 'expo-location';
 import { useFocusEffect } from '../lib/useFocusEffect';
 import { get, post, ApiRequestError } from '../lib/api';
 import { openDirections as directionsTo } from '../lib/deliveryActions';
-import { formatMinutes } from '../lib/format';
+import { dayLabel, formatMinutes, stopLabel, todayKey } from '../lib/format';
 import type { Route } from '../lib/types';
 import { Screen } from '../components/Kit';
-import { DARK_ON_PRIMARY, Empty, ErrorBanner, Pill, type PillTone } from '../components/Premium';
+import { DARK_ON_PRIMARY, Empty, ErrorBanner, PButton, Pill, type PillTone } from '../components/Premium';
 import GoogleRouteMap, { type MapStop } from '../components/GoogleRouteMap';
 import { premium as c, premiumRadius as r } from '../lib/theme';
 import { useNav } from '../lib/nav';
@@ -43,6 +43,8 @@ const kmBetween = (a: Coordinates, b: Coordinates) => {
   return 12742 * Math.asin(Math.sqrt(h));
 };
 
+const ROUTE_TYPE_LABEL: Record<Route['preference'], string> = { smart: 'Smartest', nearest_first: 'Nearest first', shortest: 'Most efficient' };
+
 const STEP_STATUS: Record<StepKind, { label: string; tone: PillTone }> = {
   done: { label: 'Delivered', tone: 'green' },
   failed: { label: 'Failed', tone: 'red' },
@@ -57,7 +59,9 @@ const formatLeg = ({ km, min, road }: Leg) => {
 };
 
 const isOpen = (stop: Stop) => stop.delivery.status === 'pending' || stop.delivery.status === 'in_progress';
-const stopName = (stop: Stop) => stop.delivery.customer.name || `Parcel ${stop.delivery.trackingId}`;
+const stopName = (stop: Stop) => stopLabel(stop.delivery);
+// After planning, pins drop onto the map one by one in route order.
+const REVEAL_EVERY_MS = 450;
 const openDirections = (stop: Stop) => directionsTo(stop.delivery);
 
 /**
@@ -99,7 +103,8 @@ function useRiderPosition() {
   return { position, anchor, denied };
 }
 
-export default function RouteMapScreen() {
+/** Today's route (or the one underway), or the route `routeId` (e.g. tomorrow's, planned the night before). */
+export default function RouteMapScreen({ reveal = false, routeId }: { reveal?: boolean; routeId?: string }) {
   const { navigate } = useNav();
   const { height } = useWindowDimensions();
   const { position, anchor, denied } = useRiderPosition();
@@ -117,6 +122,9 @@ export default function RouteMapScreen() {
   const [pinFor, setPinFor] = useState<Stop | null>(null);
   const [pinAt, setPinAt] = useState<Coordinates | null>(null);
   const [savingPin, setSavingPin] = useState(false);
+  const [starting, setStarting] = useState(false);
+  // How many numbered pins are on the map while they drop in; null once all are shown.
+  const [revealed, setRevealed] = useState<number | null>(reveal ? 0 : null);
 
   // Collapsing map: the height animates between two sizes on scroll direction, so the list itself
   // scrolls natively and the map is only resized once per change, not on every scroll frame.
@@ -145,7 +153,7 @@ export default function RouteMapScreen() {
   const load = useCallback(async () => {
     setRefreshing(true);
     try {
-      setRoute((await get<Route | null>('/routes/current')).data);
+      setRoute((await get<Route | null>(routeId ? `/routes/${routeId}` : '/routes/current', routeId ? undefined : { date: todayKey() })).data);
       setError('');
     } catch (err) {
       setError(err instanceof ApiRequestError ? err.message : 'Could not load the active route');
@@ -153,7 +161,7 @@ export default function RouteMapScreen() {
       setRefreshing(false);
       setLoading(false);
     }
-  }, []);
+  }, [routeId]);
   useFocusEffect(useCallback(() => { load(); }, [load]));
 
   const start = anchor || route?.origin || null;
@@ -229,6 +237,28 @@ export default function RouteMapScreen() {
   ], [ordered, finished]);
   const orderLine = useMemo(() => ordered.map((p) => p.at), [ordered]);
 
+  // Pins still dropping in; null once every pin is on the map.
+  const revealing = revealed != null && revealed < mapStops.length ? revealed : null;
+  useEffect(() => {
+    if (revealing == null || loading) return;
+    const timer = setTimeout(() => setRevealed((n) => (n == null ? n : n + 1)), revealing === 0 ? 700 : REVEAL_EVERY_MS);
+    return () => clearTimeout(timer);
+  }, [revealing, loading]);
+
+  const startRoute = async () => {
+    if (!route) return;
+    setStarting(true);
+    try {
+      setRoute((await post<Route>(`/routes/${route.id}/start`)).data);
+      setError('');
+      navigate('LiveNavigation');
+    } catch (err) {
+      setError(err instanceof ApiRequestError ? err.message : 'Could not start the route');
+    } finally {
+      setStarting(false);
+    }
+  };
+
   const startPin = (stop: Stop) => {
     setSmall(false);
     setPinFor(stop);
@@ -267,7 +297,7 @@ export default function RouteMapScreen() {
     return (
       <Screen style={{ backgroundColor: c.background, padding: 22, justifyContent: 'center' }}>
         {error ? <ErrorBanner text={error} /> : null}
-        <Empty icon="map-marker-path" title="No active route" subtitle="Start a route from the Deliveries tab to see it on the map." />
+        <Empty icon="map-marker-path" title="No active route" subtitle="Tap Add route on Home to create one." />
       </Screen>
     );
   }
@@ -283,7 +313,7 @@ export default function RouteMapScreen() {
         {mapStops.length || position || pinFor ? (
           <GoogleRouteMap
             stops={mapStops} position={position} path={roadNow?.path ?? []} order={orderLine} focus={focus} style={{ height: '100%' }}
-            pinning={!!pinFor} onCenterChange={setPinAt}
+            pinning={!!pinFor} onCenterChange={setPinAt} reveal={revealing ?? undefined}
           />
         ) : (
           <View style={[s.mapEmpty, { flex: 1 }]}>
@@ -318,6 +348,20 @@ export default function RouteMapScreen() {
       >
         {error ? <ErrorBanner text={error} /> : null}
 
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+          <View style={{ flex: 1 }}>
+            <Text style={{ color: c.text, fontSize: 18, fontWeight: '800' }} numberOfLines={1}>{route.name || 'Your route'}</Text>
+            <Text style={{ color: c.textMuted, fontSize: 12, marginTop: 2 }}>
+              {revealing != null ? `Placing stop ${revealing + 1} of ${mapStops.length}…` : `${dayLabel(route.serviceDate)} · ${ROUTE_TYPE_LABEL[route.preference]} · ${route.status === 'planned' ? 'Not started' : route.status === 'active' ? 'In progress' : 'Completed'}`}
+            </Text>
+          </View>
+        </View>
+        {route.status === 'planned' ? (
+          <PButton title={route.serviceDate > todayKey() ? `Start now (planned for ${dayLabel(route.serviceDate).toLowerCase()})` : 'Start route'} icon="play" onPress={() => void startRoute()} loading={starting} disabled={revealing != null} chevron style={{ marginBottom: 14 }} />
+        ) : route.status === 'active' && total ? (
+          <PButton title="Start navigation" icon="navigate" onPress={() => navigate('LiveNavigation')} chevron style={{ marginBottom: 14 }} />
+        ) : null}
+
         <View style={s.summary}>
           <SummaryItem icon="flag-checkered" value={`${route.progress.done}/${route.progress.total}`} label="Stops done" />
           <SummaryItem icon="map-marker-distance" value={`${roadNow ? '' : '~'}${leftKm.toFixed(1)} km`} label="Left to drive" />
@@ -327,7 +371,7 @@ export default function RouteMapScreen() {
         {denied ? <Text style={[s.muted, { marginBottom: 12 }]}>Allow location access so the route can be optimised from where you are.</Text> : null}
         <View style={s.optimizeRow}>
           <Text style={[s.muted, { flex: 1, fontSize: 12 }]}>
-            {route.optimization === 'road' ? 'Nearest stop next, by road distance.' : route.optimization === 'straight_line' ? 'Nearest stop next, by straight-line distance (road distances were unavailable).' : 'Route order as planned.'}
+            {route.optimization === 'road' ? 'Ordered using road distances and times.' : route.optimization === 'straight_line' ? 'Ordered by straight-line distance (road distances were unavailable).' : 'Route order as planned.'}
           </Text>
           {route.status !== 'completed' && ordered.length + unmapped.length > 1 ? (
             <Pressable onPress={() => void optimize(route)} disabled={optimizing} style={({ pressed }) => [s.optimizeBtn, (pressed || optimizing) && { opacity: 0.7 }]}>
