@@ -76,7 +76,8 @@
           "speechRecognitionPermission": "Delivery Rider converts your speech to text to fill in delivery details."
         }
       ],
-      "./plugins/withSingleTopActivity"
+      "./plugins/withSingleTopActivity",
+      "./plugins/withAutofillHighlight"
     ],
     "extra": {
       "eas": {

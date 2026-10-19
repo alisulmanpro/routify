@@ -1,5 +1,6 @@
 import { ActivityIndicator, Animated, Pressable, StyleSheet, Text, TextInput, View, type TextInputProps, type ViewStyle } from 'react-native';
 import { useRevealOnFocus } from './KeyboardAware';
+import { iosNoAutofill } from '../lib/inputs';
 import { useEffect, useState } from 'react';
 import { colors, radius, spacing } from '../lib/theme';
 
@@ -36,7 +37,7 @@ export function Field({ label, error, ...props }: { label: string; error?: strin
   return (
     <View style={{ marginBottom: spacing(4) }}>
       <Text style={s.label}>{label}</Text>
-      <TextInput style={[s.input, error && s.inputError]} placeholderTextColor={colors.faint} {...props} onFocus={(e) => { reveal(); props.onFocus?.(e); }} />
+      <TextInput style={[s.input, error && s.inputError]} placeholderTextColor={colors.faint} {...iosNoAutofill(props.secureTextEntry)} {...props} onFocus={(e) => { reveal(); props.onFocus?.(e); }} />
       {error ? <Text style={s.errorText}>{error}</Text> : null}
     </View>
   );

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
-import { Pressable, Text, View, type LayoutChangeEvent, type ViewStyle } from 'react-native';
-import MapView, { Marker, Polyline, PROVIDER_GOOGLE } from 'react-native-maps';
+import { Platform, Pressable, Text, View, type LayoutChangeEvent, type ViewStyle } from 'react-native';
+import MapView, { Marker, Polyline, PROVIDER_DEFAULT, PROVIDER_GOOGLE, UrlTile } from 'react-native-maps';
+import { isRunningInExpoGo } from 'expo';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { premium as c } from '../lib/theme';
 
@@ -28,6 +29,14 @@ export type GoogleRouteMapProps = {
 };
 
 const EDGE = { top: 60, right: 50, bottom: 60, left: 50 };
+
+// Expo Go is a prebuilt app that ignores this app's Google Maps key, so Google draws no map there. While testing in
+// Expo Go the map is drawn from free dark OpenStreetMap tiles (CARTO) instead; app builds use Google Maps with our key.
+// The CARTO tiles are for development only: their free use is limited, so release builds never load them.
+const IN_EXPO_GO = isRunningInExpoGo();
+const DEV_TILES = 'https://basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png';
+// Android only has Google; iOS falls back to Apple Maps in Expo Go.
+const PROVIDER = IN_EXPO_GO && Platform.OS === 'ios' ? PROVIDER_DEFAULT : PROVIDER_GOOGLE;
 const MARKER_COLORS: Record<MapStop['kind'], { bg: string; fg: string; border: string }> = {
   next: { bg: c.primary, fg: '#1A1206', border: '#fff' },
   upcoming: { bg: '#16223A', fg: c.text, border: c.textSecondary },
@@ -99,10 +108,12 @@ export default function GoogleRouteMap({ stops, position, path, order, focus, st
     <View onLayout={onLayout} style={[{ height: 300, overflow: 'hidden', backgroundColor: c.surface }, style]}>
       <MapView
         ref={map}
-        provider={PROVIDER_GOOGLE}
+        provider={PROVIDER}
+        mapType={IN_EXPO_GO && Platform.OS === 'android' ? 'none' : 'standard'}
+        userInterfaceStyle="dark"
         style={{ flex: 1 }}
         initialRegion={{ ...start, latitudeDelta: start === initialCenter ? 0.2 : 0.05, longitudeDelta: start === initialCenter ? 0.2 : 0.05 }}
-        customMapStyle={DARK_STYLE}
+        customMapStyle={IN_EXPO_GO ? undefined : DARK_STYLE}
         onMapReady={() => setReady(true)}
         onRegionChangeComplete={(region, details) => {
           if (details?.isGesture) userMoved.current = true;
@@ -113,6 +124,8 @@ export default function GoogleRouteMap({ stops, position, path, order, focus, st
         rotateEnabled={!!follow}
         pitchEnabled={!!follow}
       >
+        {IN_EXPO_GO && Platform.OS === 'android' ? <UrlTile urlTemplate={DEV_TILES} maximumZ={19} tileSize={256} zIndex={-1} /> : null}
+
         {revealing ? null : path.length > 1 ? (
           <Polyline coordinates={path} strokeColor={c.primary} strokeWidth={5} />
         ) : order.length > 1 || (position && order.length) ? (

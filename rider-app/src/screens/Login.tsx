@@ -5,6 +5,7 @@ import { useAuth } from '../lib/auth';
 import { ApiRequestError, API_URL } from '../lib/api';
 import { Screen } from '../components/Kit';
 import { ErrorBanner, PButton, PInput, SectionLabel, gradient } from '../components/Premium';
+import { AUTOFILL } from '../lib/inputs';
 import { premium as c } from '../lib/theme';
 
 export default function Login({ onGoRegister, onForgot }: { onGoRegister: () => void; onForgot: (email: string) => void }) {
@@ -38,11 +39,11 @@ export default function Login({ onGoRegister, onForgot }: { onGoRegister: () => 
           <View style={{ gap: 14 }}>
             <View>
               <SectionLabel>Email</SectionLabel>
-              <PInput icon="mail-outline" autoCapitalize="none" keyboardType="email-address" autoComplete="email" value={email} onChangeText={setEmail} placeholder="you@example.com" />
+              <PInput icon="mail-outline" {...AUTOFILL.email} autoCapitalize="none" keyboardType="email-address" value={email} onChangeText={setEmail} placeholder="you@example.com" />
             </View>
             <View>
               <SectionLabel>Password</SectionLabel>
-              <PInput icon="lock-closed-outline" secureTextEntry autoComplete="password" value={password} onChangeText={setPassword} placeholder="••••••••" returnKeyType="go" onSubmitEditing={() => { if (email && password) void submit(); }} />
+              <PInput icon="lock-closed-outline" {...AUTOFILL.password} secureTextEntry value={password} onChangeText={setPassword} placeholder="••••••••" returnKeyType="go" onSubmitEditing={() => { if (email && password) void submit(); }} />
               <Pressable onPress={() => onForgot(email.trim())} hitSlop={8} style={{ alignSelf: 'flex-end', marginTop: 10 }}>
                 <Text style={{ color: c.primary, fontSize: 13, fontWeight: '700' }}>Forgot password?</Text>
               </Pressable>
