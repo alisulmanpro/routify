@@ -3,8 +3,9 @@ import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from
 import { Ionicons } from '@expo/vector-icons';
 import { Screen } from '../components/Kit';
 import { Empty, ErrorBanner, Header, PButton, PCard, Pill, type PillTone } from '../components/Premium';
+import StopLines from '../components/StopLines';
 import { get, post, ApiRequestError } from '../lib/api';
-import { dayLabel, formatMinutes, stopLabel, todayKey } from '../lib/format';
+import { dayLabel, formatMinutes, todayKey } from '../lib/format';
 import type { Route } from '../lib/types';
 import { useFocusEffect } from '../lib/useFocusEffect';
 import { useNav } from '../lib/nav';
@@ -105,9 +106,7 @@ export default function RouteDetail({ id }: { id: string }) {
             <Pressable key={d.id} onPress={() => navigate('DeliveryDetail', { id: d.id })} style={({ pressed }) => [s.row, i > 0 && s.divider, pressed && { opacity: 0.85 }]}>
               <View style={s.badge}><Text style={{ color: c.text, fontWeight: '800', fontSize: 11 }}>{stop.order}</Text></View>
               <View style={{ flex: 1 }}>
-                <Text style={{ color: c.text, fontWeight: '700', fontSize: 13 }} numberOfLines={1}>{stopLabel(d)}</Text>
-                <Text style={{ color: c.textSecondary, fontSize: 12 }} numberOfLines={2}>{d.address.raw}</Text>
-                {d.customer.name && d.customer.phone ? <Text style={{ color: c.textMuted, fontSize: 11, marginTop: 1 }}>{d.customer.phone}</Text> : null}
+                <StopLines stop={d} />
               </View>
               <Pill text={st.label} tone={st.tone} />
               <Ionicons name="chevron-forward" size={16} color={c.textMuted} />

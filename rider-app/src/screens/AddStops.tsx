@@ -7,10 +7,11 @@ import { DARK_ON_PRIMARY, ErrorBanner, Header, PButton, type McName } from '../c
 import ScanSheet, { type ScanResult } from '../components/ScanSheet';
 import PinSheet, { type PinResult } from '../components/PinSheet';
 import ImportSheet from '../components/ImportSheet';
+import StopLines from '../components/StopLines';
 import { get, post, del, ApiRequestError } from '../lib/api';
 import { getRouteOrigin } from '../lib/location';
 import { NATIVE_BUILD_HINT, loadVoicePanel } from '../lib/optionalNative';
-import { dayLabel, stopLabel } from '../lib/format';
+import { dayLabel, isOnlyEircode, normalizeEircodes } from '../lib/format';
 import type { AddressSuggestion, Delivery } from '../lib/types';
 import { useAuth } from '../lib/auth';
 import { useFocusEffect } from '../lib/useFocusEffect';
@@ -19,7 +20,7 @@ import { premium as c, premiumRadius as r } from '../lib/theme';
 
 type Point = { latitude: number; longitude: number };
 type Sheet = 'scan' | 'scanAddress' | 'barcode' | 'pin' | 'import' | null;
-type GeocodeCheck = { found: boolean; approximate: boolean; latitude: number | null; longitude: number | null; normalized: string | null };
+type GeocodeCheck = { found: boolean; approximate: boolean; latitude: number | null; longitude: number | null; normalized: string | null; postalCode: string | null };
 
 const VoicePanel = loadVoicePanel();
 const SUGGEST_DELAY_MS = 350;
@@ -105,10 +106,11 @@ export default function AddStops({ name, date }: { name: string; date: string })
     setTimeout(() => addressRef.current?.focus(), 50);
   };
 
-  const save = async (raw: string, location: Point | null) => {
+  // `normalized` is the address the map found for what was typed (e.g. the street of a place name or an Eircode).
+  const save = async (raw: string, location: Point | null, normalized?: string | null) => {
     const res = await post<Delivery>('/deliveries/manual', {
       trackingId: parcel.trim().toUpperCase(),
-      address: { raw },
+      address: { raw, ...(normalized && normalized !== raw ? { normalized: normalized.slice(0, 400) } : {}) },
       serviceDate: date,
       ...(location ? { location } : {}),
     });
@@ -119,7 +121,8 @@ export default function AddStops({ name, date }: { name: string; date: string })
 
   // Adds the stop. Without a chosen suggestion the address is checked first, so riders notice typos now, not on the road.
   const add = async (anyway = false) => {
-    const raw = address.trim();
+    // Eircodes are sent as "D01 F5P2" however they were typed ("d01f5p2", "D01-F5P2").
+    const raw = normalizeEircodes(address.trim());
     if (raw.length < 5) { setError('Enter the delivery address, a postcode, or drop a pin.'); return; }
     if (parcel.trim() && parcel.trim().length < 3) { setError('Parcel IDs are at least 3 characters. Clear it if there is none.'); return; }
     setAdding(true);
@@ -129,8 +132,10 @@ export default function AddStops({ name, date }: { name: string; date: string })
       if (anyway) { await save(raw, null); return; }
       const near = origin || area;
       const check = (await post<GeocodeCheck>('/deliveries/geocode-check', { address: raw, ...(near || {}) })).data;
-      if (check.found && !check.approximate && check.latitude != null && check.longitude != null) {
-        await save(raw, { latitude: check.latitude, longitude: check.longitude });
+      // An Eircode on its own is one building: its point is used even when the map's match is not a rooftop one
+      // (the stop then shows "Approximate location").
+      if (check.found && (!check.approximate || isOnlyEircode(raw)) && check.latitude != null && check.longitude != null) {
+        await save(raw, { latitude: check.latitude, longitude: check.longitude }, check.normalized);
         return;
       }
       setUnsure(true);
@@ -155,7 +160,7 @@ export default function AddStops({ name, date }: { name: string; date: string })
   const onScan = (result: ScanResult) => {
     setSheet(null);
     if (result.parcel) setParcel(result.parcel);
-    if (result.address) typeAddress(result.address);
+    if (result.address) typeAddress(normalizeEircodes(result.address));
   };
 
   const onPin = (pin: PinResult) => {
@@ -168,7 +173,7 @@ export default function AddStops({ name, date }: { name: string; date: string })
 
   const onVoice = (text: string) => {
     setVoice(false);
-    typeAddress(text.trim());
+    typeAddress(normalizeEircodes(text.trim()));
   };
 
   const review = () => navigate('RoutePreview', { name, date, ids: stops.map((d) => d.id) });
@@ -253,9 +258,7 @@ export default function AddStops({ name, date }: { name: string; date: string })
           <View key={stop.id} style={s.stop}>
             <View style={s.badge}><Text style={{ color: c.text, fontWeight: '800', fontSize: 12 }}>{i + 1}</Text></View>
             <View style={{ flex: 1 }}>
-              <Text style={{ color: c.text, fontWeight: '700', fontSize: 14 }} numberOfLines={1}>{stopLabel(stop)}</Text>
-              <Text style={{ color: c.textSecondary, fontSize: 12, marginTop: 2 }} numberOfLines={2}>{stop.address.raw}</Text>
-              <LocationTag stop={stop} />
+              <StopLines stop={stop} />
             </View>
             <Pressable onPress={() => remove(stop)} hitSlop={10}><Ionicons name="trash-outline" size={18} color={c.textMuted} /></Pressable>
           </View>
@@ -290,19 +293,6 @@ function SmallButton({ icon, label, onPress }: { icon: McName; label: string; on
       <MaterialCommunityIcons name={icon} size={14} color={c.primary} />
       <Text style={{ color: c.primary, fontWeight: '800', fontSize: 12 }}>{label}</Text>
     </Pressable>
-  );
-}
-
-function LocationTag({ stop }: { stop: Delivery }) {
-  const status = stop.address.geocodeStatus;
-  const [icon, color, text]: [McName, string, string] = status === 'found' ? ['map-marker-check', c.success, 'Location confirmed']
-    : status === 'approximate' ? ['map-marker-question', c.warning, 'Approximate location']
-      : status === 'not_found' ? ['map-marker-off', c.danger, 'Not found on the map'] : ['map-marker-outline', c.textMuted, 'Located when the route is planned'];
-  return (
-    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 4 }}>
-      <MaterialCommunityIcons name={icon} size={12} color={color} />
-      <Text style={{ color, fontSize: 11, fontWeight: '600' }}>{text}{stop.trackingId ? `  ·  ${stop.trackingId}` : ''}</Text>
-    </View>
   );
 }
 

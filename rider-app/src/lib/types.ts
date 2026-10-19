@@ -16,7 +16,12 @@ export type FailureReason = 'customer_unavailable' | 'customer_refused' | 'wrong
 export type Delivery = {
   id: string; riderId: string; trackingId: string;
   customer: { name: string; phone: string };
-  address: { raw: string; normalized: string | null; latitude: number | null; longitude: number | null; geocoded: boolean; approximate: boolean; geocodeStatus: 'pending' | 'found' | 'approximate' | 'not_found' };
+  address: {
+    raw: string; normalized: string | null; latitude: number | null; longitude: number | null; geocoded: boolean; approximate: boolean;
+    geocodeStatus: 'pending' | 'found' | 'approximate' | 'not_found';
+    /** The Eircode ("D01 F5P2") or other postcode; null when none is known (e.g. stops added before postcodes were kept). */
+    postalCode: string | null;
+  };
   status: 'pending' | 'in_progress' | 'delivered' | 'failed';
   proof: { photoUrl: string; capturedAt: string } | null;
   note: string | null;

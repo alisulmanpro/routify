@@ -114,6 +114,7 @@ async def search_nominatim(query: str, area: Any, *, bounded: bool) -> Optional[
         return None
     hit = hits[0]
     return {"latitude": float(hit["lat"]), "longitude": float(hit["lon"]), "normalized": hit.get("display_name"),
+            "postalCode": postal_code_of((hit.get("address") or {}).get("postcode"), (hit.get("address") or {}).get("country_code")),
             "broad": str(hit.get("addresstype") or "").lower() in BROAD_ADDRESS_TYPES}
 
 
@@ -197,7 +198,8 @@ async def _provider_google(address: str, area: Any) -> Optional[dict]:
     if results:
         hit = results[0]
         loc = hit["geometry"]["location"]
-        result = {"latitude": loc["lat"], "longitude": loc["lng"], "normalized": hit.get("formatted_address")}
+        result = {"latitude": loc["lat"], "longitude": loc["lng"], "normalized": hit.get("formatted_address"),
+                  "postalCode": postal_code_of(_google_component(hit, "postal_code"), _google_component(hit, "country", short=True))}
         result["approximate"] = hit["geometry"].get("location_type") == "APPROXIMATE" or not is_inside_area(result, area)
     # Place names ("railway station", "City Hospital") are what Geocoding is worst at: look them up as places in the city.
     if area and (not result or result["approximate"]):
@@ -208,7 +210,8 @@ async def _provider_google(address: str, area: Any) -> Optional[dict]:
             places = []
         if places:
             p = places[0]
-            return {"latitude": p["latitude"], "longitude": p["longitude"], "normalized": p["label"], "approximate": False}
+            return {"latitude": p["latitude"], "longitude": p["longitude"], "normalized": p["label"], "approximate": False,
+                    "postalCode": find_eircode(p["label"])}
     return result
 
 
@@ -243,16 +246,41 @@ def set_geocoder_for_tests(fn=None) -> None:
 
 
 # ---- Eircodes (Irish postcodes) ----
-# Each Eircode belongs to one building, so a match is exact anywhere in Ireland: it is tried before the
-# address text, and is not flagged approximate for lying outside the rider's service area.
+# Each Eircode belongs to one building, so a match is never flagged for lying outside the rider's service area, and
+# its point is good enough to order the route by even when the provider calls it approximate (not a rooftop match).
 
-_EIRCODE = re.compile(r"\b([AC-FHKNPRTV-Y]\d{2}|D6W)\s?([0-9AC-FHKNPRTV-Y]{4})\b", re.IGNORECASE)
+# Routing key (D01, D6W) + 4-character unique id, in any case, with or without a space or dash between them.
+_EIRCODE = re.compile(r"\b([AC-FHKNPRTV-Y]\d{2}|D6W)[\s-]?([0-9AC-FHKNPRTV-Y]{4})\b", re.IGNORECASE)
 
 
-def find_eircode(raw: str) -> Optional[str]:
+def find_eircode(raw: Any) -> Optional[str]:
     """The Eircode in an address, formatted "D01 F5P2", or None."""
     match = _EIRCODE.search(str(raw or ""))
     return f"{match.group(1)} {match.group(2)}".upper() if match else None
+
+
+def normalize_eircodes(raw: str) -> str:
+    """The text with every Eircode written "D01 F5P2" ("d01f5p2", "D01-F5P2" and "d01 f5p2" all become that)."""
+    return _EIRCODE.sub(lambda m: f"{m.group(1)} {m.group(2)}".upper(), str(raw or ""))
+
+
+def is_only_eircode(raw: Any) -> bool:
+    """True when the text is just an Eircode (optionally followed by "Ireland"): there is no street to show for it."""
+    if not find_eircode(raw):
+        return False
+    rest = _EIRCODE.sub(" ", str(raw or ""))
+    return not re.sub(r"\b(ireland|eire|éire)\b|[\s,.;:/-]+", "", rest, flags=re.IGNORECASE)
+
+
+def postal_code_of(value: Any, country_code: Any = None) -> Optional[str]:
+    """A geocoder's postcode, if it is a usable one: a full Eircode in Ireland (Google sometimes returns just "D02"),
+    as given elsewhere. None when there is none."""
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if code := find_eircode(text):
+        return code
+    return None if str(country_code or "").lower() == "ie" else text[:16]
 
 
 def _same_code(a: Any, b: str) -> bool:
@@ -264,7 +292,8 @@ async def _eircode_google(code: str) -> Optional[dict]:
         # Google sometimes answers with just the routing area ("Dublin 1"); only a full match counts.
         if _same_code(_google_component(hit, "postal_code"), code):
             loc = hit["geometry"]["location"]
-            return {"latitude": loc["lat"], "longitude": loc["lng"], "normalized": hit.get("formatted_address"), "approximate": False}
+            return {"latitude": loc["lat"], "longitude": loc["lng"], "normalized": hit.get("formatted_address"),
+                    "approximate": hit["geometry"].get("location_type") != "ROOFTOP"}
     return None
 
 
@@ -273,7 +302,9 @@ async def _eircode_nominatim(code: str) -> Optional[dict]:
     hit = hits[0] if hits else None
     if not hit or not _same_code((hit.get("address") or {}).get("postcode"), code):
         return None
-    return {"latitude": float(hit["lat"]), "longitude": float(hit["lon"]), "normalized": hit.get("display_name"), "approximate": False}
+    # OSM has no rooftop flag: a building or house is exact, a postcode centroid is not.
+    return {"latitude": float(hit["lat"]), "longitude": float(hit["lon"]), "normalized": hit.get("display_name"),
+            "approximate": str(hit.get("addresstype") or "").lower() not in ("building", "house")}
 
 
 EIRCODE_PROVIDERS: dict[str, Callable[[str], Awaitable[Optional[dict]]]] = {
@@ -288,25 +319,31 @@ def set_eircode_geocoder_for_tests(fn=None) -> None:
     _eircode_lookup = fn or EIRCODE_PROVIDERS["none" if env.is_test else env.GEOCODING_PROVIDER]
 
 
-async def geocode_eircode(code: str) -> Optional[dict]:
-    """{latitude, longitude, normalized, approximate=False} for an exact Eircode match, else None (never raises)."""
-    key = hashlib.sha1(f"v1|eircode|{code}".encode()).hexdigest()
+async def geocode_eircode(code: str, *, street: bool = False) -> Optional[dict]:
+    """{latitude, longitude, normalized, approximate, postalCode, eircode=True} for an Eircode match, else None (never raises).
+    With `street` (the rider typed only the Eircode), `normalized` is the street address at that point, from a reverse
+    lookup with the same provider, since a forward match is often just "Dublin 1, D01 F5P2"."""
+    key = hashlib.sha1(f"v2|eircode{'-street' if street else ''}|{code}".encode()).hexdigest()
     cached = await db.geocodecache.find_unique(where={"key": key})
     if cached and cached.expiresAt > now() and cached.found:
-        return {"latitude": cached.latitude, "longitude": cached.longitude, "normalized": cached.normalized, "approximate": False}
+        return {"latitude": cached.latitude, "longitude": cached.longitude, "normalized": cached.normalized,
+                "approximate": bool(cached.approximate), "postalCode": code, "eircode": True}
     try:
         result = await _eircode_lookup(code)
     except Exception:  # noqa: BLE001 - the full address is tried next
         log(logging.WARNING, "Eircode lookup failed; trying the full address", exc_info=True)
         return None
-    if result:
-        data = {"found": True, "latitude": result["latitude"], "longitude": result["longitude"], "normalized": result.get("normalized"),
-                "approximate": False, "provider": env.GEOCODING_PROVIDER, "expiresAt": now() + timedelta(days=180)}
-        try:
-            await db.geocodecache.upsert(where={"key": key}, data={"create": {"key": key, **data}, "update": data})
-        except Exception:  # noqa: BLE001
-            pass
-    return result
+    if not result:
+        return None
+    if street:
+        result = {**result, "normalized": await reverse_geocode(result["latitude"], result["longitude"]) or result.get("normalized")}
+    data = {"found": True, "latitude": result["latitude"], "longitude": result["longitude"], "normalized": result.get("normalized"),
+            "approximate": bool(result.get("approximate")), "provider": env.GEOCODING_PROVIDER, "expiresAt": now() + timedelta(days=180)}
+    try:
+        await db.geocodecache.upsert(where={"key": key}, data={"create": {"key": key, **data}, "update": data})
+    except Exception:  # noqa: BLE001
+        pass
+    return {**result, "approximate": bool(result.get("approximate")), "postalCode": code, "eircode": True}
 
 
 # The same text means different places in different cities, so the rider's area is part of the key.
@@ -324,12 +361,14 @@ async def geocode_address(raw: str, *, retry_approximate: bool = False, area: An
     """Returns {latitude, longitude, normalized, approximate} or None. Provider errors are not cached.
     An Eircode in the address is looked up first; the full address only when that finds nothing."""
     code = find_eircode(raw)
-    if code and (hit := await geocode_eircode(code)):
+    if code and (hit := await geocode_eircode(code, street=is_only_eircode(raw))):
         return hit
     key = cache_key(raw, area)
     cached = await db.geocodecache.find_unique(where={"key": key})
     if cached and cached.expiresAt > now() and cached.found and (not retry_approximate or not cached.approximate):
-        return {"latitude": cached.latitude, "longitude": cached.longitude, "normalized": cached.normalized, "approximate": bool(cached.approximate)}
+        # The cache keeps no postcode column; an Eircode inside the stored address is recovered from the text.
+        return {"latitude": cached.latitude, "longitude": cached.longitude, "normalized": cached.normalized, "approximate": bool(cached.approximate),
+                "postalCode": find_eircode(cached.normalized)}
 
     try:
         result = await _lookup(raw, area)
@@ -442,7 +481,7 @@ async def suggest_addresses(query: str, *, area: Any = None, near: Optional[dict
     """[{label, latitude, longitude, approximate}] for a street address, place name or postcode, closest to the rider first."""
     out: list[dict] = []
     code = find_eircode(query)
-    if code and (hit := await geocode_eircode(code)):
+    if code and (hit := await geocode_eircode(code, street=is_only_eircode(query))):
         out.append({"label": hit.get("normalized") or code, "latitude": hit["latitude"], "longitude": hit["longitude"], "approximate": False})
     # Riders without a saved city still get results around where they are.
     area = area or ({"latitude": near["latitude"], "longitude": near["longitude"], "countryCode": None} if near else None)

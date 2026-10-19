@@ -159,6 +159,8 @@ model Delivery {
   addressGeocoded    Boolean       @default(false)
   addressApproximate Boolean       @default(false)
   geocodeStatus      GeocodeStatus @default(pending)
+  /// The Eircode ("D01 F5P2") or other postcode, from what the rider entered or from the geocoder.
+  postalCode         String?       @db.VarChar(16)
 
   // Legacy: deliveries no longer carry payment details. Kept so records migrated from MongoDB still load.
   payment Json?

@@ -4,6 +4,7 @@ import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { Screen } from '../components/Kit';
 import { DARK_ON_PRIMARY, ErrorBanner, Header, PButton, type McName } from '../components/Premium';
 import GoogleRouteMap, { type MapStop } from '../components/GoogleRouteMap';
+import StopLines from '../components/StopLines';
 import { get, post, ApiRequestError } from '../lib/api';
 import { getRouteOrigin } from '../lib/location';
 import { dayLabel, stopLabel } from '../lib/format';
@@ -95,10 +96,8 @@ export default function RoutePreview({ name, date, ids }: { name: string; date: 
           <View key={d.id} style={[s.row, i > 0 && s.divider]}>
             <View style={s.badge}><Text style={{ color: c.text, fontWeight: '800', fontSize: 11 }}>{i + 1}</Text></View>
             <View style={{ flex: 1 }}>
-              <Text style={{ color: c.text, fontWeight: '700', fontSize: 13 }} numberOfLines={1}>{stopLabel(d)}</Text>
-              <Text style={{ color: c.textSecondary, fontSize: 12 }} numberOfLines={1}>{d.address.raw}</Text>
+              <StopLines stop={d} />
             </View>
-            <MaterialCommunityIcons name={d.address.geocodeStatus === 'found' ? 'map-marker-check' : 'map-marker-question-outline'} size={16} color={d.address.geocodeStatus === 'found' ? c.success : c.warning} />
           </View>
         ))}
         <Pressable onPress={goBack} style={({ pressed }) => [s.edit, pressed && { opacity: 0.8 }]}>

@@ -494,6 +494,43 @@ async def test_routes_by_date_lists_every_route_in_the_range_for_this_rider_only
     assert (await client.get("/api/v1/routes/by-date", params={"from": today})).status_code == 401
 
 
+async def test_an_eircode_alone_gets_its_street_and_postal_code(client):
+    _, auth = await rider(client, "eircode-only@example.com")
+    try:
+        async def by_code(code):
+            # Not a rooftop match: the stop is marked approximate but still orders the route.
+            return {"latitude": 53.3494, "longitude": -6.2603, "normalized": "Dublin 1, D01 F5P2", "approximate": True} if code == "D01 F5P2" else None
+
+        async def street(latitude, longitude):
+            return "General Post Office, O'Connell Street Lower, Dublin 1, D01 F5P2, Ireland"
+        geocoding_service.set_eircode_geocoder_for_tests(by_code)
+        original_reverse = geocoding_service.reverse_geocode
+        geocoding_service.reverse_geocode = street
+
+        check = (await client.post("/api/v1/deliveries/geocode-check", headers=auth, json={"address": "D01 F5P2"})).json()["data"]
+        assert check["found"] and check["approximate"] and check["postalCode"] == "D01 F5P2"
+        assert check["normalized"].startswith("General Post Office")
+
+        location = {"latitude": check["latitude"], "longitude": check["longitude"]}
+        made = await client.post("/api/v1/deliveries/manual", headers=auth, json={"address": {"raw": "d01f5p2"}, "location": location})
+        assert made.status_code == 201, made.text
+        address = made.json()["data"]["address"]
+        assert address["raw"] == "D01 F5P2" and address["postalCode"] == "D01 F5P2"
+        assert address["normalized"].startswith("General Post Office") and address["geocodeStatus"] == "approximate"
+        assert address["approximate"] is True and address["geocoded"] is True
+
+        # A place name keeps the street the map found for it; a plain street address has no postcode.
+        place = await client.post("/api/v1/deliveries/manual", headers=auth, json={
+            "address": {"raw": "Department of Justice", "normalized": "Department of Justice, 51 St Stephen's Green, Dublin 2, D02 HK52, Ireland"},
+            "location": {"latitude": 53.338, "longitude": -6.258}})
+        assert place.json()["data"]["address"]["postalCode"] == "D02 HK52"
+        plain = await client.post("/api/v1/deliveries/manual", headers=auth, json={"address": {"raw": "12 Main Street, Lahore"}})
+        assert plain.json()["data"]["address"]["postalCode"] is None
+    finally:
+        geocoding_service.set_eircode_geocoder_for_tests()
+        geocoding_service.reverse_geocode = original_reverse
+
+
 async def test_plain_text_address_list_imports_without_parcel_ids(client):
     _, auth = await rider(client, "txt-import@example.com")
     txt = b"10 Main Street, Dublin\n5 Grafton Street, Dublin 2\n"
@@ -610,6 +647,7 @@ async def test_eircode_is_looked_up_first_and_unfound_stops_can_be_pinned(client
         assert by_tid["EIR-2"]["address"]["geocodeStatus"] == "found"
         assert by_tid["EIR-3"]["address"]["geocodeStatus"] == "not_found" and "location_not_found" in by_tid["EIR-3"]["flags"]
         assert [s["delivery"]["trackingId"] for s in route["stops"]] == ["EIR-2", "EIR-1", "EIR-3"]
+        assert by_tid["EIR-1"]["address"]["postalCode"] == "H91 TK33" and by_tid["EIR-3"]["address"]["postalCode"] == "Z99 ZZZZ"
 
         bad = await client.post(f"/api/v1/deliveries/{by_tid['EIR-3']['id']}/location", headers=auth, json={"latitude": 95, "longitude": 0})
         assert bad.status_code == 400

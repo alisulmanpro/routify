@@ -134,8 +134,12 @@ async def _refresh_delivery_geocodes(deliveries: list[Any], *, retry_approximate
         hit = results.get(d.addressRaw)
         if hit:
             approx = bool(hit.get("approximate"))
+            # An Eircode point is a building, so it orders the route even when the provider calls it approximate.
             data = {"addressLatitude": hit["latitude"], "addressLongitude": hit["longitude"], "addressNormalized": hit.get("normalized"),
-                    "addressGeocoded": not approx, "addressApproximate": approx, "geocodeStatus": "approximate" if approx else "found"}
+                    "addressGeocoded": not approx or bool(hit.get("eircode")), "addressApproximate": approx,
+                    "geocodeStatus": "approximate" if approx else "found"}
+            if hit.get("postalCode") and not d.postalCode:
+                data["postalCode"] = hit["postalCode"]
         else:
             data = {"addressLatitude": None, "addressLongitude": None, "addressNormalized": None, "addressGeocoded": False,
                     "addressApproximate": False, "geocodeStatus": "not_found"}

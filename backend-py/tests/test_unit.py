@@ -201,6 +201,18 @@ def test_finds_eircodes_in_address_text():
     assert find_eircode("Flat D6W X123") == "D6W X123"
     assert find_eircode("SW1A 1AA London") is None
     assert find_eircode("House 12, Street 5, Lahore 54000") is None
+    assert find_eircode("d01f5p2") == find_eircode("D01-F5P2") == find_eircode("d01 f5p2") == "D01 F5P2"
+
+
+def test_eircode_only_input_and_normalising():
+    from app.services.geocoding_service import is_only_eircode, normalize_eircodes, postal_code_of
+    assert is_only_eircode("D01F5P2") and is_only_eircode(" d01 f5p2 ") and is_only_eircode("D01 F5P2, Ireland")
+    assert not is_only_eircode("GPO, O'Connell St, D01 F5P2") and not is_only_eircode("Department of Justice")
+    assert normalize_eircodes("GPO, d01-f5p2") == "GPO, D01 F5P2"
+    assert normalize_eircodes("12 Main Street") == "12 Main Street"
+    # Google sometimes gives only the routing key in Ireland; that is not a postcode we can show.
+    assert postal_code_of("D02", "IE") is None and postal_code_of("d02 hk52", "ie") == "D02 HK52"
+    assert postal_code_of("54000", "PK") == "54000" and postal_code_of(None, "IE") is None
 
 
 def test_test_cartons_go_nearest_next_from_dublin_city_centre():
