@@ -8,6 +8,7 @@ import StopLines from '../components/StopLines';
 import { get, post, ApiRequestError } from '../lib/api';
 import { getRouteOrigin } from '../lib/location';
 import { dayLabel, stopLabel } from '../lib/format';
+import { forgetRouteName } from '../lib/routeNames';
 import type { Delivery, Route, RoutePreference } from '../lib/types';
 import { useAuth } from '../lib/auth';
 import { useFocusEffect } from '../lib/useFocusEffect';
@@ -59,6 +60,7 @@ export default function RoutePreview({ name, date, ids }: { name: string; date: 
     try {
       const origin = await getRouteOrigin();
       const built = await post<Route>('/routes/build', { name, date, preference, deliveryIds: stops.map((d) => d.id), ...(origin ? { origin } : {}) });
+      void forgetRouteName(date);
       // The map drops the numbered pins in route order. Back from there returns Home, not to this form.
       resetTo('RouteMapScreen', { reveal: true, routeId: built.data.id });
     } catch (err) {

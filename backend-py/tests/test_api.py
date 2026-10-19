@@ -531,6 +531,49 @@ async def test_an_eircode_alone_gets_its_street_and_postal_code(client):
         geocoding_service.reverse_geocode = original_reverse
 
 
+async def test_left_over_stops_move_to_today_without_deleting_anything(client):
+    from datetime import date, timedelta
+
+    body, auth = await rider(client, "carry-over@example.com")
+    rider_id = body["user"]["id"]
+    today, yesterday = date.today().isoformat(), (date.today() - timedelta(days=1)).isoformat()
+    here = {"latitude": 53.3498, "longitude": -6.2603}
+    ids = [(await client.post("/api/v1/deliveries/manual", headers=auth, json={**delivery(f"OLD-{i}"), "serviceDate": yesterday, "location": here})).json()["data"]["id"]
+           for i in (1, 2)]
+    old = (await client.post("/api/v1/routes/build", headers=auth, json={"name": "Monday north", "date": yesterday, "deliveryIds": ids})).json()["data"]
+    assert (await client.post(f"/api/v1/routes/{old['id']}/start", headers=auth)).status_code == 200
+
+    left = (await client.get("/api/v1/routes/leftover", headers=auth, params={"date": today})).json()["data"]
+    assert left == {"total": 2, "days": [{"date": yesterday, "count": 2}]}
+    before = (await db.delivery.count(where={"riderId": rider_id}), await db.route.count(where={"riderId": rider_id}))
+
+    moved = await client.post("/api/v1/routes/carry-over", headers=auth, json={"date": today})
+    assert moved.status_code == 200, moved.text
+    data = moved.json()["data"]
+    assert data["moved"] == 2 and data["route"]["serviceDate"] == today and data["route"]["name"] == "Monday north"
+    assert sorted(s["delivery"]["id"] for s in data["route"]["stops"]) == sorted(ids)
+
+    # Nothing was deleted: the old route is closed and kept, without the stops that moved on.
+    assert await db.delivery.count(where={"riderId": rider_id}) == before[0]
+    assert await db.route.count(where={"riderId": rider_id}) == before[1] + 1
+    closed = (await client.get(f"/api/v1/routes/{old['id']}", headers=auth)).json()["data"]
+    assert closed["status"] == "completed" and closed["stops"] == []
+    assert (await client.get("/api/v1/routes/leftover", headers=auth, params={"date": today})).json()["data"]["total"] == 0
+    assert (await client.post("/api/v1/routes/carry-over", headers=auth, json={"date": today})).json()["data"] == {"moved": 0, "route": None}
+
+
+async def test_planning_from_home_never_takes_a_later_days_stops(client):
+    from datetime import date, timedelta
+
+    _, auth = await rider(client, "home-plan@example.com")
+    today, tomorrow = date.today().isoformat(), (date.today() + timedelta(days=1)).isoformat()
+    here = {"latitude": 53.3498, "longitude": -6.2603}
+    now_stop = (await client.post("/api/v1/deliveries/manual", headers=auth, json={**delivery("NOW-1"), "serviceDate": today, "location": here})).json()["data"]
+    await client.post("/api/v1/deliveries/manual", headers=auth, json={**delivery("LATER-1"), "serviceDate": tomorrow, "location": here})
+    built = (await client.post("/api/v1/routes/build", headers=auth, json={"name": "Test North", "date": today})).json()["data"]
+    assert built["name"] == "Test North" and [s["delivery"]["id"] for s in built["stops"]] == [now_stop["id"]]
+
+
 async def test_plain_text_address_list_imports_without_parcel_ids(client):
     _, auth = await rider(client, "txt-import@example.com")
     txt = b"10 Main Street, Dublin\n5 Grafton Street, Dublin 2\n"

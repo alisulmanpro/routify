@@ -3,8 +3,9 @@ import { Animated, Image, Pressable, RefreshControl, ScrollView, StyleSheet, Tex
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useFocusEffect } from '../lib/useFocusEffect';
 import { get, post, ApiRequestError } from '../lib/api';
-import type { Dashboard as DashboardType, Route, RouteListItem } from '../lib/types';
-import { dayLabel, formatMinutes, todayKey } from '../lib/format';
+import type { Dashboard as DashboardType, LeftOver, Route, RouteListItem } from '../lib/types';
+import { dayLabel, defaultRouteName, formatMinutes, todayKey } from '../lib/format';
+import { forgetRouteName, routeNameFor } from '../lib/routeNames';
 import { getRouteOrigin } from '../lib/location';
 import { Banner, Screen } from '../components/Kit';
 import { DARK_ON_PRIMARY, PButton, Pill } from '../components/Premium';
@@ -40,18 +41,23 @@ export default function Dashboard() {
   // Every route from today on (planned, underway or done), for the day selector.
   const [routes, setRoutes] = useState<RouteListItem[]>([]);
   const [day, setDay] = useState(todayKey);
+  // Open stops from earlier days: offered to move to today, never removed.
+  const [leftOver, setLeftOver] = useState<LeftOver | null>(null);
+  const [moving, setMoving] = useState(false);
   const [error, setError] = useState('');
   const [refreshing, setRefreshing] = useState(false);
   const [starting, setStarting] = useState(false);
 
   const load = useCallback(async () => {
     try {
-      const [res, byDate] = await Promise.all([
+      const [res, byDate, left] = await Promise.all([
         get<DashboardType>('/rider/dashboard', { date: todayKey() }),
         get<RouteListItem[]>('/routes/by-date', { from: todayKey() }),
+        get<LeftOver>('/routes/leftover', { date: todayKey() }),
       ]);
       setData(res.data);
       setRoutes(byDate.data);
+      setLeftOver(left.data);
       setError('');
     } catch (err) {
       setError(err instanceof ApiRequestError ? err.message : 'Could not load your dashboard');
@@ -62,13 +68,38 @@ export default function Dashboard() {
 
   const onRefresh = async () => { setRefreshing(true); await load(); setRefreshing(false); };
 
+  // Home plans today's loose stops itself (no Review route step), so it sends the name typed on New route, if any.
+  const buildToday = async (origin: { latitude: number; longitude: number } | null) => {
+    const date = todayKey();
+    const name = (await routeNameFor(date)) || defaultRouteName(date);
+    const built = await post<Route>('/routes/build', { name, date, ...(origin ? { origin } : {}) });
+    void forgetRouteName(date);
+    return built;
+  };
+
+  const moveToToday = async () => {
+    if (moving) return;
+    setMoving(true);
+    setError('');
+    try {
+      const origin = await getRouteOrigin();
+      const res = await post<{ moved: number; route: Route | null }>('/routes/carry-over', { date: todayKey(), ...(origin ? { origin } : {}) });
+      setDay(todayKey());
+      await load();
+      if (res.data.route) navigate('RouteDetail', { id: res.data.route.id });
+    } catch (err) {
+      setError(err instanceof ApiRequestError ? err.message : 'Could not move those stops to today');
+    } finally {
+      setMoving(false);
+    }
+  };
+
   const onAction = async () => {
     if (!data || starting) return;
     if (data.nextAction === 'start') {
       setStarting(true);
       try {
-        const origin = await getRouteOrigin();
-        const planned = await post<Route>('/routes/build', origin ? { origin } : {});
+        const planned = await buildToday(await getRouteOrigin());
         await post<Route>(`/routes/${planned.data.id}/start`);
         navigate('RouteMapScreen');
       } catch (err) {
@@ -89,8 +120,7 @@ export default function Dashboard() {
     setPlanning(true);
     setError('');
     try {
-      const origin = await getRouteOrigin();
-      await post<Route>('/routes/build', origin ? { origin } : {});
+      await buildToday(await getRouteOrigin());
       navigate('RouteMapScreen');
     } catch (err) {
       setError(err instanceof ApiRequestError ? err.message : 'Could not plan a route');
@@ -186,6 +216,18 @@ export default function Dashboard() {
             style={{ marginBottom: 16 }}
           />
         ) : <View style={{ height: 6 }} />}
+
+        {leftOver && leftOver.total > 0 ? (
+          <View style={[s.card, s.leftOver]}>
+            <MaterialCommunityIcons name="calendar-arrow-right" size={22} color={c.warning} />
+            <Text style={{ flex: 1, color: c.text, fontSize: 13, fontWeight: '700' }}>
+              {leftOver.total} stop{leftOver.total === 1 ? '' : 's'} left from {leftOver.days.length === 1 ? dayLabel(leftOver.days[0].date) : 'earlier days'} — move to today?
+            </Text>
+            <Pressable onPress={() => void moveToToday()} disabled={moving} style={({ pressed }) => [s.leftOverButton, (pressed || moving) && { opacity: 0.7 }]}>
+              <Text style={{ color: DARK_ON_PRIMARY, fontWeight: '800', fontSize: 12 }}>{moving ? 'Moving…' : 'Move'}</Text>
+            </Pressable>
+          </View>
+        ) : null}
 
         {/* Routes by day: Today, then each later day that has routes */}
         <Text style={[s.label, { color: c.textSecondary, marginBottom: 8 }]}>Your routes</Text>
@@ -391,6 +433,8 @@ const s = StyleSheet.create({
   statValue: { color: c.text, fontSize: 18, fontWeight: '800', marginTop: 2 },
 
   routeCard: { flexDirection: 'row', alignItems: 'center', padding: 14 },
+  leftOver: { flexDirection: 'row', alignItems: 'center', gap: 10, padding: 12, borderColor: 'rgba(255,179,64,0.4)' },
+  leftOverButton: { paddingHorizontal: 14, paddingVertical: 8, borderRadius: r.pill, backgroundColor: c.primary },
   dayChip: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingLeft: 14, paddingRight: 8, paddingVertical: 8, borderRadius: r.pill, backgroundColor: c.surface, borderWidth: 1, borderColor: c.border },
   dayChipOn: { backgroundColor: c.primary, borderColor: c.primary },
   dayCount: { minWidth: 22, height: 22, paddingHorizontal: 6, borderRadius: 11, alignItems: 'center', justifyContent: 'center', backgroundColor: c.surfaceSoft },

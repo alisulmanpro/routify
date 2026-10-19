@@ -6,7 +6,8 @@ import DatePicker from '../components/DatePicker';
 import { Screen } from '../components/Kit';
 import { DARK_ON_PRIMARY, ErrorBanner, Header, IconCircle, PButton, PCard, PInput } from '../components/Premium';
 import { get, ApiRequestError } from '../lib/api';
-import { dayKey, dayLabel, todayKey } from '../lib/format';
+import { dayKey, dayLabel, defaultRouteName, todayKey } from '../lib/format';
+import { rememberRouteName } from '../lib/routeNames';
 import type { Route, RouteListItem } from '../lib/types';
 import { useFocusEffect } from '../lib/useFocusEffect';
 import { premium as c, premiumRadius as r } from '../lib/theme';
@@ -43,9 +44,12 @@ export default function NewRoute({ initialDate }: { initialDate?: string }) {
   const quick = [dayKey(0), dayKey(1)];
   const other = !quick.includes(date);
 
-  // A date, not "Tomorrow": the name is kept after that day comes.
-  const fallback = `Route · ${new Date(`${date}T12:00:00`).toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' })}`;
-  const next = () => navigate('AddStops', { name: name.trim() || fallback, date });
+  const fallback = defaultRouteName(date);
+  const next = () => {
+    const routeName = name.trim() || fallback;
+    void rememberRouteName(date, routeName);
+    navigate('AddStops', { name: routeName, date });
+  };
 
   return (
     <Screen style={{ backgroundColor: c.background }}>

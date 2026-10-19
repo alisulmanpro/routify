@@ -115,6 +115,27 @@ async def routes_by_date(request: Request):
     return respond(await routes.list_by_date(actor, query.date_from, query.to))
 
 
+class DateBody(Schema):
+    date: DateKey
+    origin: Optional[Point] = None
+
+
+@routes_router.get("/leftover")
+async def left_over_stops(request: Request):
+    """Open stops left from days before the rider's today (`date`), for the "move to today?" banner on Home."""
+    actor = await authenticate(request, "rider")
+    query = (await validate(request, query=DayQuery))["query"]
+    return respond(await routes.left_over(actor, query.date or today_key()))
+
+
+@routes_router.post("/carry-over")
+async def carry_over_stops(request: Request):
+    """Moves those stops to `date` and onto that day's route. Never deletes routes or deliveries."""
+    actor = await authenticate(request, "rider")
+    body = (await validate(request, body=DateBody))["body"]
+    return respond(await routes.carry_over(actor, body.date, origin=body.origin.model_dump() if body.origin else None))
+
+
 @routes_router.get("")
 async def completed_routes(request: Request):
     actor = await authenticate(request, "rider")

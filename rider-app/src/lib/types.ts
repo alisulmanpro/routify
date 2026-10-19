@@ -46,6 +46,9 @@ export type Route = {
 /** A route without its stops, from GET /routes/by-date (e.g. the Home day selector). */
 export type RouteListItem = Pick<Route, 'id' | 'name' | 'status' | 'preference' | 'serviceDate' | 'distanceKm' | 'durationMin' | 'startedAt' | 'completedAt' | 'progress' | 'summary'>;
 
+/** Open stops left from days before today (GET /routes/leftover), latest day first. */
+export type LeftOver = { total: number; days: { date: string; count: number }[] };
+
 export type Dashboard = {
   rider: { id: string; fullName: string }; date: string;
   total: number; delivered: number; failed: number; pending: number; distanceKm: number;

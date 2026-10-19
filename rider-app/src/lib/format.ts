@@ -19,6 +19,10 @@ export const dayKey = (days = 0) => {
 };
 export const todayKey = () => dayKey(0);
 
+/** The name a route gets when the rider leaves it blank: a date, not "Tomorrow", so it still reads right on the day. */
+export const defaultRouteName = (key: string) =>
+  `Route · ${fromDayKey(key).toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' })}`;
+
 /** "Today", "Tomorrow" or "Mon 20 Oct" for a date key. */
 export const dayLabel = (key: string) => {
   if (key === dayKey(0)) return 'Today';
