@@ -4,11 +4,18 @@ export const money = (amount: number | null | undefined, currency?: string | nul
 export const titleCase = (value: string) => value.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 export const shortDate = (value: string | null | undefined) => (value ? new Date(value).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : '—');
 export const timeOnly = (value: string | null | undefined) => (value ? new Date(value).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }) : '—');
-/** "2026-10-18" for today (or `days` from today) on the phone's own clock, not UTC. */
+/** "2026-10-18" for a date on the phone's own clock, not UTC. */
+export const toDayKey = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+/** The local date of a "2026-10-18" key (midnight on the phone's clock; never parsed as UTC). */
+export const fromDayKey = (key: string) => {
+  const [y, m, d] = key.split('-').map(Number);
+  return new Date(y, m - 1, d);
+};
+/** The key for today (or `days` from today) on the phone's own clock. */
 export const dayKey = (days = 0) => {
   const d = new Date();
   d.setDate(d.getDate() + days);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  return toDayKey(d);
 };
 export const todayKey = () => dayKey(0);
 
@@ -16,8 +23,7 @@ export const todayKey = () => dayKey(0);
 export const dayLabel = (key: string) => {
   if (key === dayKey(0)) return 'Today';
   if (key === dayKey(1)) return 'Tomorrow';
-  const [y, m, d] = key.split('-').map(Number);
-  return new Date(y, m - 1, d).toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' });
+  return fromDayKey(key).toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' });
 };
 
 /** How a stop is named in lists: the customer, else the parcel ID, else the first part of its address. */

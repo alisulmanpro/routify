@@ -219,6 +219,7 @@ model Route {
   deliveries Delivery[]
 
   @@index([riderId, status])
+  @@index([riderId, serviceDate])
   @@index([status])
   @@map("routes")
 }

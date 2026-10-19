@@ -459,6 +459,41 @@ async def test_tomorrows_route_can_be_planned_tonight_without_touching_today(cli
     assert dash["total"] == 1 and dash["routeId"] == today_route.json()["data"]["id"]
 
 
+async def test_routes_by_date_lists_every_route_in_the_range_for_this_rider_only(client):
+    from datetime import date, timedelta
+
+    _, auth = await rider(client, "by-date@example.com")
+    _, other = await rider(client, "by-date-other@example.com")
+    today, later = date.today().isoformat(), (date.today() + timedelta(days=40)).isoformat()
+    built = {}
+    for name, day in (("Later", later), ("Today", today)):
+        stops = [await client.post("/api/v1/deliveries/manual", headers=auth, json={"address": {"raw": f"{i} {name} Street, Dublin"}, "serviceDate": day})
+                 for i in (1, 2)]
+        res = await client.post("/api/v1/routes/build", headers=auth, json={"name": name, "date": day, "deliveryIds": [s.json()["data"]["id"] for s in stops]})
+        assert res.status_code == 201, res.text
+        built[name] = res.json()["data"]
+    await client.post("/api/v1/deliveries/manual", headers=other, json={"address": {"raw": "9 Other Street, Dublin"}, "serviceDate": today})
+    await client.post("/api/v1/routes/build", headers=other, json={"date": today})
+
+    everything = (await client.get("/api/v1/routes/by-date", headers=auth, params={"from": today})).json()["data"]
+    assert [(r["name"], r["serviceDate"]) for r in everything] == [("Today", today), ("Later", later)]
+    first = everything[0]
+    assert first["status"] == "planned" and first["progress"] == {"total": 2, "done": 0, "remaining": 2}
+    assert first["summary"]["total"] == 2 and first["summary"]["delivered"] == 0 and "stops" not in first
+
+    only_today = (await client.get("/api/v1/routes/by-date", headers=auth, params={"from": today, "to": today})).json()["data"]
+    assert [r["id"] for r in only_today] == [built["Today"]["id"]]
+
+    # The detail endpoint returns the ordered stops for the card the rider taps.
+    detail = (await client.get(f"/api/v1/routes/{built['Later']['id']}", headers=auth)).json()["data"]
+    assert [s["order"] for s in detail["stops"]] == [1, 2]
+
+    backwards = await client.get("/api/v1/routes/by-date", headers=auth, params={"from": later, "to": today})
+    assert backwards.status_code == 400
+    assert (await client.get("/api/v1/routes/by-date", headers=auth)).status_code == 400
+    assert (await client.get("/api/v1/routes/by-date", params={"from": today})).status_code == 401
+
+
 async def test_plain_text_address_list_imports_without_parcel_ids(client):
     _, auth = await rider(client, "txt-import@example.com")
     txt = b"10 Main Street, Dublin\n5 Grafton Street, Dublin 2\n"

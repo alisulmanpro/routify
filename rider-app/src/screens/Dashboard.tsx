@@ -3,13 +3,14 @@ import { Animated, Image, Pressable, RefreshControl, ScrollView, StyleSheet, Tex
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useFocusEffect } from '../lib/useFocusEffect';
 import { get, post, ApiRequestError } from '../lib/api';
-import type { Dashboard as DashboardType, Route } from '../lib/types';
-import { dayLabel, todayKey } from '../lib/format';
+import type { Dashboard as DashboardType, Route, RouteListItem } from '../lib/types';
+import { dayLabel, formatMinutes, todayKey } from '../lib/format';
 import { getRouteOrigin } from '../lib/location';
 import { Banner, Screen } from '../components/Kit';
-import { PButton } from '../components/Premium';
+import { DARK_ON_PRIMARY, PButton, Pill } from '../components/Premium';
 import PlanNudge from '../components/PlanNudge';
 import { BRAND_MARK } from './Login';
+import { ROUTE_STATUS } from './RouteDetail';
 import { premium as c, premiumRadius as r, premiumShadow } from '../lib/theme';
 import { useNav } from '../lib/nav';
 
@@ -36,20 +37,21 @@ export default function Dashboard() {
   const { navigate } = useNav();
   const [planning, setPlanning] = useState(false);
   const [data, setData] = useState<DashboardType | null>(null);
-  // Routes planned ahead for later days (e.g. tomorrow's, planned the night before).
-  const [upcoming, setUpcoming] = useState<Route[]>([]);
+  // Every route from today on (planned, underway or done), for the day selector.
+  const [routes, setRoutes] = useState<RouteListItem[]>([]);
+  const [day, setDay] = useState(todayKey);
   const [error, setError] = useState('');
   const [refreshing, setRefreshing] = useState(false);
   const [starting, setStarting] = useState(false);
 
   const load = useCallback(async () => {
     try {
-      const [res, ahead] = await Promise.all([
+      const [res, byDate] = await Promise.all([
         get<DashboardType>('/rider/dashboard', { date: todayKey() }),
-        get<Route[]>('/routes/upcoming', { date: todayKey() }),
+        get<RouteListItem[]>('/routes/by-date', { from: todayKey() }),
       ]);
       setData(res.data);
-      setUpcoming(ahead.data);
+      setRoutes(byDate.data);
       setError('');
     } catch (err) {
       setError(err instanceof ApiRequestError ? err.message : 'Could not load your dashboard');
@@ -104,6 +106,14 @@ export default function Dashboard() {
       </Screen>
     );
   }
+
+  // Today always, then only the days that have routes. A day that no longer has any falls back to today.
+  const today = todayKey();
+  const counts = new Map<string, number>([[today, 0]]);
+  for (const route of routes) counts.set(route.serviceDate, (counts.get(route.serviceDate) || 0) + 1);
+  const days = [...counts.keys()].sort();
+  const shownDay = counts.has(day) ? day : today;
+  const dayRoutes = routes.filter((route) => route.serviceDate === shownDay);
 
   const firstName = data.rider.fullName.split(' ')[0];
   const onTrack = data.failed === 0;
@@ -177,19 +187,53 @@ export default function Dashboard() {
           />
         ) : <View style={{ height: 6 }} />}
 
-        {upcoming.map((route) => (
-          <Pressable key={route.id} onPress={() => navigate('RouteMapScreen', { routeId: route.id })} style={({ pressed }) => [s.card, s.routeCard, pressed && { opacity: 0.9 }]}>
-            <View style={s.routeIcon}>
-              <MaterialCommunityIcons name="calendar-check-outline" size={22} color={c.primary} />
-            </View>
-            <View style={{ flex: 1, marginLeft: 14, marginRight: 10 }}>
-              <Text style={[s.label, { color: c.primary }]}>{dayLabel(route.serviceDate)} · Planned</Text>
-              <Text style={s.routeTitle} numberOfLines={1}>{route.name || 'Planned route'}</Text>
-              <Text style={{ color: c.textSecondary, fontSize: 12, marginTop: 2 }}>{route.stops.length} stop{route.stops.length === 1 ? '' : 's'} · {route.distanceKm} km</Text>
-            </View>
-            <Ionicons name="chevron-forward" size={20} color={c.text} />
-          </Pressable>
-        ))}
+        {/* Routes by day: Today, then each later day that has routes */}
+        <Text style={[s.label, { color: c.textSecondary, marginBottom: 8 }]}>Your routes</Text>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8, paddingBottom: 12 }}>
+          {days.map((key) => {
+            const on = key === shownDay;
+            const count = counts.get(key) || 0;
+            return (
+              <Pressable key={key} onPress={() => setDay(key)} style={({ pressed }) => [s.dayChip, on && s.dayChipOn, pressed && { opacity: 0.85 }]}>
+                <Text style={{ color: on ? DARK_ON_PRIMARY : c.text, fontWeight: '800', fontSize: 13 }}>{dayLabel(key)}</Text>
+                <View style={[s.dayCount, on && { backgroundColor: 'rgba(26,18,6,0.18)' }]}>
+                  <Text style={{ color: on ? DARK_ON_PRIMARY : c.textSecondary, fontWeight: '800', fontSize: 11 }}>{count}</Text>
+                </View>
+              </Pressable>
+            );
+          })}
+        </ScrollView>
+
+        {dayRoutes.length ? dayRoutes.map((route) => {
+          const status = ROUTE_STATUS[route.status];
+          const stops = route.progress.total;
+          const planned = [route.distanceKm > 0 ? `${route.distanceKm} km` : '', route.durationMin > 0 ? formatMinutes(route.durationMin) : ''].filter(Boolean).join(' · ');
+          return (
+            <Pressable key={route.id} onPress={() => navigate('RouteDetail', { id: route.id })} style={({ pressed }) => [s.card, s.routeCard, pressed && { opacity: 0.9 }]}>
+              <View style={s.routeIcon}>
+                <MaterialCommunityIcons name={route.status === 'completed' ? 'check-decagram-outline' : route.status === 'active' ? 'navigation-variant-outline' : 'calendar-check-outline'} size={22} color={c.primary} />
+              </View>
+              <View style={{ flex: 1, marginLeft: 14, marginRight: 10 }}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                  <Text style={[s.routeTitle, { flexShrink: 1 }]} numberOfLines={1}>{route.name || 'Route'}</Text>
+                  <Pill text={status.label} tone={status.tone} />
+                </View>
+                <Text style={{ color: c.textSecondary, fontSize: 12, marginTop: 4 }}>
+                  {stops} stop{stops === 1 ? '' : 's'} · {route.summary.delivered}/{route.summary.total} delivered
+                </Text>
+                {planned ? <Text style={{ color: c.textSecondary, fontSize: 12, marginTop: 2 }}>{planned}</Text> : null}
+              </View>
+              <Ionicons name="chevron-forward" size={20} color={c.text} />
+            </Pressable>
+          );
+        }) : (
+          <View style={[s.card, { padding: 18, alignItems: 'center' }]}>
+            <MaterialCommunityIcons name="calendar-blank-outline" size={28} color={c.primary} />
+            <Text style={[s.routeTitle, { marginTop: 8 }]}>No routes {shownDay === today ? 'today' : `on ${dayLabel(shownDay)}`}</Text>
+            <Text style={{ color: c.textSecondary, fontSize: 12, marginTop: 4, textAlign: 'center' }}>Add a route for this day to plan its stops.</Text>
+            <PButton title="Add route" icon="add-circle" variant="secondary" onPress={() => navigate('NewRoute', { date: shownDay })} style={{ marginTop: 12, alignSelf: 'stretch' }} />
+          </View>
+        )}
 
         {/* Stats */}
         <View style={{ flexDirection: 'row', gap: 12, marginBottom: 16 }}>
@@ -347,6 +391,9 @@ const s = StyleSheet.create({
   statValue: { color: c.text, fontSize: 18, fontWeight: '800', marginTop: 2 },
 
   routeCard: { flexDirection: 'row', alignItems: 'center', padding: 14 },
+  dayChip: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingLeft: 14, paddingRight: 8, paddingVertical: 8, borderRadius: r.pill, backgroundColor: c.surface, borderWidth: 1, borderColor: c.border },
+  dayChipOn: { backgroundColor: c.primary, borderColor: c.primary },
+  dayCount: { minWidth: 22, height: 22, paddingHorizontal: 6, borderRadius: 11, alignItems: 'center', justifyContent: 'center', backgroundColor: c.surfaceSoft },
   routeIcon: { width: 46, height: 46, borderRadius: 23, backgroundColor: '#2A1E10', alignItems: 'center', justifyContent: 'center' },
   routeTitle: { color: c.text, fontSize: 13, fontWeight: '700' },
   routeValue: { color: c.text, fontSize: 17, fontWeight: '800', marginTop: 2 },

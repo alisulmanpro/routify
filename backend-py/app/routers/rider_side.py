@@ -4,7 +4,7 @@ from __future__ import annotations
 from typing import Annotated, Literal, Optional
 
 from fastapi import APIRouter, Request
-from pydantic import Field, StringConstraints
+from pydantic import Field, StringConstraints, model_validator
 from starlette.responses import FileResponse
 
 from ..auth import authenticate
@@ -93,6 +93,26 @@ async def upcoming_routes(request: Request):
     actor = await authenticate(request, "rider")
     query = (await validate(request, query=DayQuery))["query"]
     return respond(await routes.list_upcoming(actor, query.date))
+
+
+class RangeQuery(Schema):
+    # The rider's local dates (YYYY-MM-DD). Without `to`, every route from `from` onwards.
+    date_from: DateKey = Field(alias="from")
+    to: Optional[DateKey] = None
+
+    @model_validator(mode="after")
+    def _ordered(self):
+        if self.to is not None and self.to < self.date_from:
+            raise ValueError("to: Must be on or after from")
+        return self
+
+
+@routes_router.get("/by-date")
+async def routes_by_date(request: Request):
+    """All of the rider's routes (any status) for a range of days, as summaries, e.g. for the Home day selector."""
+    actor = await authenticate(request, "rider")
+    query = (await validate(request, query=RangeQuery))["query"]
+    return respond(await routes.list_by_date(actor, query.date_from, query.to))
 
 
 @routes_router.get("")

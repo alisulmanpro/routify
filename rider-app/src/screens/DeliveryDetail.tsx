@@ -13,7 +13,7 @@ import { premium as c, premiumRadius as r } from '../lib/theme';
 import { useNav } from '../lib/nav';
 
 const REASONS: FailureReason[] = ['customer_unavailable', 'customer_refused', 'wrong_address', 'phone_unreachable', 'business_closed', 'other'];
-const STATUS: Record<Delivery['status'], { label: string; tone: PillTone }> = {
+export const STATUS: Record<Delivery['status'], { label: string; tone: PillTone }> = {
   pending: { label: 'Pending', tone: 'amber' },
   in_progress: { label: 'Arrived', tone: 'blue' },
   delivered: { label: 'Delivered', tone: 'green' },

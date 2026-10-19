@@ -317,6 +317,29 @@ async def list_upcoming(actor: dict, date: Optional[str] = None) -> list[dict]:
     return [await serialize_route(r) for r in routes]
 
 
+async def list_by_date(actor: dict, date_from: str, date_to: Optional[str] = None, limit: int = 200) -> list[dict]:
+    """Every route (planned, active or completed) with a service date from `date_from` to `date_to` (open-ended when
+    omitted), soonest first. Summaries only, without the stop list: two queries however many routes there are."""
+    _require_rider(actor)
+    service_date: dict[str, str] = {"gte": date_from} | ({"lte": date_to} if date_to else {})
+    routes = await db.route.find_many(where={"riderId": actor["id"], "serviceDate": service_date}, include={"stops": True},
+                                      order=[{"serviceDate": "asc"}, {"createdAt": "asc"}, {"id": "asc"}], take=limit)
+    ids = [s.deliveryId for r in routes for s in r.stops or []]
+    by_id = {d.id: d for d in await db.delivery.find_many(where={"id": {"in": ids}})} if ids else {}
+    items = []
+    for route in routes:
+        on_route = [by_id[s.deliveryId] for s in route.stops or [] if s.deliveryId in by_id]
+        done = sum(1 for d in on_route if str(d.status) not in OPEN)
+        items.append({
+            "id": route.id, "name": route.name or None, "status": str(route.status), "preference": str(route.preference),
+            "serviceDate": route.serviceDate, "distanceKm": route.distanceKm, "durationMin": route.durationMin,
+            "startedAt": route.startedAt, "completedAt": route.completedAt,
+            "progress": {"total": len(on_route), "done": done, "remaining": len(on_route) - done},
+            "summary": summarize(on_route, route),
+        })
+    return items
+
+
 async def start(actor: dict, route_id: str) -> dict:
     _require_rider(actor)
     route = await _find_mine(actor, route_id)

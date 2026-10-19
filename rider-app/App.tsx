@@ -11,6 +11,7 @@ import { colors, premium, spacing } from './src/lib/theme';
 import Login from './src/screens/Login';
 import Register from './src/screens/Register';
 import ForgotPassword from './src/screens/ForgotPassword';
+import RouteDetail from './src/screens/RouteDetail';
 import { configureRevenueCat, identifyRider } from './src/lib/revenuecat';
 import AnimatedSplash from './src/components/AnimatedSplash';
 
@@ -46,7 +47,8 @@ function ScreenRouter() {
   switch (current.name) {
     case 'Dashboard': return <Dashboard />;
     case 'RouteMapScreen': return <RouteMapScreen reveal={!!current.params?.reveal} routeId={current.params?.routeId as string | undefined} />;
-    case 'NewRoute': return <NewRoute />;
+    case 'NewRoute': return <NewRoute initialDate={current.params?.date as string | undefined} />;
+    case 'RouteDetail': return <RouteDetail id={current.params!.id as string} />;
     case 'AddStops': return <AddStops name={current.params!.name as string} date={current.params!.date as string} />;
     case 'RoutePreview': return <RoutePreview name={current.params!.name as string} date={current.params!.date as string} ids={current.params!.ids as string[]} />;
     case 'LiveNavigation': return <LiveNavigation />;
