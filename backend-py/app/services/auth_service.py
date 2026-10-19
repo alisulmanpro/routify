@@ -60,7 +60,7 @@ async def _assert_password_policy(password: str) -> None:
         raise validation_error([{"path": "password", "message": message}], message)
 
 
-async def create_rider_account(*, full_name: str, email: str, password: str, currency: str, phone: str | None = None) -> Any:
+async def create_rider_account(*, full_name: str, email: str, password: str, phone: str | None = None) -> Any:
     """Creates a rider account with its own free-trial subscription.
 
     Every rider is fully independent: there is no organization or team concept anywhere in this app.
@@ -68,8 +68,6 @@ async def create_rider_account(*, full_name: str, email: str, password: str, cur
     """
     await _assert_password_policy(password)
     settings = await get_settings()
-    if currency not in settings["currencies"]:
-        raise validation_error([{"path": "currency", "message": "Currency is not enabled"}])
     email = email.lower()
     if await db.user.find_unique(where={"email": email}):
         raise conflict("An account with this email already exists", "EMAIL_TAKEN")
@@ -79,7 +77,7 @@ async def create_rider_account(*, full_name: str, email: str, password: str, cur
     try:
         user = await db.user.create(data={
             "id": user_id, "fullName": full_name, "phone": phone, "email": email, "passwordHash": password_hash, "role": "rider",
-            "currency": currency, "routePreference": settings["route"]["defaultPreference"],
+            "currency": settings["defaultCurrency"], "routePreference": settings["route"]["defaultPreference"],
         })
     except UniqueViolationError:
         raise conflict("An account with this email already exists", "EMAIL_TAKEN") from None
@@ -101,7 +99,7 @@ async def _issue_tokens(user: Any, *, family: str | None = None, user_agent: str
 
 
 async def register(data: dict, ctx: dict) -> dict:
-    user = await create_rider_account(full_name=data["fullName"], email=data["email"], password=data["password"], currency=data["currency"])
+    user = await create_rider_account(full_name=data["fullName"], email=data["email"], password=data["password"])
     tokens = await _issue_tokens(user, user_agent=ctx.get("userAgent"))
     await _send_welcome(user)
     return {"user": serialize_user(user), **tokens}
@@ -250,9 +248,6 @@ async def update_profile(user_id: str, patch: dict) -> dict:
             if not area:
                 raise validation_error([{"path": "city", "message": 'We could not find that city. Try adding the country, e.g. "Lahore, Pakistan".'}])
             data.update(area_columns(area, "manual"))
-    if data.get("currency"):
-        if data["currency"] not in (await get_settings())["currencies"]:
-            raise validation_error([{"path": "currency", "message": "Currency is not enabled"}])
     user = await db.user.update(where={"id": user_id}, data=data) if data else await db.user.find_unique(where={"id": user_id})
     return serialize_user(user)
 

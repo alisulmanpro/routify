@@ -54,8 +54,6 @@ async def get_settings() -> dict:
 async def update_settings(patch: dict) -> dict:
     global _cache, _cached_at
     nxt = merge(await get_settings(), patch)
-    if nxt["defaultCurrency"] not in nxt["currencies"]:
-        nxt["defaultCurrency"] = nxt["currencies"][0]
     await db.setting.upsert(
         where={"key": "platform"},
         data={"create": {"id": new_id(), "key": "platform", "value": as_json(nxt)}, "update": {"value": as_json(nxt)}},
@@ -69,8 +67,6 @@ async def get_public_config() -> dict:
     """What the mobile app may know before login."""
     s = await get_settings()
     return {
-        "currencies": s["currencies"],
-        "defaultCurrency": s["defaultCurrency"],
         "routePreference": s["route"]["defaultPreference"],
         "minPasswordLength": s["security"]["minPasswordLength"],
         "platformName": s["platform"]["name"],

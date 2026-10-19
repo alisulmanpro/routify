@@ -1,17 +1,15 @@
 import { useState } from 'react';
-import { Alert, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Alert, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../lib/auth';
 import { patch, post, setTokens, ApiRequestError } from '../lib/api';
-import type { Currency } from '../lib/types';
 import { Screen } from '../components/Kit';
 import { KeyboardAwareScrollView } from '../components/KeyboardAware';
 import { ErrorBanner, Header, IconCircle, PButton, PCard, PInput, Pill, SectionLabel, gradient, DARK_ON_PRIMARY } from '../components/Premium';
+import { AUTOFILL } from '../lib/inputs';
 import { premium as c, premiumRadius as r } from '../lib/theme';
 import { useNav } from '../lib/nav';
 import { useServiceArea } from '../lib/serviceArea';
-
-const CURRENCIES: Currency[] = ['USD', 'GBP', 'EUR', 'PKR', 'INR'];
 
 export default function Account() {
   const { user, logout, refreshProfile } = useAuth();
@@ -61,23 +59,6 @@ export default function Account() {
     finally { setSaving(false); }
   };
 
-  const confirmCurrencyChange = (currency: Currency) => {
-    if (currency === user.currency) return;
-    const message = `Are you sure you want to change your currency from ${user.currency} to ${currency}?`;
-    if (Platform.OS === 'web') {
-      if (globalThis.confirm(message)) void updateField({ currency });
-      return;
-    }
-    Alert.alert(
-      'Change currency?',
-      message,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        { text: 'Change currency', onPress: () => updateField({ currency }) },
-      ],
-    );
-  };
-
   const area = user.serviceArea;
 
   return (
@@ -94,7 +75,7 @@ export default function Account() {
           <View style={{ flex: 1 }}>
             <Text style={{ color: c.text, fontSize: 18, fontWeight: '800' }} numberOfLines={1}>{user.fullName}</Text>
             <View style={s.metaRow}><Ionicons name="mail-outline" size={13} color={c.textMuted} /><Text style={s.meta} numberOfLines={1}>{user.email}</Text></View>
-            <View style={s.metaRow}><Ionicons name="call-outline" size={13} color={c.textMuted} /><Text style={s.meta}>{user.phone}</Text></View>
+            {user.phone ? <View style={s.metaRow}><Ionicons name="call-outline" size={13} color={c.textMuted} /><Text style={s.meta}>{user.phone}</Text></View> : null}
           </View>
         </PCard>
 
@@ -133,21 +114,6 @@ export default function Account() {
           <PButton title="Save city" icon="checkmark-circle-outline" onPress={saveCity} loading={saving && !!cityInput.trim()} disabled={!cityInput.trim() || saving} style={{ marginTop: 10 }} />
         </PCard>
 
-        {/* Currency */}
-        <PCard>
-          <SectionLabel>Currency</SectionLabel>
-          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
-            {CURRENCIES.map((cur) => {
-              const on = user.currency === cur;
-              return (
-                <Pressable key={cur} disabled={saving} onPress={() => confirmCurrencyChange(cur)} style={[s.chip, on && s.chipOn]}>
-                  <Text style={{ color: on ? c.primary : c.text, fontWeight: '700', fontSize: 13 }}>{cur}</Text>
-                </Pressable>
-              );
-            })}
-          </View>
-        </PCard>
-
         {/* Password */}
         <PCard style={{ paddingVertical: showPassword ? 16 : 14 }}>
           <Pressable onPress={() => setShowPassword((v) => !v)} style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
@@ -158,9 +124,9 @@ export default function Account() {
           {showPassword ? (
             <View style={{ gap: 10, marginTop: 14 }}>
               <SectionLabel>Current password (your old one)</SectionLabel>
-              <PInput icon="key-outline" placeholder="Current password" secureTextEntry autoComplete="current-password" value={passwords.currentPassword} onChangeText={(v) => setPasswords({ ...passwords, currentPassword: v })} />
+              <PInput icon="key-outline" placeholder="Current password" {...AUTOFILL.password} secureTextEntry value={passwords.currentPassword} onChangeText={(v) => setPasswords({ ...passwords, currentPassword: v })} />
               <SectionLabel>New password</SectionLabel>
-              <PInput icon="lock-closed-outline" placeholder="New password" secureTextEntry autoComplete="new-password" value={passwords.newPassword} onChangeText={(v) => setPasswords({ ...passwords, newPassword: v })} />
+              <PInput icon="lock-closed-outline" placeholder="New password" {...AUTOFILL.newPassword} secureTextEntry value={passwords.newPassword} onChangeText={(v) => setPasswords({ ...passwords, newPassword: v })} />
               {/* Shown here, not in the banner at the top, which is off-screen while this card is open. */}
               <ErrorBanner text={passwordError} />
               <PButton title="Update password" icon="shield-checkmark-outline" onPress={changePassword} loading={saving} disabled={!passwords.currentPassword || !passwords.newPassword} />
@@ -184,6 +150,4 @@ const s = StyleSheet.create({
   orRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginVertical: 14 },
   orLine: { flex: 1, height: 1, backgroundColor: c.divider },
   orText: { color: c.textMuted, fontSize: 10, fontWeight: '800', letterSpacing: 1 },
-  chip: { paddingHorizontal: 16, paddingVertical: 9, borderRadius: r.pill, borderWidth: 1, borderColor: c.border, backgroundColor: c.surfaceSoft },
-  chipOn: { borderColor: c.primary, backgroundColor: 'rgba(255,170,50,0.14)' },
 });
