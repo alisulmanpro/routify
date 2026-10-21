@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Any, Optional
 
-from ..db import db
-from ..errors import conflict, forbidden, not_found, unprocessable
+from ..db import db, lock_rider, transaction
+from ..errors import AppError, conflict, forbidden, not_found, unprocessable
 from ..http import js_round, now, round2, today_key
 from ..ids import new_id
+from ..logger import log
 from . import geocoding_service as geocoding
 from . import routing_service
 from .geo import haversine_km, normalize_address
@@ -43,7 +45,8 @@ def _origin(route: Any) -> Optional[dict]:
 
 async def serialize_route(route: Any) -> dict:
     stop_rows = sorted(await db.routestop.find_many(where={"routeId": route.id}), key=lambda s: s.order)
-    deliveries = await db.delivery.find_many(where={"id": {"in": [s.deliveryId for s in stop_rows]}}) if stop_rows else []
+    # A stop carried over to another day keeps its row here for the record, but belongs to its new route now.
+    deliveries = await db.delivery.find_many(where={"id": {"in": [s.deliveryId for s in stop_rows]}, "routeId": route.id}) if stop_rows else []
     by_id = {d.id: d for d in deliveries}
     stops = [
         {"order": i + 1, "legDistanceKm": s.legDistanceKm, "legDurationMin": s.legDurationMin, "delivery": serialize_delivery(by_id[s.deliveryId])}
@@ -51,9 +54,9 @@ async def serialize_route(route: Any) -> dict:
     ]
     done = sum(1 for s in stops if s["delivery"]["status"] not in OPEN)
     current = next((s for s in stops if s["delivery"]["status"] in OPEN), None)
-    # Stops added after the route was planned; the app offers to re-optimise to include them.
-    new_stops = 0 if str(route.status) == "completed" else await db.delivery.count(
-        where={"riderId": route.riderId, "status": "pending", "routeId": None, "serviceDate": route.serviceDate})
+    # A day can have several routes, and stops on no route belong to one still being added (Add stops), not to this
+    # one, so nothing is pulled in automatically any more. Kept in the response for older app versions.
+    new_stops = 0
     return {
         "id": route.id, "name": route.name or None, "status": str(route.status), "preference": str(route.preference), "serviceDate": route.serviceDate,
         "origin": _origin(route),
@@ -134,8 +137,12 @@ async def _refresh_delivery_geocodes(deliveries: list[Any], *, retry_approximate
         hit = results.get(d.addressRaw)
         if hit:
             approx = bool(hit.get("approximate"))
+            # An Eircode point is a building, so it orders the route even when the provider calls it approximate.
             data = {"addressLatitude": hit["latitude"], "addressLongitude": hit["longitude"], "addressNormalized": hit.get("normalized"),
-                    "addressGeocoded": not approx, "addressApproximate": approx, "geocodeStatus": "approximate" if approx else "found"}
+                    "addressGeocoded": not approx or bool(hit.get("eircode")), "addressApproximate": approx,
+                    "geocodeStatus": "approximate" if approx else "found"}
+            if hit.get("postalCode") and not d.postalCode:
+                data["postalCode"] = hit["postalCode"]
         else:
             data = {"addressLatitude": None, "addressLongitude": None, "addressNormalized": None, "addressGeocoded": False,
                     "addressApproximate": False, "geocodeStatus": "not_found"}
@@ -182,12 +189,20 @@ async def build(actor: dict, *, preference: Optional[str] = None, origin: Option
     # A route for a later day can be planned while today's is underway (e.g. tomorrow's, the night before).
     if active and active.serviceDate >= date:
         raise conflict("Finish or end your active route before planning a new one", "ROUTE_ACTIVE")
-    await _release_planned(actor, date)
 
-    where: dict[str, Any] = {"riderId": actor["id"], "status": "pending", "routeId": None}
+    where: dict[str, Any] = {"riderId": actor["id"], "status": "pending"}
     if delivery_ids:
-        where["id"] = {"in": delivery_ids}
+        # A new route takes exactly the stops chosen for it. Every other route of the day stays as it is; a chosen stop
+        # that is still on another unstarted route (planned again) moves over, and that route is tidied up afterwards.
+        planned = await db.route.find_many(where={"riderId": actor["id"], "status": "planned"})
+        where |= {"id": {"in": delivery_ids}, "OR": [{"routeId": None}, {"routeId": {"in": [r.id for r in planned]}}]}
+    else:
+        # No stops chosen: (re)plan the whole day, replacing its unstarted route. The day's open stops (and older ones
+        # still open), never stops already added for a later day.
+        await _release_planned(actor, date)
+        where |= {"routeId": None, "serviceDate": {"lte": date}}
     deliveries = await db.delivery.find_many(where=where, order=[{"createdAt": "asc"}, {"id": "asc"}])
+    previous_routes = {d.routeId for d in deliveries if d.routeId}
     if not deliveries:
         raise unprocessable("Add deliveries before building a route", "NO_DELIVERIES")
 
@@ -205,7 +220,17 @@ async def build(actor: dict, *, preference: Optional[str] = None, origin: Option
     })
     await db.routestop.create_many(data=[{"routeId": route.id, **s} for s in stops])
     await _assign_stops(route.id, actor["id"], stops)
+    if previous_routes:
+        await _drop_moved_stops(previous_routes, [s["deliveryId"] for s in stops])
     return await serialize_route(route)
+
+
+async def _drop_moved_stops(route_ids: set[str], delivery_ids: list[str]) -> None:
+    """Takes stops that moved to a new route off the unstarted routes they were on; a route left empty is deleted."""
+    await db.routestop.delete_many(where={"routeId": {"in": list(route_ids)}, "deliveryId": {"in": delivery_ids}})
+    for route_id in route_ids:
+        if not await db.routestop.count(where={"routeId": route_id}):
+            await db.route.delete_many(where={"id": route_id, "status": "planned"})
 
 
 async def retry_geocoding(actor: dict, route_id: str) -> dict:
@@ -214,7 +239,7 @@ async def retry_geocoding(actor: dict, route_id: str) -> dict:
     if route.status not in ("planned", "active"):
         raise conflict("Only planned or active routes can retry address lookup", "INVALID_STATE")
     stop_rows = await db.routestop.find_many(where={"routeId": route.id})
-    deliveries = await db.delivery.find_many(where={"riderId": actor["id"], "id": {"in": [s.deliveryId for s in stop_rows]}},
+    deliveries = await db.delivery.find_many(where={"riderId": actor["id"], "routeId": route.id, "id": {"in": [s.deliveryId for s in stop_rows]}},
                                              order=[{"createdAt": "asc"}, {"id": "asc"}])
     origin = _origin(route)
     area = await service_area_for(actor, origin)
@@ -256,18 +281,17 @@ async def retry_geocoding(actor: dict, route_id: str) -> dict:
 
 async def optimize(actor: dict, route_id: str, origin: Optional[dict] = None) -> dict:
     """Re-optimises the open stops of a planned or active route from `origin` (the rider's position;
-    defaults to the route's start). Pulls in stops added since planning; finished stops keep their place."""
+    defaults to the route's start). Only the route's own stops: stops on no route are never pulled in, since they
+    belong to a route that is still being added. Finished stops keep their place."""
     _require_rider(actor)
     route = await _find_mine(actor, route_id)
     if route.status not in ("planned", "active"):
         raise conflict("Only planned or active routes can be optimised", "INVALID_STATE")
     stop_rows = sorted(await db.routestop.find_many(where={"routeId": route.id}), key=lambda s: s.order)
-    on_route = await db.delivery.find_many(where={"riderId": actor["id"], "id": {"in": [s.deliveryId for s in stop_rows]}})
-    added = await db.delivery.find_many(where={"riderId": actor["id"], "status": "pending", "routeId": None, "serviceDate": route.serviceDate},
-                                        order=[{"createdAt": "asc"}, {"id": "asc"}])
+    on_route = await db.delivery.find_many(where={"riderId": actor["id"], "routeId": route.id, "id": {"in": [s.deliveryId for s in stop_rows]}})
     by_id = {d.id: d for d in on_route}
     finished = [by_id[s.deliveryId] for s in stop_rows if s.deliveryId in by_id and str(by_id[s.deliveryId].status) not in OPEN]
-    open_stops = [by_id[s.deliveryId] for s in stop_rows if s.deliveryId in by_id and str(by_id[s.deliveryId].status) in OPEN] + added
+    open_stops = [by_id[s.deliveryId] for s in stop_rows if s.deliveryId in by_id and str(by_id[s.deliveryId].status) in OPEN]
     start_point = origin or _origin(route)
 
     open_stops = await _refresh_delivery_geocodes(open_stops, area=await service_area_for(actor, start_point))
@@ -317,6 +341,29 @@ async def list_upcoming(actor: dict, date: Optional[str] = None) -> list[dict]:
     return [await serialize_route(r) for r in routes]
 
 
+async def list_by_date(actor: dict, date_from: str, date_to: Optional[str] = None, limit: int = 200) -> list[dict]:
+    """Every route (planned, active or completed) with a service date from `date_from` to `date_to` (open-ended when
+    omitted), soonest first. Summaries only, without the stop list: two queries however many routes there are."""
+    _require_rider(actor)
+    service_date: dict[str, str] = {"gte": date_from} | ({"lte": date_to} if date_to else {})
+    routes = await db.route.find_many(where={"riderId": actor["id"], "serviceDate": service_date}, include={"stops": True},
+                                      order=[{"serviceDate": "asc"}, {"createdAt": "asc"}, {"id": "asc"}], take=limit)
+    ids = [s.deliveryId for r in routes for s in r.stops or []]
+    by_id = {d.id: d for d in await db.delivery.find_many(where={"id": {"in": ids}})} if ids else {}
+    items = []
+    for route in routes:
+        on_route = [by_id[s.deliveryId] for s in route.stops or [] if s.deliveryId in by_id and by_id[s.deliveryId].routeId == route.id]
+        done = sum(1 for d in on_route if str(d.status) not in OPEN)
+        items.append({
+            "id": route.id, "name": route.name or None, "status": str(route.status), "preference": str(route.preference),
+            "serviceDate": route.serviceDate, "distanceKm": route.distanceKm, "durationMin": route.durationMin,
+            "startedAt": route.startedAt, "completedAt": route.completedAt,
+            "progress": {"total": len(on_route), "done": done, "remaining": len(on_route) - done},
+            "summary": summarize(on_route, route),
+        })
+    return items
+
+
 async def start(actor: dict, route_id: str) -> dict:
     _require_rider(actor)
     route = await _find_mine(actor, route_id)
@@ -342,3 +389,51 @@ async def list_completed(actor: dict, limit: int = 30) -> list[dict]:
     _require_rider(actor)
     routes = await db.route.find_many(where={"riderId": actor["id"], "status": "completed"}, order=[{"completedAt": "desc"}, {"id": "desc"}], take=limit)
     return [await serialize_route(r) for r in routes]
+
+
+# ---- Open stops left from earlier days ----
+
+def _left_over_where(actor: dict, date: str) -> dict:
+    """Open stops dated before `date` that are not already on a route for `date` or later."""
+    return {"riderId": actor["id"], "status": {"in": list(OPEN)}, "serviceDate": {"lt": date},
+            "OR": [{"routeId": None}, {"route": {"is": {"serviceDate": {"lt": date}}}}]}
+
+
+async def left_over(actor: dict, date: str) -> dict:
+    """How many open stops are left from days before `date` (the rider's today), per day, latest first."""
+    _require_rider(actor)
+    rows = await db.delivery.find_many(where=_left_over_where(actor, date))
+    days: dict[str, int] = {}
+    for d in rows:
+        days[d.serviceDate] = days.get(d.serviceDate, 0) + 1
+    return {"total": len(rows), "days": [{"date": k, "count": days[k]} for k in sorted(days, reverse=True)]}
+
+
+async def carry_over(actor: dict, date: str, origin: Optional[dict] = None) -> dict:
+    """Moves every open stop left from earlier days to `date`, as a route of their own (named after the route they
+    were on). Other routes of that day are left alone. Nothing is deleted: the old routes are closed (completed, so
+    they stay in History with the stops that were done) and keep their stop rows."""
+    _require_rider(actor)
+    async with transaction() as tx:
+        await lock_rider(tx, actor["id"])
+        moving = await tx.delivery.find_many(where=_left_over_where(actor, date))
+        if not moving:
+            return {"moved": 0, "route": None}
+        old_route_ids = list({d.routeId for d in moving if d.routeId})
+        # An arrived-but-not-delivered stop starts the new day as an ordinary open stop.
+        await tx.delivery.update_many(where={"id": {"in": [d.id for d in moving]}},
+                                      data={"serviceDate": date, "routeId": None, "stopOrder": None, "status": "pending"})
+        old_routes = await tx.route.find_many(where={"id": {"in": old_route_ids}}) if old_route_ids else []
+        for route in old_routes:
+            if str(route.status) != "completed" and not await tx.delivery.count(where={"routeId": route.id, "status": {"in": list(OPEN)}}):
+                await tx.route.update(where={"id": route.id}, data={"status": "completed", "completedAt": now()})
+
+    named = {r.name for r in old_routes if r.name}
+    try:
+        route = await build(actor, origin=origin, delivery_ids=[d.id for d in moving], date=date,
+                            name=named.pop() if len(named) == 1 else "Carried-over stops")
+    except AppError:
+        # The stops are moved either way; they can be planned from Home once the map lookup is back.
+        log(logging.WARNING, "Carried-over stops could not be added to a route", exc_info=True)
+        route = None
+    return {"moved": len(moving), "route": route}

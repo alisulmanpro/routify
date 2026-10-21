@@ -1,12 +1,15 @@
 import { useEffect, useRef, useState } from 'react';
-import { Platform, Pressable, Text, View, type LayoutChangeEvent, type ViewStyle } from 'react-native';
+import { Platform, Pressable, StyleSheet, Text, View, type LayoutChangeEvent, type ViewStyle } from 'react-native';
 import MapView, { Marker, Polyline, PROVIDER_DEFAULT, PROVIDER_GOOGLE, UrlTile } from 'react-native-maps';
 import { isRunningInExpoGo } from 'expo';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
-import { premium as c } from '../lib/theme';
+import { light as l, premium as c } from '../lib/theme';
+import { LIGHT_MAP_STYLE } from '../lib/mapStyles';
 
 export type Coordinates = { latitude: number; longitude: number };
-export type MapStop = Coordinates & { id: string; label: string; title: string; kind: 'next' | 'upcoming' | 'done' | 'failed' };
+// 'last' is the final open stop and 'current' the stop being driven to (both black on the light map, like the
+// designs; on the dark map they look like 'upcoming' and 'next').
+export type MapStop = Coordinates & { id: string; label: string; title: string; kind: 'next' | 'current' | 'upcoming' | 'last' | 'done' | 'failed' };
 export type GoogleRouteMapProps = {
   stops: MapStop[];
   position: Coordinates | null;
@@ -26,6 +29,8 @@ export type GoogleRouteMapProps = {
   // Navigation: the camera follows the rider, rotated to their direction of travel.
   follow?: boolean;
   heading?: number | null;
+  /** The light design_pref look: light map, blue numbered pins, blue route line. */
+  light?: boolean;
 };
 
 const EDGE = { top: 60, right: 50, bottom: 60, left: 50 };
@@ -39,12 +44,23 @@ const DEV_TILES = 'https://basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png';
 const PROVIDER = IN_EXPO_GO && Platform.OS === 'ios' ? PROVIDER_DEFAULT : PROVIDER_GOOGLE;
 const MARKER_COLORS: Record<MapStop['kind'], { bg: string; fg: string; border: string }> = {
   next: { bg: c.primary, fg: '#1A1206', border: '#fff' },
+  current: { bg: c.primary, fg: '#1A1206', border: '#fff' },
   upcoming: { bg: '#16223A', fg: c.text, border: c.textSecondary },
+  last: { bg: '#16223A', fg: c.text, border: c.textSecondary },
   done: { bg: c.success, fg: '#05301E', border: '#fff' },
   failed: { bg: c.danger, fg: '#fff', border: '#fff' },
 };
+const LIGHT_MARKER_COLORS: Record<MapStop['kind'], { bg: string; fg: string; border: string }> = {
+  next: { bg: l.link, fg: '#fff', border: '#fff' },
+  current: { bg: l.ink, fg: '#fff', border: '#fff' },
+  upcoming: { bg: l.link, fg: '#fff', border: '#fff' },
+  last: { bg: l.ink, fg: '#fff', border: '#fff' },
+  done: { bg: '#E4E4E7', fg: l.textLabel, border: '#fff' },
+  failed: { bg: l.danger, fg: '#fff', border: '#fff' },
+};
 
-export default function GoogleRouteMap({ stops, position, path, order, focus, style, pinning, onCenterChange, initialCenter, reveal, follow, heading }: GoogleRouteMapProps) {
+export default function GoogleRouteMap({ stops, position, path, order, focus, style, pinning, onCenterChange, initialCenter, reveal, follow, heading, light }: GoogleRouteMapProps) {
+  const line = light ? l.link : c.primary;
   const map = useRef<MapView>(null);
   const [ready, setReady] = useState(false);
   // Android draws custom marker views once; keep redrawing briefly so they appear, then stop for speed.
@@ -105,7 +121,7 @@ export default function GoogleRouteMap({ stops, position, path, order, focus, st
   const revealing = reveal != null && reveal < stops.length;
 
   return (
-    <View onLayout={onLayout} style={[{ height: 300, overflow: 'hidden', backgroundColor: c.surface }, style]}>
+    <View onLayout={onLayout} style={[{ height: 300, overflow: 'hidden', backgroundColor: light ? '#EEF0F3' : c.surface }, style]}>
       <MapView
         ref={map}
         provider={PROVIDER}
@@ -113,7 +129,7 @@ export default function GoogleRouteMap({ stops, position, path, order, focus, st
         userInterfaceStyle="dark"
         style={{ flex: 1 }}
         initialRegion={{ ...start, latitudeDelta: start === initialCenter ? 0.2 : 0.05, longitudeDelta: start === initialCenter ? 0.2 : 0.05 }}
-        customMapStyle={IN_EXPO_GO ? undefined : DARK_STYLE}
+        customMapStyle={light ? LIGHT_MAP_STYLE : DARK_STYLE}
         onMapReady={() => setReady(true)}
         onRegionChangeComplete={(region, details) => {
           if (details?.isGesture) userMoved.current = true;
@@ -127,18 +143,18 @@ export default function GoogleRouteMap({ stops, position, path, order, focus, st
         {IN_EXPO_GO && Platform.OS === 'android' ? <UrlTile urlTemplate={DEV_TILES} maximumZ={19} tileSize={256} zIndex={-1} /> : null}
 
         {revealing ? null : path.length > 1 ? (
-          <Polyline coordinates={path} strokeColor={c.primary} strokeWidth={5} />
+          <Polyline coordinates={path} strokeColor={line} strokeWidth={5} />
         ) : order.length > 1 || (position && order.length) ? (
-          <Polyline coordinates={position ? [position, ...order] : order} strokeColor={c.primary} strokeWidth={3} lineDashPattern={[10, 8]} />
+          <Polyline coordinates={position ? [position, ...order] : order} strokeColor={line} strokeWidth={3} lineDashPattern={[10, 8]} />
         ) : null}
 
         {shown.map((s) => {
-          const col = MARKER_COLORS[s.kind];
-          const big = s.kind === 'next';
+          const col = (light ? LIGHT_MARKER_COLORS : MARKER_COLORS)[s.kind];
+          const big = s.kind === 'next' || s.kind === 'current';
           return (
-            <Marker key={s.id} coordinate={s} title={s.title} anchor={{ x: 0.5, y: 0.5 }} tracksViewChanges={redraw} zIndex={big ? 10 : s.kind === 'upcoming' ? 5 : 1}>
+            <Marker key={s.id} coordinate={s} title={s.title} anchor={{ x: 0.5, y: 0.5 }} tracksViewChanges={redraw} zIndex={big ? 10 : s.kind === 'upcoming' || s.kind === 'last' ? 5 : 1}>
               <View style={{ width: big ? 36 : 28, height: big ? 36 : 28, borderRadius: 18, backgroundColor: col.bg, borderWidth: big ? 3 : 2, borderColor: col.border, alignItems: 'center', justifyContent: 'center' }}>
-                {s.kind === 'done' ? <Ionicons name="checkmark" size={15} color={col.fg} />
+                {s.kind === 'done' && !(light && s.label) ? <Ionicons name="checkmark" size={15} color={col.fg} />
                   : s.kind === 'failed' ? <Ionicons name="close" size={15} color={col.fg} />
                     : <Text style={{ color: col.fg, fontWeight: '800', fontSize: big ? 14 : 12 }}>{s.label}</Text>}
               </View>
@@ -159,13 +175,13 @@ export default function GoogleRouteMap({ stops, position, path, order, focus, st
         <View pointerEvents="none" style={{ position: 'absolute', left: 0, right: 0, top: 0, bottom: 0, alignItems: 'center', justifyContent: 'center' }}>
           {/* The pin's tip marks the map centre. */}
           <View style={{ marginBottom: 40, alignItems: 'center' }}>
-            <MaterialCommunityIcons name="map-marker" size={44} color={c.primary} />
+            <MaterialCommunityIcons name="map-marker" size={44} color={line} />
           </View>
         </View>
       ) : null}
 
-      <Pressable onPress={() => { userMoved.current = false; if (follow && position) map.current?.animateCamera({ center: position, zoom: 17, heading: heading ?? 0, pitch: 35 }, { duration: 400 }); else fit(true); }} hitSlop={6} style={{ position: 'absolute', right: 12, top: 12, width: 40, height: 40, borderRadius: 20, backgroundColor: 'rgba(13,22,41,0.92)', borderWidth: 1, borderColor: c.border, alignItems: 'center', justifyContent: 'center' }}>
-        <MaterialCommunityIcons name="crosshairs-gps" size={19} color={c.primary} />
+      <Pressable onPress={() => { userMoved.current = false; if (follow && position) map.current?.animateCamera({ center: position, zoom: 17, heading: heading ?? 0, pitch: 35 }, { duration: 400 }); else fit(true); }} hitSlop={6} style={light ? s.fitLight : s.fitDark} accessibilityLabel="Show the whole route">
+        <MaterialCommunityIcons name="crosshairs-gps" size={19} color={light ? l.ink : c.primary} />
       </Pressable>
     </View>
   );
@@ -188,3 +204,8 @@ const DARK_STYLE = [
   { featureType: 'water', elementType: 'geometry', stylers: [{ color: '#0e1626' }] },
   { featureType: 'water', elementType: 'labels.text.fill', stylers: [{ color: '#4e6d70' }] },
 ];
+
+const s = StyleSheet.create({
+  fitDark: { position: 'absolute', right: 12, top: 12, width: 40, height: 40, borderRadius: 20, backgroundColor: 'rgba(13,22,41,0.92)', borderWidth: 1, borderColor: c.border, alignItems: 'center', justifyContent: 'center' },
+  fitLight: { position: 'absolute', right: 16, top: 16, width: 44, height: 44, borderRadius: 22, backgroundColor: '#fff', alignItems: 'center', justifyContent: 'center', shadowColor: '#000', shadowOpacity: 0.12, shadowRadius: 8, shadowOffset: { width: 0, height: 2 }, elevation: 4 },
+});

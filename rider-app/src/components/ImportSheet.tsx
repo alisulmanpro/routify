@@ -4,11 +4,28 @@ import * as DocumentPicker from 'expo-document-picker';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { KeyboardAwareScrollView, RevealingTextInput } from './KeyboardAware';
 import { post, postFile, ApiRequestError } from '../lib/api';
+import { findDuplicate } from '../lib/duplicates';
+import { findEircode } from '../lib/format';
 import type { Delivery, ImportDraft, ImportDraftItem } from '../lib/types';
 import { premium as c, premiumRadius as r } from '../lib/theme';
 import { DARK_ON_PRIMARY, ErrorBanner, PButton } from './Premium';
 
 type Row = ImportDraftItem & { include: boolean };
+
+/**
+ * Rows start unticked when they repeat a stop already on the list or an earlier row of the file (same Eircode), so
+ * nothing is added twice unless the rider ticks it again on purpose.
+ */
+function toRows(items: ImportDraftItem[], stops: readonly Delivery[]): Row[] {
+  const seen = new Set<string>();
+  return items.map((item) => {
+    const code = findEircode(item.address);
+    const repeat = !!code && (seen.has(code) || !!findDuplicate({ eircode: code }, stops));
+    if (code) seen.add(code);
+    const flags = repeat && !item.flags.includes('duplicate') ? [...item.flags, 'duplicate'] : item.flags;
+    return { ...item, flags, include: !flags.includes('duplicate') && item.address.trim().length >= 5 };
+  });
+}
 
 const FORMATS = ['PDF', 'Word', 'Excel', 'CSV', 'TXT'];
 const MIME_BY_EXT: Record<string, string> = {
@@ -22,7 +39,7 @@ const MIME_BY_EXT: Record<string, string> = {
 };
 
 /** Reads a manifest or a plain address list, lets the rider check the stops, then adds them in one go. */
-type Props = { visible: boolean; date: string; onClose: () => void; onImported: (created: Delivery[]) => void };
+type Props = { visible: boolean; date: string; stops: readonly Delivery[]; onClose: () => void; onImported: (created: Delivery[]) => void };
 
 export default function ImportSheet({ visible, ...props }: Props) {
   return (
@@ -33,7 +50,7 @@ export default function ImportSheet({ visible, ...props }: Props) {
 }
 
 // Mounted fresh each time the sheet opens, so it always starts at "Choose file".
-function ImportBody({ date, onClose, onImported }: Omit<Props, 'visible'>) {
+function ImportBody({ date, stops, onClose, onImported }: Omit<Props, 'visible'>) {
   const [rows, setRows] = useState<Row[] | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -47,7 +64,7 @@ function ImportBody({ date, onClose, onImported }: Omit<Props, 'visible'>) {
     setError('');
     try {
       const res = await postFile<ImportDraft>('/deliveries/import/file', asset.uri, 'file', asset.mimeType || MIME_BY_EXT[ext] || 'application/octet-stream', asset.name);
-      setRows(res.data.items.map((item) => ({ ...item, include: !item.flags.includes('duplicate') && item.address.trim().length >= 5 })));
+      setRows(toRows(res.data.items, stops));
     } catch (err) {
       setError(err instanceof ApiRequestError ? err.message : 'Could not read this file. Check your connection and try again.');
     } finally {

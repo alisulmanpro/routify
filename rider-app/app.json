@@ -34,7 +34,8 @@
         "android.permission.CAMERA",
         "android.permission.ACCESS_COARSE_LOCATION",
         "android.permission.ACCESS_FINE_LOCATION",
-        "android.permission.RECORD_AUDIO"
+        "android.permission.RECORD_AUDIO",
+        "android.permission.POST_NOTIFICATIONS"
       ]
     },
     "web": {
@@ -56,17 +57,17 @@
       [
         "expo-camera",
         {
-          "cameraPermission": "Delivery Rider uses the camera to scan barcodes on packages."
+          "cameraPermission": "Delivery Rider uses the camera to scan Eircodes and barcodes on packages."
         }
       ],
       "expo-font",
       [
         "expo-splash-screen",
         {
-          "image": "./assets/splash-icon.png",
-          "imageWidth": 200,
+          "image": "./assets/splash-mark.png",
+          "imageWidth": 96,
           "resizeMode": "contain",
-          "backgroundColor": "#050B18"
+          "backgroundColor": "#FFFFFF"
         }
       ],
       [
@@ -77,7 +78,14 @@
         }
       ],
       "./plugins/withSingleTopActivity",
-      "./plugins/withAutofillHighlight"
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "minSdkVersion": 26
+          }
+        }
+      ]
     ],
     "extra": {
       "eas": {

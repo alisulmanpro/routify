@@ -1,18 +1,21 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
+import { StatusBar } from 'expo-status-bar';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import * as Location from 'expo-location';
 import { Screen } from '../components/Kit';
-import { DARK_ON_PRIMARY, Empty, ErrorBanner, PButton, type McName } from '../components/Premium';
+import { type McName } from '../components/Premium';
+import { LightButton, LightError } from '../components/LightKit';
 import GoogleRouteMap, { type Coordinates, type MapStop } from '../components/GoogleRouteMap';
 import { get, ApiRequestError } from '../lib/api';
-import { markDelivered, openDirections } from '../lib/deliveryActions';
-import { formatMinutes, stopLabel, todayKey } from '../lib/format';
+import { openDirections } from '../lib/deliveryActions';
+import { formatMinutes, stopCardText, stopLabel, todayKey } from '../lib/format';
 import { TEST_LOCATION } from '../lib/location';
 import type { Route } from '../lib/types';
 import { useFocusEffect } from '../lib/useFocusEffect';
 import { useNav } from '../lib/nav';
-import { premium as c, premiumRadius as r } from '../lib/theme';
+import { light as c } from '../lib/theme';
 
 type Step = { distance: number; duration: number; name: string; maneuver: { type: string; modifier?: string } };
 type Guidance = { key: string; path: Coordinates[]; km: number; min: number; steps: Step[] };
@@ -89,13 +92,13 @@ function useLivePosition() {
 
 // Turn-by-turn guidance to each stop in route order, inside the app.
 export default function LiveNavigation() {
-  const { navigate } = useNav();
+  const { navigate, resetTo } = useNav();
+  const insets = useSafeAreaInsets();
   const { position, anchor, heading, denied } = useLivePosition();
   const [route, setRoute] = useState<Route | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [guidance, setGuidance] = useState<Guidance | null>(null);
-  const [busy, setBusy] = useState(false);
   const request = useRef(0);
 
   const load = useCallback(async () => {
@@ -138,49 +141,59 @@ export default function LiveNavigation() {
   const nextTurn = live ? instruction(live.steps[1] || live.steps[0]) : instruction(undefined);
   const toTurn = live && live.steps[0] && position ? Math.max(0, live.steps[0].distance - (anchor ? metersBetween(anchor, position) : 0)) : null;
 
-  const mapStops = useMemo<MapStop[]>(() => open.flatMap((stop, i) => {
+  // Every stop: done ones grey, the one being driven to black, the rest blue (the light map's colours).
+  const mapStops = useMemo<MapStop[]>(() => (route?.stops || []).flatMap((stop) => {
     const at = coordsOf(stop);
-    return at ? [{ ...at, id: stop.delivery.id, label: String(stop.order), title: `${stop.order}. ${stopLabel(stop.delivery)}`, kind: (i === 0 ? 'next' : 'upcoming') as MapStop['kind'] }] : [];
-  }), [open]);
+    if (!at) return [];
+    const kind: MapStop['kind'] = stop.delivery.id === current?.delivery.id ? 'current' : isOpen(stop) ? 'upcoming' : stop.delivery.status === 'failed' ? 'failed' : 'done';
+    return [{ ...at, id: stop.delivery.id, label: String(stop.order), title: `${stop.order}. ${stopLabel(stop.delivery)}`, kind }];
+  }), [route, current]);
 
-  const delivered = async () => {
-    if (!current) return;
-    setBusy(true);
-    try {
-      if (await markDelivered(current.delivery)) { setGuidance(null); await load(); }
-    } catch (err) {
-      setError(err instanceof ApiRequestError ? err.message : 'Could not mark it delivered');
-    } finally {
-      setBusy(false);
-    }
-  };
+  // Delivered and Failed open the same Proof of delivery / Failed delivery steps as the stop's own screen; finishing
+  // the last stop there opens Route complete. Coming back here reloads the route.
+  const finishStop = (step: 'proof' | 'fail') => { if (current) { setGuidance(null); navigate('DeliveryDetail', { id: current.delivery.id, step }); } };
 
-  if (loading) return <Screen style={{ backgroundColor: c.background, alignItems: 'center', justifyContent: 'center' }}><ActivityIndicator color={c.primary} /></Screen>;
-  if (!route || route.status !== 'active') {
+  if (loading) return <Screen style={{ backgroundColor: c.background, alignItems: 'center', justifyContent: 'center' }}><StatusBar style="dark" /><ActivityIndicator color={c.ink} /></Screen>;
+  if (!route || route.status !== 'active' || !current) {
+    // Finished routes have their own summary; otherwise there is nothing to navigate.
+    const finished = route && route.status !== 'planned' && !current;
     return (
-      <Screen style={{ backgroundColor: c.background, padding: 22, justifyContent: 'center' }}>
-        <ErrorBanner text={error} />
-        <Empty icon="navigation-variant-outline" title="No route underway" subtitle="Start a route from its map to navigate it here." />
+      <Screen style={{ backgroundColor: c.background, padding: 24, justifyContent: 'center' }}>
+        <StatusBar style="dark" />
+        <LightError text={error} />
+        <View style={{ alignItems: 'center' }}>
+          <MaterialCommunityIcons name={finished ? 'flag-checkered' : 'navigation-variant-outline'} size={48} color={c.placeholder} />
+          <Text style={{ color: c.text, fontSize: 20, fontWeight: '700', marginTop: 14 }}>{finished ? 'Route complete' : 'No route underway'}</Text>
+          <Text style={{ color: c.textSecondary, fontSize: 15, marginTop: 6, textAlign: 'center' }}>
+            {finished ? `${route?.name || 'Your route'} is finished. Well done!` : 'Start a route from its map to navigate it here.'}
+          </Text>
+          {finished && route ? <LightButton title="See summary" onPress={() => resetTo('RouteComplete', { routeId: route.id })} style={{ alignSelf: 'stretch', marginTop: 24 }} /> : null}
+        </View>
       </Screen>
     );
   }
-  if (!current) {
-    return (
-      <Screen style={{ backgroundColor: c.background, padding: 22, justifyContent: 'center' }}>
-        <Empty icon="flag-checkered" title="Route complete" subtitle={`${route.name || 'Your route'} is finished. Well done!`} />
-      </Screen>
-    );
-  }
+
+  const { title, address } = stopCardText(current.delivery);
+  const away = live ? `${live.km < 1 ? `${Math.round(live.km * 1000)} m` : `${live.km.toFixed(1)} km`} · ${formatMinutes(live.min)}` : toTarget != null ? `~${distanceText(toTarget)}` : '';
 
   return (
     <Screen style={{ backgroundColor: c.background }}>
+      <StatusBar style="dark" />
       <View style={{ flex: 1 }}>
-        <GoogleRouteMap stops={mapStops} position={position} path={live?.path ?? []} order={target ? [target] : []} follow={!!position} heading={heading} style={{ height: '100%' }} />
+        <GoogleRouteMap light stops={mapStops} position={position} path={live?.path ?? []} order={target ? [target] : []} follow={!!position} heading={heading} style={{ height: '100%' }} />
 
-        {/* Next manoeuvre */}
-        <View style={s.banner}>
+        <View style={[s.topRow, { top: insets.top > 0 ? 12 : 16 }]}>
+          <View style={s.pill}><Text style={s.pillText}>Stop {current.order} of {route.stops.length}</Text></View>
+          {/* The route's stops and their status. */}
+          <Pressable onPress={() => navigate('RoutePreview', { routeId: route.id })} hitSlop={8} style={s.round} accessibilityLabel="All stops">
+            <Ionicons name="menu" size={26} color={c.text} />
+          </Pressable>
+        </View>
+
+        {/* Not in the design: the next turn, from the in-app guidance. */}
+        <View style={[s.banner, { top: (insets.top > 0 ? 12 : 16) + 60 }]}>
           <View style={s.turnIcon}>
-            <MaterialCommunityIcons name={arrived ? 'flag-checkered' : nextTurn.icon} size={30} color={DARK_ON_PRIMARY} />
+            <MaterialCommunityIcons name={arrived ? 'flag-checkered' : nextTurn.icon} size={26} color={c.onInk} />
           </View>
           <View style={{ flex: 1 }}>
             {arrived ? <Text style={s.turnText}>You have arrived</Text> : (
@@ -194,28 +207,42 @@ export default function LiveNavigation() {
         {denied ? <Text style={s.denied}>Allow location access for live guidance.</Text> : null}
       </View>
 
-      {/* Current stop */}
+      {/* The stop being driven to */}
       <View style={s.card}>
-        <ErrorBanner text={error} />
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
-          <Text style={s.stopNo}>STOP {current.order} OF {route.stops.length}</Text>
-          <Text style={{ marginLeft: 'auto', color: c.textSecondary, fontSize: 12, fontWeight: '700' }}>
-            {live ? `${live.km < 1 ? `${Math.round(live.km * 1000)} m` : `${live.km.toFixed(1)} km`} · ${formatMinutes(live.min)}` : toTarget != null ? `~${distanceText(toTarget)}` : ''}
-          </Text>
+        <View style={s.grabber} />
+        <LightError text={error} />
+        <View style={{ flexDirection: 'row', alignItems: 'flex-start' }}>
+          <View style={{ flex: 1, marginRight: 12 }}>
+            <Text style={s.label}>NEXT STOP</Text>
+            <Text style={s.code} numberOfLines={1}>{title}</Text>
+          </View>
+          <Pressable onPress={() => navigate('DeliveryDetail', { id: current.delivery.id })} hitSlop={6} style={s.details} accessibilityLabel="Stop details">
+            <Ionicons name="document-text-outline" size={24} color={c.text} />
+          </Pressable>
         </View>
-        <Text style={{ color: c.text, fontSize: 17, fontWeight: '800', marginTop: 4 }} numberOfLines={1}>{stopLabel(current.delivery)}</Text>
-        <Text style={{ color: c.textSecondary, fontSize: 13, marginTop: 2 }} numberOfLines={2}>{current.delivery.address.raw}</Text>
-        {!target ? <Text style={{ color: c.warning, fontSize: 12, marginTop: 4 }}>This stop has no map location. Use Google Maps or set a pin on the route map.</Text> : null}
+        {address ? <Text style={s.address} numberOfLines={2}>{address}</Text> : null}
+        {away ? <Text style={s.away}>{away}</Text> : null}
+        {!target ? <Text style={{ color: c.warning, fontSize: 14, marginTop: 6 }}>This stop has no map location. Use Navigate or set a pin on the route map.</Text> : null}
 
-        <View style={{ flexDirection: 'row', gap: 10, marginTop: 12 }}>
-          <PButton title="Delivered" icon="checkmark-circle" onPress={() => void delivered()} loading={busy} variant={arrived ? 'primary' : 'secondary'} style={{ flex: 1 }} />
-          <PButton title="Details" icon="document-text-outline" variant="secondary" onPress={() => navigate('DeliveryDetail', { id: current.delivery.id })} style={{ flex: 1 }} />
+        {/* Voice directions in Google Maps, as before. */}
+        <Pressable onPress={() => openDirections(current.delivery)} style={({ pressed }) => [s.navigate, pressed && { opacity: 0.88 }]}>
+          <Ionicons name="navigate-outline" size={24} color="#fff" />
+          <Text style={{ color: '#fff', fontSize: 18, fontWeight: '700' }}>Navigate</Text>
+        </Pressable>
+        <View style={{ flexDirection: 'row', gap: 12, marginTop: 12 }}>
+          <Pressable onPress={() => finishStop('proof')} style={({ pressed }) => [s.result, s.delivered, pressed && { opacity: 0.88 }]}>
+            <Ionicons name="checkmark" size={24} color="#fff" />
+            <Text style={[s.resultText, { color: '#fff' }]}>Delivered</Text>
+          </Pressable>
+          <Pressable onPress={() => finishStop('fail')} style={({ pressed }) => [s.result, s.failed, pressed && { opacity: 0.88 }]}>
+            <Ionicons name="close" size={24} color={c.danger} />
+            <Text style={[s.resultText, { color: c.danger }]}>Failed</Text>
+          </Pressable>
         </View>
-        <PButton title="Voice directions in Google Maps" icon="navigate" variant="secondary" onPress={() => openDirections(current.delivery)} style={{ marginTop: 10 }} />
         {open[1] ? (
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 10 }}>
-            <Ionicons name="arrow-forward-circle-outline" size={14} color={c.textMuted} />
-            <Text style={{ color: c.textMuted, fontSize: 12 }} numberOfLines={1}>Then: {stopLabel(open[1].delivery)}</Text>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 12 }}>
+            <Ionicons name="arrow-forward-circle-outline" size={16} color={c.placeholder} />
+            <Text style={{ color: c.textSecondary, fontSize: 14 }} numberOfLines={1}>Then: {stopLabel(open[1].delivery)}</Text>
           </View>
         ) : null}
       </View>
@@ -224,11 +251,25 @@ export default function LiveNavigation() {
 }
 
 const s = StyleSheet.create({
-  banner: { position: 'absolute', top: 12, left: 12, right: 64, flexDirection: 'row', alignItems: 'center', gap: 12, padding: 12, borderRadius: r.medium, backgroundColor: 'rgba(13,22,41,0.96)', borderWidth: 1, borderColor: c.border },
-  turnIcon: { width: 50, height: 50, borderRadius: 14, backgroundColor: c.primary, alignItems: 'center', justifyContent: 'center' },
-  turnDistance: { color: c.primary, fontSize: 20, fontWeight: '800' },
-  turnText: { color: c.text, fontSize: 15, fontWeight: '700' },
-  denied: { position: 'absolute', bottom: 12, left: 12, right: 12, color: c.warning, fontSize: 12, textAlign: 'center', backgroundColor: 'rgba(13,22,41,0.9)', padding: 8, borderRadius: r.small },
-  card: { padding: 16, paddingBottom: 18, backgroundColor: c.surface, borderTopWidth: 1, borderTopColor: c.border, borderTopLeftRadius: r.large, borderTopRightRadius: r.large },
-  stopNo: { color: c.primary, fontSize: 11, fontWeight: '800', letterSpacing: 1 },
+  topRow: { position: 'absolute', left: 16, right: 16, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  pill: { paddingHorizontal: 18, height: 44, borderRadius: 22, backgroundColor: '#fff', justifyContent: 'center', shadowColor: '#000', shadowOpacity: 0.12, shadowRadius: 8, shadowOffset: { width: 0, height: 2 }, elevation: 4 },
+  pillText: { color: c.text, fontSize: 16, fontWeight: '700' },
+  round: { width: 48, height: 48, borderRadius: 24, backgroundColor: '#fff', alignItems: 'center', justifyContent: 'center', shadowColor: '#000', shadowOpacity: 0.12, shadowRadius: 8, shadowOffset: { width: 0, height: 2 }, elevation: 4 },
+  banner: { position: 'absolute', left: 16, right: 16, flexDirection: 'row', alignItems: 'center', gap: 12, padding: 12, borderRadius: 18, backgroundColor: '#fff', shadowColor: '#000', shadowOpacity: 0.12, shadowRadius: 10, shadowOffset: { width: 0, height: 3 }, elevation: 5 },
+  turnIcon: { width: 46, height: 46, borderRadius: 12, backgroundColor: c.link, alignItems: 'center', justifyContent: 'center' },
+  turnDistance: { color: c.text, fontSize: 18, fontWeight: '800' },
+  turnText: { color: c.textLabel, fontSize: 15, fontWeight: '500' },
+  denied: { position: 'absolute', bottom: 36, left: 16, right: 16, color: c.warning, fontSize: 13, textAlign: 'center', backgroundColor: c.warningBg, padding: 8, borderRadius: 12, overflow: 'hidden' },
+  card: { marginTop: -24, paddingHorizontal: 20, paddingTop: 10, paddingBottom: 16, backgroundColor: c.surface, borderTopLeftRadius: 28, borderTopRightRadius: 28 },
+  grabber: { alignSelf: 'center', width: 36, height: 4, borderRadius: 2, backgroundColor: c.track, marginBottom: 16 },
+  label: { color: c.textSecondary, fontSize: 13, fontWeight: '600', letterSpacing: 1.2 },
+  code: { color: c.text, fontSize: 32, fontWeight: '800', letterSpacing: -0.5, marginTop: 4 },
+  details: { width: 48, height: 48, borderRadius: 24, backgroundColor: c.soft, alignItems: 'center', justifyContent: 'center' },
+  address: { color: c.textSecondary, fontSize: 16, lineHeight: 22, marginTop: 6 },
+  away: { color: c.text, fontSize: 16, fontWeight: '600', marginTop: 8 },
+  navigate: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 12, minHeight: 58, borderRadius: 18, backgroundColor: c.link, marginTop: 18 },
+  result: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10, minHeight: 58, borderRadius: 18 },
+  delivered: { backgroundColor: '#15803D' },
+  failed: { backgroundColor: c.surface, borderWidth: 2, borderColor: c.danger },
+  resultText: { fontSize: 18, fontWeight: '700' },
 });

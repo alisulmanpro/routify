@@ -4,11 +4,10 @@ import { KeyboardAwareScrollView } from '../components/KeyboardAware';
 import { useAuth } from '../lib/auth';
 import { ApiRequestError, get } from '../lib/api';
 import type { PublicConfig } from '../lib/types';
+import { StatusBar } from 'expo-status-bar';
 import { Screen } from '../components/Kit';
-import { ErrorBanner, PButton, PCard, PInput, SectionLabel } from '../components/Premium';
-import { AUTOFILL } from '../lib/inputs';
-import { BrandMark } from './Login';
-import { premium as c } from '../lib/theme';
+import { GoogleButton, LightBrand, LightButton, LightDivider, LightError, LightField } from '../components/LightKit';
+import { light as c } from '../lib/theme';
 
 export default function Register({ onGoLogin }: { onGoLogin: () => void }) {
   const { register } = useAuth();
@@ -35,26 +34,28 @@ export default function Register({ onGoLogin }: { onGoLogin: () => void }) {
 
   return (
     <Screen style={{ backgroundColor: c.background }}>
-        <KeyboardAwareScrollView contentContainerStyle={{ padding: 24, paddingTop: 36 }} keyboardShouldPersistTaps="handled">
-          <BrandMark />
-          <Text style={s.eyebrow}>Routify · Get started</Text>
-          <Text style={s.title}>Create your rider account.</Text>
-          <Text style={s.subtitle}>Your own {config?.platformName || 'Routify'} account. Then start your {config?.trialDays ? `${config.trialDays}-day ` : ''}free trial through Google Play or the App Store.</Text>
+        <StatusBar style="dark" />
+        <KeyboardAwareScrollView contentContainerStyle={{ flexGrow: 1, paddingHorizontal: 24, paddingTop: 64, paddingBottom: 32 }} keyboardShouldPersistTaps="handled">
+          <LightBrand name={config?.platformName || 'Routify'} />
+          <Text style={s.title}>Create your account</Text>
+          <Text style={s.subtitle}>Sign up to start your deliveries</Text>
 
-          <ErrorBanner text={error} />
-          <PCard style={{ gap: 14 }}>
-            <View><SectionLabel>Full name</SectionLabel><PInput icon="person-outline" {...AUTOFILL.name} value={form.fullName} onChangeText={set('fullName')} placeholder="Ali Hassan" autoCapitalize="words" /></View>
-            <View><SectionLabel>Email</SectionLabel><PInput icon="mail-outline" {...AUTOFILL.email} autoCapitalize="none" keyboardType="email-address" value={form.email} onChangeText={set('email')} placeholder="you@example.com" /></View>
-          </PCard>
+          <LightError text={error} />
+          <View style={{ gap: 20 }}>
+            <LightField label="Full name" value={form.fullName} onChangeText={set('fullName')} placeholder="e.g. Seán Murphy" autoCapitalize="words" autoComplete="name" />
+            <LightField label="Email" autoCapitalize="none" keyboardType="email-address" autoComplete="email" value={form.email} onChangeText={set('email')} placeholder="you@example.ie" />
+            <LightField label="Password" secureTextEntry value={form.password} onChangeText={set('password')} placeholder={`At least ${config?.minPasswordLength || 8} characters`} />
+            {/* Not in the design; kept because register() still checks it. */}
+            <LightField label="Confirm password" secureTextEntry value={form.confirmPassword} onChangeText={set('confirmPassword')} placeholder="Type it again" />
+          </View>
 
-          <PCard style={{ gap: 14, marginTop: 14 }}>
-            <View><SectionLabel>{`Password (min ${config?.minPasswordLength || 8} characters)`}</SectionLabel><PInput icon="lock-closed-outline" {...AUTOFILL.newPassword} secureTextEntry value={form.password} onChangeText={set('password')} placeholder="••••••••" /></View>
-            <View><SectionLabel>Confirm password</SectionLabel><PInput icon="shield-checkmark-outline" {...AUTOFILL.newPassword} secureTextEntry value={form.confirmPassword} onChangeText={set('confirmPassword')} placeholder="••••••••" /></View>
-          </PCard>
+          <LightButton title="Create account" onPress={submit} loading={busy} disabled={!form.fullName || !form.email || !form.password} style={{ marginTop: 28 }} />
+          <LightDivider />
+          {/* MISSING: see missing.md — there is no Google sign-in in the app or API yet. */}
+          <GoogleButton />
 
-          <PButton title="Create account" icon="person-add-outline" onPress={submit} loading={busy} disabled={!form.fullName || !form.email || !form.password} chevron style={{ marginTop: 20 }} />
-          <Pressable onPress={onGoLogin} style={{ alignItems: 'center', paddingVertical: 18 }}>
-            <Text style={{ color: c.textSecondary, fontSize: 14 }}>Already have an account? <Text style={{ color: c.primary, fontWeight: '800' }}>Sign in</Text></Text>
+          <Pressable onPress={onGoLogin} style={{ alignItems: 'center', marginTop: 'auto', paddingTop: 40, paddingBottom: 8 }}>
+            <Text style={{ color: c.textSecondary, fontSize: 15 }}>Already have an account?  <Text style={{ color: c.link, fontWeight: '600' }}>Sign in</Text></Text>
           </Pressable>
         </KeyboardAwareScrollView>
     </Screen>
@@ -62,7 +63,6 @@ export default function Register({ onGoLogin }: { onGoLogin: () => void }) {
 }
 
 const s = StyleSheet.create({
-  eyebrow: { color: c.primary, fontSize: 12, fontWeight: '800', letterSpacing: 1.2, textTransform: 'uppercase', marginBottom: 6 },
-  title: { color: c.text, fontSize: 26, fontWeight: '800', marginBottom: 6 },
-  subtitle: { color: c.textSecondary, fontSize: 14, lineHeight: 20, marginBottom: 22 },
+  title: { color: c.text, fontSize: 30, fontWeight: '800', letterSpacing: -0.6, marginTop: 44, marginBottom: 8 },
+  subtitle: { color: c.textSecondary, fontSize: 16, lineHeight: 22, marginBottom: 32 },
 });

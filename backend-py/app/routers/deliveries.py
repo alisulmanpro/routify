@@ -38,6 +38,8 @@ class CustomerInput(Schema):
 
 class AddressInput(Schema):
     raw: Trimmed(5, 400)
+    # The address the map found for `raw` (with `location`), e.g. the street of a place name the rider typed.
+    normalized: Optional[Trimmed(1, 400)] = None
 
 
 class DeliveryInput(Schema):
@@ -152,9 +154,9 @@ async def geocode_check(request: Request):
     area = await service_area_for(actor, origin)
     hit = await geocoding.geocode_address(body.address, area=area)
     if not hit or hit.get("latitude") is None or hit.get("longitude") is None:
-        return respond({"found": False, "approximate": False, "latitude": None, "longitude": None, "normalized": None})
+        return respond({"found": False, "approximate": False, "latitude": None, "longitude": None, "normalized": None, "postalCode": None})
     return respond({"found": True, "approximate": bool(hit.get("approximate")), "latitude": hit["latitude"],
-                    "longitude": hit["longitude"], "normalized": hit.get("normalized")})
+                    "longitude": hit["longitude"], "normalized": hit.get("normalized"), "postalCode": hit.get("postalCode")})
 
 
 @router.post("/geocode-suggest")

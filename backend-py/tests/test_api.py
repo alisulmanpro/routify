@@ -459,6 +459,121 @@ async def test_tomorrows_route_can_be_planned_tonight_without_touching_today(cli
     assert dash["total"] == 1 and dash["routeId"] == today_route.json()["data"]["id"]
 
 
+async def test_routes_by_date_lists_every_route_in_the_range_for_this_rider_only(client):
+    from datetime import date, timedelta
+
+    _, auth = await rider(client, "by-date@example.com")
+    _, other = await rider(client, "by-date-other@example.com")
+    today, later = date.today().isoformat(), (date.today() + timedelta(days=40)).isoformat()
+    built = {}
+    for name, day in (("Later", later), ("Today", today)):
+        stops = [await client.post("/api/v1/deliveries/manual", headers=auth, json={"address": {"raw": f"{i} {name} Street, Dublin"}, "serviceDate": day})
+                 for i in (1, 2)]
+        res = await client.post("/api/v1/routes/build", headers=auth, json={"name": name, "date": day, "deliveryIds": [s.json()["data"]["id"] for s in stops]})
+        assert res.status_code == 201, res.text
+        built[name] = res.json()["data"]
+    await client.post("/api/v1/deliveries/manual", headers=other, json={"address": {"raw": "9 Other Street, Dublin"}, "serviceDate": today})
+    await client.post("/api/v1/routes/build", headers=other, json={"date": today})
+
+    everything = (await client.get("/api/v1/routes/by-date", headers=auth, params={"from": today})).json()["data"]
+    assert [(r["name"], r["serviceDate"]) for r in everything] == [("Today", today), ("Later", later)]
+    first = everything[0]
+    assert first["status"] == "planned" and first["progress"] == {"total": 2, "done": 0, "remaining": 2}
+    assert first["summary"]["total"] == 2 and first["summary"]["delivered"] == 0 and "stops" not in first
+
+    only_today = (await client.get("/api/v1/routes/by-date", headers=auth, params={"from": today, "to": today})).json()["data"]
+    assert [r["id"] for r in only_today] == [built["Today"]["id"]]
+
+    # The detail endpoint returns the ordered stops for the card the rider taps.
+    detail = (await client.get(f"/api/v1/routes/{built['Later']['id']}", headers=auth)).json()["data"]
+    assert [s["order"] for s in detail["stops"]] == [1, 2]
+
+    backwards = await client.get("/api/v1/routes/by-date", headers=auth, params={"from": later, "to": today})
+    assert backwards.status_code == 400
+    assert (await client.get("/api/v1/routes/by-date", headers=auth)).status_code == 400
+    assert (await client.get("/api/v1/routes/by-date", params={"from": today})).status_code == 401
+
+
+async def test_an_eircode_alone_gets_its_street_and_postal_code(client):
+    _, auth = await rider(client, "eircode-only@example.com")
+    try:
+        async def by_code(code):
+            # Not a rooftop match: the stop is marked approximate but still orders the route.
+            return {"latitude": 53.3494, "longitude": -6.2603, "normalized": "Dublin 1, D01 F5P2", "approximate": True} if code == "D01 F5P2" else None
+
+        async def street(latitude, longitude):
+            return "General Post Office, O'Connell Street Lower, Dublin 1, D01 F5P2, Ireland"
+        geocoding_service.set_eircode_geocoder_for_tests(by_code)
+        original_reverse = geocoding_service.reverse_geocode
+        geocoding_service.reverse_geocode = street
+
+        check = (await client.post("/api/v1/deliveries/geocode-check", headers=auth, json={"address": "D01 F5P2"})).json()["data"]
+        assert check["found"] and check["approximate"] and check["postalCode"] == "D01 F5P2"
+        assert check["normalized"].startswith("General Post Office")
+
+        location = {"latitude": check["latitude"], "longitude": check["longitude"]}
+        made = await client.post("/api/v1/deliveries/manual", headers=auth, json={"address": {"raw": "d01f5p2"}, "location": location})
+        assert made.status_code == 201, made.text
+        address = made.json()["data"]["address"]
+        assert address["raw"] == "D01 F5P2" and address["postalCode"] == "D01 F5P2"
+        assert address["normalized"].startswith("General Post Office") and address["geocodeStatus"] == "approximate"
+        assert address["approximate"] is True and address["geocoded"] is True
+
+        # A place name keeps the street the map found for it; a plain street address has no postcode.
+        place = await client.post("/api/v1/deliveries/manual", headers=auth, json={
+            "address": {"raw": "Department of Justice", "normalized": "Department of Justice, 51 St Stephen's Green, Dublin 2, D02 HK52, Ireland"},
+            "location": {"latitude": 53.338, "longitude": -6.258}})
+        assert place.json()["data"]["address"]["postalCode"] == "D02 HK52"
+        plain = await client.post("/api/v1/deliveries/manual", headers=auth, json={"address": {"raw": "12 Main Street, Lahore"}})
+        assert plain.json()["data"]["address"]["postalCode"] is None
+    finally:
+        geocoding_service.set_eircode_geocoder_for_tests()
+        geocoding_service.reverse_geocode = original_reverse
+
+
+async def test_left_over_stops_move_to_today_without_deleting_anything(client):
+    from datetime import date, timedelta
+
+    body, auth = await rider(client, "carry-over@example.com")
+    rider_id = body["user"]["id"]
+    today, yesterday = date.today().isoformat(), (date.today() - timedelta(days=1)).isoformat()
+    here = {"latitude": 53.3498, "longitude": -6.2603}
+    ids = [(await client.post("/api/v1/deliveries/manual", headers=auth, json={**delivery(f"OLD-{i}"), "serviceDate": yesterday, "location": here})).json()["data"]["id"]
+           for i in (1, 2)]
+    old = (await client.post("/api/v1/routes/build", headers=auth, json={"name": "Monday north", "date": yesterday, "deliveryIds": ids})).json()["data"]
+    assert (await client.post(f"/api/v1/routes/{old['id']}/start", headers=auth)).status_code == 200
+
+    left = (await client.get("/api/v1/routes/leftover", headers=auth, params={"date": today})).json()["data"]
+    assert left == {"total": 2, "days": [{"date": yesterday, "count": 2}]}
+    before = (await db.delivery.count(where={"riderId": rider_id}), await db.route.count(where={"riderId": rider_id}))
+
+    moved = await client.post("/api/v1/routes/carry-over", headers=auth, json={"date": today})
+    assert moved.status_code == 200, moved.text
+    data = moved.json()["data"]
+    assert data["moved"] == 2 and data["route"]["serviceDate"] == today and data["route"]["name"] == "Monday north"
+    assert sorted(s["delivery"]["id"] for s in data["route"]["stops"]) == sorted(ids)
+
+    # Nothing was deleted: the old route is closed and kept, without the stops that moved on.
+    assert await db.delivery.count(where={"riderId": rider_id}) == before[0]
+    assert await db.route.count(where={"riderId": rider_id}) == before[1] + 1
+    closed = (await client.get(f"/api/v1/routes/{old['id']}", headers=auth)).json()["data"]
+    assert closed["status"] == "completed" and closed["stops"] == []
+    assert (await client.get("/api/v1/routes/leftover", headers=auth, params={"date": today})).json()["data"]["total"] == 0
+    assert (await client.post("/api/v1/routes/carry-over", headers=auth, json={"date": today})).json()["data"] == {"moved": 0, "route": None}
+
+
+async def test_planning_from_home_never_takes_a_later_days_stops(client):
+    from datetime import date, timedelta
+
+    _, auth = await rider(client, "home-plan@example.com")
+    today, tomorrow = date.today().isoformat(), (date.today() + timedelta(days=1)).isoformat()
+    here = {"latitude": 53.3498, "longitude": -6.2603}
+    now_stop = (await client.post("/api/v1/deliveries/manual", headers=auth, json={**delivery("NOW-1"), "serviceDate": today, "location": here})).json()["data"]
+    await client.post("/api/v1/deliveries/manual", headers=auth, json={**delivery("LATER-1"), "serviceDate": tomorrow, "location": here})
+    built = (await client.post("/api/v1/routes/build", headers=auth, json={"name": "Test North", "date": today})).json()["data"]
+    assert built["name"] == "Test North" and [s["delivery"]["id"] for s in built["stops"]] == [now_stop["id"]]
+
+
 async def test_plain_text_address_list_imports_without_parcel_ids(client):
     _, auth = await rider(client, "txt-import@example.com")
     txt = b"10 Main Street, Dublin\n5 Grafton Street, Dublin 2\n"
@@ -513,7 +628,7 @@ async def test_geocode_check_looks_up_an_address_without_saving(client):
         geocoding_service.set_geocoder_for_tests()
 
 
-async def test_optimize_reorders_open_stops_includes_new_ones_and_puts_unresolved_last(client):
+async def test_optimize_reorders_open_stops_never_pulls_in_other_stops_and_puts_unresolved_last(client):
     from app.services import routing_service
     _, auth = await rider(client, "optimize-rider@example.com")
     places = {"Near street 1": (53.35, -6.26), "Far street 2": (53.40, -6.26), "Mid street 3": (53.37, -6.26)}
@@ -536,14 +651,15 @@ async def test_optimize_reorders_open_stops_includes_new_ones_and_puts_unresolve
         assert [s["delivery"]["trackingId"] for s in route["stops"]] == ["OPT-2", "OPT-1", "OPT-3"], "unresolved address goes last"
         assert route["optimization"] == "straight_line" and calls, "router was asked, fallback recorded"
 
+        # A stop added afterwards belongs to the next route being added, not this one.
         await client.post("/api/v1/deliveries/manual", headers=auth, json=delivery("OPT-4", "Mid street 3"))
         current = (await client.get("/api/v1/routes/current", headers=auth)).json()["data"]
-        assert current["newStops"] == 1
+        assert current["newStops"] == 0
 
         optimized = await client.post(f"/api/v1/routes/{route['id']}/optimize", headers=auth, json={"origin": origin})
         assert optimized.status_code == 200, optimized.text
         data = optimized.json()["data"]
-        assert [s["delivery"]["trackingId"] for s in data["stops"]] == ["OPT-2", "OPT-4", "OPT-1", "OPT-3"]
+        assert [s["delivery"]["trackingId"] for s in data["stops"]] == ["OPT-2", "OPT-1", "OPT-3"]
         assert data["newStops"] == 0
     finally:
         geocoding_service.set_geocoder_for_tests()
@@ -575,6 +691,7 @@ async def test_eircode_is_looked_up_first_and_unfound_stops_can_be_pinned(client
         assert by_tid["EIR-2"]["address"]["geocodeStatus"] == "found"
         assert by_tid["EIR-3"]["address"]["geocodeStatus"] == "not_found" and "location_not_found" in by_tid["EIR-3"]["flags"]
         assert [s["delivery"]["trackingId"] for s in route["stops"]] == ["EIR-2", "EIR-1", "EIR-3"]
+        assert by_tid["EIR-1"]["address"]["postalCode"] == "H91 TK33" and by_tid["EIR-3"]["address"]["postalCode"] == "Z99 ZZZZ"
 
         bad = await client.post(f"/api/v1/deliveries/{by_tid['EIR-3']['id']}/location", headers=auth, json={"latitude": 95, "longitude": 0})
         assert bad.status_code == 400
@@ -588,3 +705,35 @@ async def test_eircode_is_looked_up_first_and_unfound_stops_can_be_pinned(client
     finally:
         geocoding_service.set_eircode_geocoder_for_tests()
         geocoding_service.set_geocoder_for_tests()
+
+
+async def test_a_new_route_never_takes_or_removes_another_route_of_the_same_day(client):
+    from datetime import date
+
+    _, auth = await rider(client, "two-routes@example.com")
+    today = date.today().isoformat()
+    here = {"latitude": 53.3498, "longitude": -6.2603}
+
+    async def stop(tid):
+        return (await client.post("/api/v1/deliveries/manual", headers=auth, json={**delivery(tid), "serviceDate": today, "location": here})).json()["data"]["id"]
+
+    first_ids = [await stop("A-1"), await stop("A-2")]
+    first = (await client.post("/api/v1/routes/build", headers=auth, json={"name": "Morning", "date": today, "deliveryIds": first_ids})).json()["data"]
+    second_ids = [await stop("B-1")]
+    second = await client.post("/api/v1/routes/build", headers=auth, json={"name": "Afternoon", "date": today, "deliveryIds": second_ids})
+    assert second.status_code == 201, second.text
+    assert [s["delivery"]["id"] for s in second.json()["data"]["stops"]] == second_ids
+
+    # The first route is still there with exactly its own stops, and a stop still being added joins neither.
+    await stop("C-1")
+    kept = (await client.get(f"/api/v1/routes/{first['id']}", headers=auth)).json()["data"]
+    assert sorted(s["delivery"]["id"] for s in kept["stops"]) == sorted(first_ids) and kept["newStops"] == 0
+    optimized = (await client.post(f"/api/v1/routes/{first['id']}/optimize", headers=auth, json={})).json()["data"]
+    assert sorted(s["delivery"]["id"] for s in optimized["stops"]) == sorted(first_ids)
+    names = [r["name"] for r in (await client.get("/api/v1/routes/by-date", headers=auth, params={"from": today})).json()["data"]]
+    assert names == ["Morning", "Afternoon"]
+
+    # Planning the same stops again moves them to the new route; the old route, left empty, is removed.
+    again = (await client.post("/api/v1/routes/build", headers=auth, json={"name": "Morning v2", "date": today, "deliveryIds": first_ids})).json()["data"]
+    assert sorted(s["delivery"]["id"] for s in again["stops"]) == sorted(first_ids)
+    assert (await client.get(f"/api/v1/routes/{first['id']}", headers=auth)).status_code == 404

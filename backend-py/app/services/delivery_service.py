@@ -10,6 +10,7 @@ from ..uploads import UploadedFile, detect_file_type
 from ..validation import contains_text
 from . import storage_service as storage
 from .geo import normalize_address
+from .geocoding_service import find_eircode, geocode_eircode, is_only_eircode, normalize_eircodes
 from .route_service import on_stop_finished
 from .serializers import serialize_delivery
 from .subscription_service import assert_can_create_deliveries
@@ -26,17 +27,27 @@ async def save_delivery(d: Any, data: dict) -> Any:
     return await db.delivery.find_unique(where={"id": d.id})
 
 
-def _to_row(actor: dict, item: dict) -> dict:
+async def _to_row(actor: dict, item: dict) -> dict:
     customer = item.get("customer") or {}
+    # Eircodes are stored as "D01 F5P2" however they were typed, scanned, spoken or imported.
+    raw = normalize_eircodes(item["address"]["raw"])
+    normalized = item["address"].get("normalized") or raw
     row = {
         "id": new_id(), "riderId": actor["id"], "trackingId": item.get("trackingId") or None,
         "customerName": customer.get("name") or "", "customerPhone": customer.get("phone") or "",
-        "addressRaw": item["address"]["raw"], **FRESH_ADDRESS, "serviceDate": item.get("serviceDate") or today_key(),
+        "addressRaw": raw, **FRESH_ADDRESS, "postalCode": find_eircode(raw) or find_eircode(normalized),
+        "serviceDate": item.get("serviceDate") or today_key(),
     }
-    # A picked suggestion or a dropped pin is an exact location, so route planning needs no lookup.
+    # A picked suggestion, a dropped pin or a checked address is a known location, so route planning needs no lookup.
     if location := item.get("location"):
-        row.update(addressLatitude=location["latitude"], addressLongitude=location["longitude"], addressNormalized=item["address"]["raw"],
+        row.update(addressLatitude=location["latitude"], addressLongitude=location["longitude"], addressNormalized=normalized,
                    addressGeocoded=True, geocodeStatus="found")
+        # Only an Eircode: show the street at that point, and say when the provider's match is not a rooftop one.
+        # The lookup was just made by geocode-check, so this is normally a cache hit.
+        if is_only_eircode(raw) and (hit := await geocode_eircode(row["postalCode"], street=True)):
+            row["addressNormalized"] = hit.get("normalized") or normalized
+            if hit.get("approximate"):
+                row.update(addressApproximate=True, geocodeStatus="approximate")
     if item.get("note"):
         row["note"] = item["note"]
     return row
@@ -46,7 +57,7 @@ async def create_many(actor: dict, items: list[dict]) -> list[dict]:
     if actor["role"] != "rider":
         raise forbidden("Only riders create deliveries")
 
-    rows = [_to_row(actor, item) for item in items]
+    rows = [await _to_row(actor, item) for item in items]
     # One rider's creates run one at a time, so parallel requests cannot both pass the plan limit.
     async with transaction() as tx:
         await lock_rider(tx, actor["id"])
@@ -148,7 +159,8 @@ async def update(actor: dict, delivery_id: str, patch: dict) -> dict:
         data["note"] = patch["note"] or None
     raw = (patch.get("address") or {}).get("raw")
     if raw and normalize_address(raw) != normalize_address(delivery.addressRaw):
-        data.update(addressRaw=raw, **FRESH_ADDRESS)
+        raw = normalize_eircodes(raw)
+        data.update(addressRaw=raw, **FRESH_ADDRESS, postalCode=find_eircode(raw))
     return serialize_delivery(await save_delivery(delivery, data))
 
 

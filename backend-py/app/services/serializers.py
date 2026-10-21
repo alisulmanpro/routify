@@ -26,6 +26,8 @@ def address_of(d: Any) -> dict:
     return {
         "raw": d.addressRaw, "normalized": d.addressNormalized, "latitude": d.addressLatitude, "longitude": d.addressLongitude,
         "geocoded": bool(d.addressGeocoded), "approximate": bool(d.addressApproximate), "geocodeStatus": str(d.geocodeStatus or "pending"),
+        # The Eircode (or another postcode); null for stops added before postcodes were kept.
+        "postalCode": getattr(d, "postalCode", None) or None,
     }
 
 

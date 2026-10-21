@@ -3,10 +3,10 @@ import { Image, Pressable, StyleSheet, Text, View } from 'react-native';
 import { KeyboardAwareScrollView } from '../components/KeyboardAware';
 import { useAuth } from '../lib/auth';
 import { ApiRequestError, API_URL } from '../lib/api';
+import { StatusBar } from 'expo-status-bar';
 import { Screen } from '../components/Kit';
-import { ErrorBanner, PButton, PInput, SectionLabel, gradient } from '../components/Premium';
-import { AUTOFILL } from '../lib/inputs';
-import { premium as c } from '../lib/theme';
+import { GoogleButton, LightBrand, LightButton, LightDivider, LightError, LightField } from '../components/LightKit';
+import { light as c } from '../lib/theme';
 
 export default function Login({ onGoRegister, onForgot }: { onGoRegister: () => void; onForgot: (email: string) => void }) {
   const { login } = useAuth();
@@ -29,36 +29,36 @@ export default function Login({ onGoRegister, onForgot }: { onGoRegister: () => 
 
   return (
     <Screen style={{ backgroundColor: c.background }}>
+        <StatusBar style="dark" />
         <KeyboardAwareScrollView contentContainerStyle={s.page} keyboardShouldPersistTaps="handled">
-          <View style={[s.glow, gradient('radial-gradient(circle at 50% 50%, rgba(124,92,255,0.30) 0%, rgba(5,11,24,0) 70%)')]} pointerEvents="none" />
-          <Image source={LOGO} style={s.fullLogo} resizeMode="contain" accessibilityLabel="Routify: Plan, Deliver, Track" />
-          <Text style={s.title}>Welcome back.</Text>
-          <Text style={s.subtitle}>Sign in to take control of today&apos;s deliveries.</Text>
+          <LightBrand />
+          <Text style={s.title}>Welcome back</Text>
+          <Text style={s.subtitle}>Sign in to start your deliveries</Text>
 
-          <ErrorBanner text={error} />
-          <View style={{ gap: 14 }}>
+          <LightError text={error} />
+          <View style={{ gap: 20 }}>
+            <LightField label="Email" autoCapitalize="none" keyboardType="email-address" autoComplete="email" value={email} onChangeText={setEmail} placeholder="you@example.ie" />
             <View>
-              <SectionLabel>Email</SectionLabel>
-              <PInput icon="mail-outline" {...AUTOFILL.email} autoCapitalize="none" keyboardType="email-address" value={email} onChangeText={setEmail} placeholder="you@example.com" />
-            </View>
-            <View>
-              <SectionLabel>Password</SectionLabel>
-              <PInput icon="lock-closed-outline" {...AUTOFILL.password} secureTextEntry value={password} onChangeText={setPassword} placeholder="••••••••" returnKeyType="go" onSubmitEditing={() => { if (email && password) void submit(); }} />
-              <Pressable onPress={() => onForgot(email.trim())} hitSlop={8} style={{ alignSelf: 'flex-end', marginTop: 10 }}>
-                <Text style={{ color: c.primary, fontSize: 13, fontWeight: '700' }}>Forgot password?</Text>
+              <LightField label="Password" secureTextEntry autoComplete="password" value={password} onChangeText={setPassword} placeholder="Enter your password" returnKeyType="go" onSubmitEditing={() => { if (email && password) void submit(); }} />
+              <Pressable onPress={() => onForgot(email.trim())} hitSlop={8} style={{ alignSelf: 'flex-end', marginTop: 16 }}>
+                <Text style={{ color: c.link, fontSize: 15, fontWeight: '500' }}>Forgot password?</Text>
               </Pressable>
             </View>
           </View>
-          <PButton title="Sign in" icon="log-in-outline" onPress={submit} loading={busy} disabled={!email || !password} chevron style={{ marginTop: 22 }} />
-          <Pressable onPress={onGoRegister} style={{ alignItems: 'center', paddingVertical: 18 }}>
-            <Text style={{ color: c.textSecondary, fontSize: 14 }}>New here? <Text style={{ color: c.primary, fontWeight: '800' }}>Create an account</Text></Text>
+
+          <LightButton title="Sign in" onPress={submit} loading={busy} disabled={!email || !password} style={{ marginTop: 28 }} />
+          <LightDivider />
+          {/* MISSING: see missing.md — there is no Google sign-in in the app or API yet. */}
+          <GoogleButton />
+
+          <Pressable onPress={onGoRegister} style={{ alignItems: 'center', marginTop: 'auto', paddingTop: 40, paddingBottom: 8 }}>
+            <Text style={{ color: c.textSecondary, fontSize: 15 }}>Don&apos;t have an account?  <Text style={{ color: c.link, fontWeight: '600' }}>Sign up</Text></Text>
           </Pressable>
         </KeyboardAwareScrollView>
     </Screen>
   );
 }
 
-const LOGO = require('../../assets/brand/routify-logo.png');
 export const BRAND_MARK = require('../../assets/brand/routify-mark.png');
 
 export function BrandMark() {
@@ -66,10 +66,8 @@ export function BrandMark() {
 }
 
 const s = StyleSheet.create({
-  page: { flexGrow: 1, justifyContent: 'center', padding: 24 },
-  glow: { position: 'absolute', top: 40, left: -60, width: 320, height: 320, borderRadius: 160 },
-  fullLogo: { width: 190, height: 204, alignSelf: 'center', marginBottom: 26 },
+  page: { flexGrow: 1, paddingHorizontal: 24, paddingTop: 72, paddingBottom: 32 },
   mark: { width: 76, height: 70, marginBottom: 16 },
-  title: { color: c.text, fontSize: 28, fontWeight: '800', marginBottom: 6 },
-  subtitle: { color: c.textSecondary, fontSize: 14, lineHeight: 20, marginBottom: 26 },
+  title: { color: c.text, fontSize: 30, fontWeight: '800', letterSpacing: -0.6, marginTop: 52, marginBottom: 8 },
+  subtitle: { color: c.textSecondary, fontSize: 16, lineHeight: 22, marginBottom: 36 },
 });
