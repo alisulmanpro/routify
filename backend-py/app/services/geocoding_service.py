@@ -292,8 +292,9 @@ async def _eircode_google(code: str) -> Optional[dict]:
         # Google sometimes answers with just the routing area ("Dublin 1"); only a full match counts.
         if _same_code(_google_component(hit, "postal_code"), code):
             loc = hit["geometry"]["location"]
-            return {"latitude": loc["lat"], "longitude": loc["lng"], "normalized": hit.get("formatted_address"),
-                    "approximate": hit["geometry"].get("location_type") != "ROOFTOP"}
+            # A full Eircode match is one building's point. Google labels every postcode result "APPROXIMATE" (never
+            # ROOFTOP), even for an exact Eircode, so its location_type says nothing here: the match counts as found.
+            return {"latitude": loc["lat"], "longitude": loc["lng"], "normalized": hit.get("formatted_address"), "approximate": False}
     return None
 
 
@@ -323,7 +324,8 @@ async def geocode_eircode(code: str, *, street: bool = False) -> Optional[dict]:
     """{latitude, longitude, normalized, approximate, postalCode, eircode=True} for an Eircode match, else None (never raises).
     With `street` (the rider typed only the Eircode), `normalized` is the street address at that point, from a reverse
     lookup with the same provider, since a forward match is often just "Dublin 1, D01 F5P2"."""
-    key = hashlib.sha1(f"v2|eircode{'-street' if street else ''}|{code}".encode()).hexdigest()
+    # v4: full Google Eircode matches are no longer flagged approximate; older cached flags are looked up again.
+    key = hashlib.sha1(f"v4|eircode{'-street' if street else ''}|{code}".encode()).hexdigest()
     cached = await db.geocodecache.find_unique(where={"key": key})
     if cached and cached.expiresAt > now() and cached.found:
         return {"latitude": cached.latitude, "longitude": cached.longitude, "normalized": cached.normalized,

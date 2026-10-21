@@ -1,33 +1,38 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, Pressable, StyleSheet, Text, TextInput, Vibration, View } from 'react-native';
+import { ActivityIndicator, Alert, Pressable, StyleSheet, Text, TextInput, Vibration, View, type ScrollView } from 'react-native';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { KeyboardAwareScrollView, RevealingTextInput } from '../components/KeyboardAware';
 import { Screen } from '../components/Kit';
-import { DARK_ON_PRIMARY, ErrorBanner, Header, PButton, type McName } from '../components/Premium';
-import ScanSheet, { type ScanResult } from '../components/ScanSheet';
+import { type McName } from '../components/Premium';
+import { LightButton, LightError } from '../components/LightKit';
+import EircodeScanner from '../components/scan/EircodeScanner';
+import BarcodeSheet from '../components/scan/BarcodeSheet';
+import { DuplicatePrompt } from '../components/StopPrompts';
+import ConfirmStop from '../components/scan/ConfirmStop';
 import PinSheet, { type PinResult } from '../components/PinSheet';
 import ImportSheet from '../components/ImportSheet';
 import StopLines from '../components/StopLines';
 import { get, post, del, ApiRequestError } from '../lib/api';
 import { getRouteOrigin } from '../lib/location';
+import { checkAddress, createStop, DuplicateStopError } from '../lib/stops';
+import { findDuplicate, type Duplicate } from '../lib/duplicates';
 import { NATIVE_BUILD_HINT, loadVoicePanel } from '../lib/optionalNative';
 import { dayLabel, isOnlyEircode, normalizeEircodes } from '../lib/format';
 import type { AddressSuggestion, Delivery } from '../lib/types';
 import { useAuth } from '../lib/auth';
 import { useFocusEffect } from '../lib/useFocusEffect';
 import { useNav } from '../lib/nav';
-import { premium as c, premiumRadius as r } from '../lib/theme';
+import { light as c, lightRadius as lr } from '../lib/theme';
 
 type Point = { latitude: number; longitude: number };
-type Sheet = 'scan' | 'scanAddress' | 'barcode' | 'pin' | 'import' | null;
-type GeocodeCheck = { found: boolean; approximate: boolean; latitude: number | null; longitude: number | null; normalized: string | null; postalCode: string | null };
+type Sheet = 'scan' | 'barcode' | 'pin' | 'import' | null;
 
 const VoicePanel = loadVoicePanel();
 const SUGGEST_DELAY_MS = 350;
 
 // Step 2 of Add route: add stops as fast as possible. Each stop is saved straight away (for the route's day), so nothing is lost.
 export default function AddStops({ name, date }: { name: string; date: string }) {
-  const { navigate } = useNav();
+  const { navigate, goBack } = useNav();
   const { user } = useAuth();
   const addressRef = useRef<TextInput>(null);
   const [stops, setStops] = useState<Delivery[]>([]);
@@ -37,7 +42,7 @@ export default function AddStops({ name, date }: { name: string; date: string })
   const [address, setAddress] = useState('');
   const [parcel, setParcel] = useState('');
   // The exact location the rider chose (a suggestion or a pin) for the current address text.
-  const [picked, setPicked] = useState<{ label: string } & Point | null>(null);
+  const [picked, setPicked] = useState<{ label: string; approximate?: boolean } & Point | null>(null);
   const [suggestions, setSuggestions] = useState<AddressSuggestion[]>([]);
   const [searching, setSearching] = useState(false);
   // Set when Add found no exact match: the rider picks a suggestion, pins it, or adds it anyway.
@@ -47,6 +52,19 @@ export default function AddStops({ name, date }: { name: string; date: string })
   const [sheet, setSheet] = useState<Sheet>(null);
   const [voice, setVoice] = useState(false);
   const searchId = useRef(0);
+  // Which button opened the scanner. The scan icon in the address field only fills in the Eircode; the Scan button
+  // (and Rescan / Scan next) opens Confirm stop for the Eircode it read, to add parcel after parcel.
+  const scanFor = useRef<'field' | 'batch'>('batch');
+  const openScanner = (mode: 'field' | 'batch') => { scanFor.current = mode; setSheet('scan'); };
+  // The Eircode Confirm stop is showing (Scan button flow).
+  const [confirming, setConfirming] = useState<string | null>(null);
+  // A stop that is already on the list: shown instead of adding it, with an explicit "Add anyway".
+  const [duplicate, setDuplicate] = useState<{ found: Duplicate<Delivery>; addAnyway: () => void } | null>(null);
+  // The rider chose "Add anyway" for the address now in the field (a second parcel for the same door).
+  const [allowDuplicate, setAllowDuplicate] = useState(false);
+  const [highlight, setHighlight] = useState<string | null>(null);
+  const scrollRef = useRef<ScrollView>(null);
+  const stopY = useRef(new Map<string, number>());
 
   const area = user?.serviceArea ? { latitude: user.serviceArea.latitude, longitude: user.serviceArea.longitude } : null;
 
@@ -91,36 +109,34 @@ export default function AddStops({ name, date }: { name: string; date: string })
   const typeAddress = (text: string) => {
     setAddress(text);
     setUnsure(false);
+    // "Add anyway" was for the previous address; a cleared field is no longer the scanned one.
+    setAllowDuplicate(false);
     if (picked && text !== picked.label) setPicked(null);
   };
 
   const choose = (sug: AddressSuggestion) => {
     setAddress(sug.label);
-    setPicked({ label: sug.label, latitude: sug.latitude, longitude: sug.longitude });
+    setPicked({ label: sug.label, latitude: sug.latitude, longitude: sug.longitude, approximate: sug.approximate });
     setSuggestions([]);
     setUnsure(false);
   };
 
-  const reset = () => {
-    setAddress(''); setParcel(''); setPicked(null); setSuggestions([]); setUnsure(false); setError('');
-    setTimeout(() => addressRef.current?.focus(), 50);
+  const reset = (focus = true) => {
+    setAddress(''); setParcel(''); setPicked(null); setSuggestions([]); setUnsure(false); setError(''); setAllowDuplicate(false);
+    if (focus) setTimeout(() => addressRef.current?.focus(), 50);
   };
 
   // `normalized` is the address the map found for what was typed (e.g. the street of a place name or an Eircode).
-  const save = async (raw: string, location: Point | null, normalized?: string | null) => {
-    const res = await post<Delivery>('/deliveries/manual', {
-      trackingId: parcel.trim().toUpperCase(),
-      address: { raw, ...(normalized && normalized !== raw ? { normalized: normalized.slice(0, 400) } : {}) },
-      serviceDate: date,
-      ...(location ? { location } : {}),
-    });
-    setStops((list) => [...list, res.data]);
+  // `precise` is false for an area-level point, which then never counts as "the same door" as another stop.
+  const save = async (raw: string, location: Point | null, { normalized, precise = true, duplicateOk = false }: { normalized?: string | null; precise?: boolean; duplicateOk?: boolean } = {}) => {
+    const stop = await createStop({ raw, parcel, date, location, normalized, precise, existing: stops, allowDuplicate: duplicateOk });
+    setStops((list) => [...list, stop]);
     Vibration.vibrate(30);
     reset();
   };
 
   // Adds the stop. Without a chosen suggestion the address is checked first, so riders notice typos now, not on the road.
-  const add = async (anyway = false) => {
+  const add = async (anyway = false, duplicateOk = allowDuplicate) => {
     // Eircodes are sent as "D01 F5P2" however they were typed ("d01f5p2", "D01-F5P2").
     const raw = normalizeEircodes(address.trim());
     if (raw.length < 5) { setError('Enter the delivery address, a postcode, or drop a pin.'); return; }
@@ -128,18 +144,22 @@ export default function AddStops({ name, date }: { name: string; date: string })
     setAdding(true);
     setError('');
     try {
-      if (picked && picked.label === address) { await save(raw, picked); return; }
-      if (anyway) { await save(raw, null); return; }
+      if (picked && picked.label === address) { await save(raw, picked, { precise: !picked.approximate, duplicateOk }); return; }
+      if (anyway) { await save(raw, null, { duplicateOk }); return; }
       const near = origin || area;
-      const check = (await post<GeocodeCheck>('/deliveries/geocode-check', { address: raw, ...(near || {}) })).data;
+      const check = await checkAddress(raw, near);
       // An Eircode on its own is one building: its point is used even when the map's match is not a rooftop one
       // (the stop then shows "Approximate location").
       if (check.found && (!check.approximate || isOnlyEircode(raw)) && check.latitude != null && check.longitude != null) {
-        await save(raw, { latitude: check.latitude, longitude: check.longitude }, check.normalized);
+        await save(raw, { latitude: check.latitude, longitude: check.longitude }, { normalized: check.normalized, precise: !check.approximate, duplicateOk });
         return;
       }
       setUnsure(true);
     } catch (err) {
+      if (err instanceof DuplicateStopError) {
+        setDuplicate({ found: err.duplicate, addAnyway: () => { setAllowDuplicate(true); void add(anyway, true); } });
+        return;
+      }
       setError(err instanceof ApiRequestError ? err.message : 'Could not add this stop. Check your connection and try again.');
     } finally {
       setAdding(false);
@@ -157,12 +177,6 @@ export default function AddStops({ name, date }: { name: string; date: string })
     ]);
   };
 
-  const onScan = (result: ScanResult) => {
-    setSheet(null);
-    if (result.parcel) setParcel(result.parcel);
-    if (result.address) typeAddress(normalizeEircodes(result.address));
-  };
-
   const onPin = (pin: PinResult) => {
     setSheet(null);
     setAddress(pin.address);
@@ -176,48 +190,68 @@ export default function AddStops({ name, date }: { name: string; date: string })
     typeAddress(normalizeEircodes(text.trim()));
   };
 
+  // The scanner read an Eircode: the same as typing it into the address field. A stop already on the list is
+  // reported straight away, before any map lookup.
+  // The Scan button's scan opens Confirm stop instead, which does its own duplicate check and adding.
+  const onScanned = (eircode: string) => {
+    setSheet(null);
+    if (scanFor.current === 'batch') { setConfirming(eircode); return; }
+    const fill = () => { typeAddress(eircode); addressRef.current?.blur(); };
+    const found = findDuplicate({ eircode }, stops);
+    if (found) setDuplicate({ found, addAnyway: () => { fill(); setAllowDuplicate(true); } });
+    else fill();
+  };
+
+  const typeInstead = () => {
+    setSheet(null);
+    setTimeout(() => addressRef.current?.focus(), 350);
+  };
+
+  const viewStop = (stop: Delivery) => {
+    setDuplicate(null);
+    const y = stopY.current.get(stop.id);
+    if (y != null) scrollRef.current?.scrollTo({ y: Math.max(0, y - 120), animated: true });
+    setHighlight(stop.id);
+    setTimeout(() => setHighlight((id) => (id === stop.id ? null : id)), 2500);
+  };
+
   const review = () => navigate('RoutePreview', { name, date, ids: stops.map((d) => d.id) });
+
+  const located = !!picked && picked.label === address;
 
   return (
     <Screen style={{ backgroundColor: c.background }}>
-      <KeyboardAwareScrollView contentContainerStyle={{ padding: 18, paddingBottom: 120 }} keyboardShouldPersistTaps="handled">
-        <Header eyebrow={`${name} · ${dayLabel(date)}`} eyebrowIcon="map-marker-path" title="Add stops" subtitle="Type, scan, speak or pin each address, then tap Add stop. Repeat for every stop." />
-
-        <View style={s.modes}>
-          <Mode icon="line-scan" label="Scan" onPress={() => setSheet('scan')} />
-          <Mode icon="microphone-outline" label="Voice" active={voice} onPress={() => setVoice((v) => !v)} />
-          <Mode icon="map-marker-plus-outline" label="Pin" onPress={() => setSheet('pin')} />
-          <Mode icon="file-upload-outline" label="Import" onPress={() => setSheet('import')} />
+      <KeyboardAwareScrollView ref={scrollRef} contentContainerStyle={{ paddingHorizontal: 24, paddingTop: 24, paddingBottom: 120 }} keyboardShouldPersistTaps="handled">
+        <View style={s.header}>
+          <Pressable onPress={goBack} hitSlop={12} accessibilityLabel="Back">
+            <Ionicons name="arrow-back" size={26} color={c.text} />
+          </Pressable>
+          <View style={{ flex: 1, marginLeft: 18 }}>
+            <Text style={s.title}>Add stops</Text>
+            {/* Not in the design; kept so the rider can see which route and day the stops go to. */}
+            <Text style={s.context} numberOfLines={1}>{name} · {dayLabel(date)}</Text>
+          </View>
         </View>
 
-        {voice ? (
-          <View style={s.voice}>
-            {VoicePanel ? <VoicePanel compact onText={onVoice} /> : (
-              <Text style={{ color: c.textSecondary, fontSize: 12, lineHeight: 17, textAlign: 'center' }}>Voice input is unavailable here. {NATIVE_BUILD_HINT}</Text>
-            )}
-            <Text style={{ color: c.textMuted, fontSize: 11, textAlign: 'center', marginTop: 4 }}>Say the street and number, the town, or the postcode.</Text>
-          </View>
-        ) : null}
-
-        {/* Address: required. Street, place name or postcode. */}
-        <View style={[s.field, picked && picked.label === address && { borderColor: c.success }]}>
-          <Ionicons name={picked && picked.label === address ? 'location' : 'location-outline'} size={18} color={picked && picked.label === address ? c.success : c.primary} />
+        {/* Address: required. Eircode, street, place name or postcode. */}
+        <View style={[s.field, located && { borderColor: c.success }]}>
+          <Ionicons name={located ? 'location' : 'search'} size={22} color={located ? c.success : c.textSecondary} />
           <RevealingTextInput
-            ref={addressRef} value={address} onChangeText={typeAddress} placeholder="Address, place or postcode" placeholderTextColor={c.textMuted}
+            ref={addressRef} value={address} onChangeText={typeAddress} placeholder="Eircode or address" placeholderTextColor={c.placeholder}
             style={s.input} autoFocus multiline blurOnSubmit returnKeyType="done" onSubmitEditing={() => void add()}
           />
-          {searching && wantSuggestions ? <ActivityIndicator size="small" color={c.primary} /> : address ? (
-            <Pressable onPress={() => typeAddress('')} hitSlop={8}><Ionicons name="close-circle" size={18} color={c.textMuted} /></Pressable>
+          {searching && wantSuggestions ? <ActivityIndicator size="small" color={c.textSecondary} /> : address ? (
+            <Pressable onPress={() => typeAddress('')} hitSlop={8} accessibilityLabel="Clear"><Ionicons name="close-circle" size={20} color={c.placeholder} /></Pressable>
           ) : null}
-          <Pressable onPress={() => setSheet('scanAddress')} hitSlop={8} accessibilityLabel="Scan the address"><MaterialCommunityIcons name="line-scan" size={20} color={c.primary} /></Pressable>
+          <Pressable onPress={() => openScanner('field')} hitSlop={8} accessibilityLabel="Scan the Eircode into this field"><MaterialCommunityIcons name="line-scan" size={24} color={c.link} /></Pressable>
         </View>
 
         {shownSuggestions.length ? (
           <View style={s.suggestions}>
             {shownSuggestions.map((sug, i) => (
-              <Pressable key={`${sug.latitude},${sug.longitude}`} onPress={() => choose(sug)} style={({ pressed }) => [s.suggestion, i > 0 && s.divider, pressed && { backgroundColor: c.surfaceSoft }]}>
-                <MaterialCommunityIcons name={sug.approximate ? 'map-marker-question-outline' : 'map-marker-check-outline'} size={18} color={sug.approximate ? c.warning : c.success} />
-                <Text style={{ flex: 1, color: c.text, fontSize: 13 }} numberOfLines={2}>{sug.label}</Text>
+              <Pressable key={`${sug.latitude},${sug.longitude}`} onPress={() => choose(sug)} style={({ pressed }) => [s.suggestion, i > 0 && s.divider, pressed && { backgroundColor: c.soft }]}>
+                <MaterialCommunityIcons name={sug.approximate ? 'map-marker-question-outline' : 'map-marker-check-outline'} size={20} color={sug.approximate ? c.warning : c.success} />
+                <Text style={{ flex: 1, color: c.text, fontSize: 15 }} numberOfLines={2}>{sug.label}</Text>
               </Pressable>
             ))}
           </View>
@@ -225,11 +259,11 @@ export default function AddStops({ name, date }: { name: string; date: string })
 
         {unsure ? (
           <View style={s.unsure}>
-            <MaterialCommunityIcons name="map-marker-alert-outline" size={18} color={c.warning} />
+            <MaterialCommunityIcons name="map-marker-alert-outline" size={20} color={c.warning} />
             <View style={{ flex: 1 }}>
-              <Text style={{ color: c.text, fontWeight: '700', fontSize: 13 }}>We couldn&apos;t pin this address exactly</Text>
-              <Text style={{ color: c.textSecondary, fontSize: 12, marginTop: 2 }}>Pick a suggestion above, drop a pin, or add it as typed.</Text>
-              <View style={{ flexDirection: 'row', gap: 8, marginTop: 8 }}>
+              <Text style={{ color: c.text, fontWeight: '600', fontSize: 15 }}>We couldn&apos;t pin this address exactly</Text>
+              <Text style={{ color: c.textSecondary, fontSize: 14, marginTop: 2 }}>Pick a suggestion above, drop a pin, or add it as typed.</Text>
+              <View style={{ flexDirection: 'row', gap: 8, marginTop: 10 }}>
                 <SmallButton icon="map-marker-plus-outline" label="Drop pin" onPress={() => setSheet('pin')} />
                 <SmallButton icon="plus" label="Add anyway" onPress={() => void add(true)} />
               </View>
@@ -237,52 +271,80 @@ export default function AddStops({ name, date }: { name: string; date: string })
           </View>
         ) : null}
 
-        {/* Parcel ID: optional. */}
-        <View style={[s.field, { marginTop: 10, minHeight: 46 }]}>
-          <MaterialCommunityIcons name="barcode" size={18} color={c.textSecondary} />
-          <RevealingTextInput value={parcel} onChangeText={setParcel} placeholder="Parcel ID (optional)" placeholderTextColor={c.textMuted}
-            style={s.input} autoCapitalize="characters" autoCorrect={false} maxLength={80} returnKeyType="done" onSubmitEditing={() => void add()} />
-          <Pressable onPress={() => setSheet('barcode')} hitSlop={8}><MaterialCommunityIcons name="barcode-scan" size={20} color={c.primary} /></Pressable>
+        {/* Not in the design: once an address is in the field, the optional parcel ID and Add stop appear under it. */}
+        {address ? (
+          <>
+            <View style={[s.field, s.parcel]}>
+              <MaterialCommunityIcons name="barcode" size={20} color={c.textSecondary} />
+              <RevealingTextInput value={parcel} onChangeText={setParcel} placeholder="Parcel ID (optional)" placeholderTextColor={c.placeholder}
+                style={s.input} autoCapitalize="characters" autoCorrect={false} maxLength={80} returnKeyType="done" onSubmitEditing={() => void add()} />
+              <Pressable onPress={() => setSheet('barcode')} hitSlop={8} accessibilityLabel="Scan the parcel barcode"><MaterialCommunityIcons name="barcode-scan" size={22} color={c.link} /></Pressable>
+            </View>
+            <LightButton title="Add stop" icon={<Ionicons name="add" size={22} color={c.onInk} />} onPress={() => void add()} loading={adding} disabled={address.trim().length < 5} style={{ marginTop: 12 }} />
+          </>
+        ) : null}
+        {error ? <View style={{ marginTop: 12 }}><LightError text={error} /></View> : null}
+
+        <View style={s.modes}>
+          <Mode icon="line-scan" label="Scan" onPress={() => openScanner('batch')} />
+          <Mode icon="microphone-outline" label="Voice" active={voice} onPress={() => setVoice((v) => !v)} />
+          <Mode icon="map-marker-outline" label="Pin" onPress={() => setSheet('pin')} />
+          <Mode icon="file-download-outline" label="Import" onPress={() => setSheet('import')} />
         </View>
 
-        <ErrorBanner text={error} />
-        <PButton title="Add stop" icon="add-circle" onPress={() => void add()} loading={adding} disabled={address.trim().length < 5} style={{ marginTop: 12 }} />
+        {voice ? (
+          <View style={s.voice}>
+            {VoicePanel ? <VoicePanel compact onText={onVoice} /> : (
+              <Text style={{ color: c.textSecondary, fontSize: 14, lineHeight: 20, textAlign: 'center' }}>Voice input is unavailable here. {NATIVE_BUILD_HINT}</Text>
+            )}
+            <Text style={{ color: c.placeholder, fontSize: 13, textAlign: 'center', marginTop: 6 }}>Say the street and number, the town, or the postcode.</Text>
+          </View>
+        ) : null}
+
+        <View style={s.rule} />
 
         {/* Stops added so far */}
-        <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 24, marginBottom: 8 }}>
-          <Text style={s.section}>STOPS · {stops.length}</Text>
-          {loading ? <ActivityIndicator size="small" color={c.primary} style={{ marginLeft: 8 }} /> : null}
+        <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 4 }}>
+          <Text style={s.section}>Stops · {stops.length}</Text>
+          {loading ? <ActivityIndicator size="small" color={c.textSecondary} style={{ marginLeft: 10 }} /> : null}
         </View>
-        {!loading && !stops.length ? <Text style={{ color: c.textMuted, fontSize: 13 }}>No stops yet. Your first stop will appear here.</Text> : null}
+        {!loading && !stops.length ? <Text style={{ color: c.textSecondary, fontSize: 15, marginTop: 8 }}>No stops yet. Your first stop will appear here.</Text> : null}
         {stops.map((stop, i) => (
-          <View key={stop.id} style={s.stop}>
-            <View style={s.badge}><Text style={{ color: c.text, fontWeight: '800', fontSize: 12 }}>{i + 1}</Text></View>
-            <View style={{ flex: 1 }}>
-              <StopLines stop={stop} />
+          <View key={stop.id} style={[s.stop, i > 0 && s.stopDivider, highlight === stop.id && s.stopHighlight]} onLayout={(e) => stopY.current.set(stop.id, e.nativeEvent.layout.y)}>
+            <View style={s.badge}><Text style={{ color: c.text, fontWeight: '600', fontSize: 16 }}>{i + 1}</Text></View>
+            <View style={{ flex: 1, marginLeft: 14, marginRight: 8 }}>
+              <StopLines stop={stop} light />
             </View>
-            <Pressable onPress={() => remove(stop)} hitSlop={10}><Ionicons name="trash-outline" size={18} color={c.textMuted} /></Pressable>
+            <Pressable onPress={() => remove(stop)} hitSlop={10} accessibilityLabel="Remove stop"><Ionicons name="trash-outline" size={22} color={c.textSecondary} /></Pressable>
           </View>
         ))}
       </KeyboardAwareScrollView>
 
       <View style={s.footer}>
-        <PButton title={stops.length ? `Done · review ${stops.length} stop${stops.length === 1 ? '' : 's'}` : 'Add a stop to continue'} icon="checkmark-done"
-          onPress={review} disabled={!stops.length} chevron />
+        <LightButton title={stops.length ? `Review ${stops.length} stop${stops.length === 1 ? '' : 's'}` : 'Add a stop to continue'} onPress={review} disabled={!stops.length} />
       </View>
 
-      <ScanSheet visible={sheet === 'scan' || sheet === 'scanAddress' || sheet === 'barcode'} mode={sheet === 'barcode' ? 'barcode' : sheet === 'scanAddress' ? 'address' : 'label'}
-        onClose={() => setSheet(null)} onResult={onScan} />
+      <EircodeScanner visible={sheet === 'scan'} onEircode={onScanned} onTypeInstead={typeInstead} onClose={() => setSheet(null)} />
+      <DuplicatePrompt duplicate={duplicate?.found ?? null} onView={() => duplicate && viewStop(duplicate.found.stop)}
+        onAddAnyway={() => { const next = duplicate?.addAnyway; setDuplicate(null); next?.(); }} onCancel={() => setDuplicate(null)} />
+      <ConfirmStop eircode={confirming} date={date} near={origin || area} existing={stops}
+        onAdded={(stop) => { setStops((list) => [...list, stop]); Vibration.vibrate(30); }}
+        onRescan={() => { setConfirming(null); openScanner('batch'); }}
+        onViewStop={(stop) => { setConfirming(null); viewStop(stop); }}
+        onClose={() => setConfirming(null)} />
+      <BarcodeSheet visible={sheet === 'barcode'} onClose={() => setSheet(null)} onResult={(value) => { setSheet(null); setParcel(value); }} />
       <PinSheet visible={sheet === 'pin'} position={origin} center={picked || area} onClose={() => setSheet(null)} onPick={onPin} />
-      <ImportSheet visible={sheet === 'import'} date={date} onClose={() => setSheet(null)} onImported={(created) => { setSheet(null); setStops((list) => [...list, ...created]); }} />
+      <ImportSheet visible={sheet === 'import'} date={date} stops={stops} onClose={() => setSheet(null)} onImported={(created) => { setSheet(null); setStops((list) => [...list, ...created]); }} />
     </Screen>
   );
 }
 
 function Mode({ icon, label, active, onPress }: { icon: McName; label: string; active?: boolean; onPress: () => void }) {
+  const color = active ? c.link : c.text;
   return (
-    <Pressable onPress={onPress} style={({ pressed }) => [s.mode, active && s.modeOn, pressed && { opacity: 0.85 }]}>
-      <MaterialCommunityIcons name={icon} size={22} color={active ? DARK_ON_PRIMARY : c.primary} />
-      <Text style={{ color: active ? DARK_ON_PRIMARY : c.text, fontSize: 11, fontWeight: '800', marginTop: 4 }}>{label}</Text>
+    <Pressable onPress={onPress} style={({ pressed }) => [s.mode, pressed && { opacity: 0.6 }]} accessibilityRole="button" accessibilityState={{ selected: !!active }}>
+      <MaterialCommunityIcons name={icon} size={28} color={color} />
+      <Text style={{ color, fontSize: 15, fontWeight: '500', marginTop: 8 }}>{label}</Text>
     </Pressable>
   );
 }
@@ -290,26 +352,32 @@ function Mode({ icon, label, active, onPress }: { icon: McName; label: string; a
 function SmallButton({ icon, label, onPress }: { icon: McName; label: string; onPress: () => void }) {
   return (
     <Pressable onPress={onPress} style={({ pressed }) => [s.small, pressed && { opacity: 0.85 }]}>
-      <MaterialCommunityIcons name={icon} size={14} color={c.primary} />
-      <Text style={{ color: c.primary, fontWeight: '800', fontSize: 12 }}>{label}</Text>
+      <MaterialCommunityIcons name={icon} size={16} color={c.text} />
+      <Text style={{ color: c.text, fontWeight: '600', fontSize: 14 }}>{label}</Text>
     </Pressable>
   );
 }
 
 const s = StyleSheet.create({
-  modes: { flexDirection: 'row', gap: 10, marginBottom: 14 },
-  mode: { flex: 1, alignItems: 'center', paddingVertical: 12, borderRadius: r.medium, backgroundColor: c.surface, borderWidth: 1, borderColor: c.border },
-  modeOn: { backgroundColor: c.primary, borderColor: c.primary },
-  voice: { marginBottom: 12, padding: 12, borderRadius: r.medium, backgroundColor: c.surface, borderWidth: 1, borderColor: c.border },
-  field: { flexDirection: 'row', alignItems: 'center', gap: 10, minHeight: 54, paddingHorizontal: 14, borderRadius: r.medium, borderWidth: 1, borderColor: c.border, backgroundColor: c.surfaceSoft },
-  input: { flex: 1, color: c.text, fontSize: 15, paddingVertical: 12 },
-  suggestions: { marginTop: 6, borderRadius: r.medium, borderWidth: 1, borderColor: c.border, backgroundColor: c.surface, overflow: 'hidden' },
-  suggestion: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 14, paddingVertical: 12 },
-  divider: { borderTopWidth: 1, borderTopColor: c.divider },
-  unsure: { flexDirection: 'row', gap: 10, marginTop: 8, padding: 12, borderRadius: r.medium, backgroundColor: 'rgba(255,179,64,0.1)', borderWidth: 1, borderColor: 'rgba(255,179,64,0.3)' },
-  small: { flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 10, paddingVertical: 7, borderRadius: r.pill, backgroundColor: 'rgba(255,170,50,0.14)' },
-  section: { color: c.textSecondary, fontSize: 11, fontWeight: '800', letterSpacing: 1 },
-  stop: { flexDirection: 'row', alignItems: 'center', gap: 12, padding: 12, marginBottom: 8, borderRadius: r.medium, backgroundColor: c.surface, borderWidth: 1, borderColor: c.border },
-  badge: { width: 28, height: 28, borderRadius: 14, backgroundColor: c.surfaceSoft, borderWidth: 1.5, borderColor: c.border, alignItems: 'center', justifyContent: 'center' },
-  footer: { position: 'absolute', left: 0, right: 0, bottom: 0, padding: 14, backgroundColor: 'rgba(5,11,24,0.96)', borderTopWidth: 1, borderTopColor: c.border },
+  header: { flexDirection: 'row', alignItems: 'center', marginBottom: 24 },
+  title: { color: c.text, fontSize: 24, fontWeight: '700' },
+  context: { color: c.textSecondary, fontSize: 13, marginTop: 2 },
+  field: { flexDirection: 'row', alignItems: 'center', gap: 12, minHeight: 52, paddingHorizontal: 16, borderRadius: lr.field, borderWidth: 1, borderColor: c.border, backgroundColor: c.surface },
+  parcel: { marginTop: 10, minHeight: 48 },
+  input: { flex: 1, color: c.text, fontSize: 17, paddingVertical: 12 },
+  suggestions: { marginTop: 8, borderRadius: lr.field, borderWidth: 1, borderColor: c.border, backgroundColor: c.surface, overflow: 'hidden' },
+  suggestion: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 16, paddingVertical: 14 },
+  divider: { borderTopWidth: 1, borderTopColor: c.border },
+  unsure: { flexDirection: 'row', gap: 10, marginTop: 10, padding: 14, borderRadius: lr.field, backgroundColor: c.warningBg },
+  small: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 12, paddingVertical: 8, borderRadius: 999, backgroundColor: c.surface, borderWidth: 1, borderColor: c.border },
+  modes: { flexDirection: 'row', marginTop: 24 },
+  mode: { flex: 1, alignItems: 'center', paddingVertical: 4 },
+  voice: { marginTop: 16, padding: 14, borderRadius: lr.field, backgroundColor: c.soft },
+  rule: { height: 1, backgroundColor: c.border, marginTop: 24, marginBottom: 24 },
+  section: { color: c.text, fontSize: 19, fontWeight: '600' },
+  stop: { flexDirection: 'row', alignItems: 'flex-start', paddingVertical: 18 },
+  stopDivider: { borderTopWidth: 1, borderTopColor: c.border },
+  stopHighlight: { backgroundColor: c.linkBg, marginHorizontal: -12, paddingHorizontal: 12, borderRadius: 12 },
+  badge: { width: 28, height: 28, borderRadius: 14, backgroundColor: c.soft, alignItems: 'center', justifyContent: 'center', marginTop: 1 },
+  footer: { position: 'absolute', left: 0, right: 0, bottom: 0, paddingHorizontal: 24, paddingTop: 12, paddingBottom: 14, backgroundColor: c.background, borderTopWidth: 1, borderTopColor: c.border },
 });

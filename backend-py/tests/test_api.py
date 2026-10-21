@@ -628,7 +628,7 @@ async def test_geocode_check_looks_up_an_address_without_saving(client):
         geocoding_service.set_geocoder_for_tests()
 
 
-async def test_optimize_reorders_open_stops_includes_new_ones_and_puts_unresolved_last(client):
+async def test_optimize_reorders_open_stops_never_pulls_in_other_stops_and_puts_unresolved_last(client):
     from app.services import routing_service
     _, auth = await rider(client, "optimize-rider@example.com")
     places = {"Near street 1": (53.35, -6.26), "Far street 2": (53.40, -6.26), "Mid street 3": (53.37, -6.26)}
@@ -651,14 +651,15 @@ async def test_optimize_reorders_open_stops_includes_new_ones_and_puts_unresolve
         assert [s["delivery"]["trackingId"] for s in route["stops"]] == ["OPT-2", "OPT-1", "OPT-3"], "unresolved address goes last"
         assert route["optimization"] == "straight_line" and calls, "router was asked, fallback recorded"
 
+        # A stop added afterwards belongs to the next route being added, not this one.
         await client.post("/api/v1/deliveries/manual", headers=auth, json=delivery("OPT-4", "Mid street 3"))
         current = (await client.get("/api/v1/routes/current", headers=auth)).json()["data"]
-        assert current["newStops"] == 1
+        assert current["newStops"] == 0
 
         optimized = await client.post(f"/api/v1/routes/{route['id']}/optimize", headers=auth, json={"origin": origin})
         assert optimized.status_code == 200, optimized.text
         data = optimized.json()["data"]
-        assert [s["delivery"]["trackingId"] for s in data["stops"]] == ["OPT-2", "OPT-4", "OPT-1", "OPT-3"]
+        assert [s["delivery"]["trackingId"] for s in data["stops"]] == ["OPT-2", "OPT-1", "OPT-3"]
         assert data["newStops"] == 0
     finally:
         geocoding_service.set_geocoder_for_tests()
@@ -704,3 +705,35 @@ async def test_eircode_is_looked_up_first_and_unfound_stops_can_be_pinned(client
     finally:
         geocoding_service.set_eircode_geocoder_for_tests()
         geocoding_service.set_geocoder_for_tests()
+
+
+async def test_a_new_route_never_takes_or_removes_another_route_of_the_same_day(client):
+    from datetime import date
+
+    _, auth = await rider(client, "two-routes@example.com")
+    today = date.today().isoformat()
+    here = {"latitude": 53.3498, "longitude": -6.2603}
+
+    async def stop(tid):
+        return (await client.post("/api/v1/deliveries/manual", headers=auth, json={**delivery(tid), "serviceDate": today, "location": here})).json()["data"]["id"]
+
+    first_ids = [await stop("A-1"), await stop("A-2")]
+    first = (await client.post("/api/v1/routes/build", headers=auth, json={"name": "Morning", "date": today, "deliveryIds": first_ids})).json()["data"]
+    second_ids = [await stop("B-1")]
+    second = await client.post("/api/v1/routes/build", headers=auth, json={"name": "Afternoon", "date": today, "deliveryIds": second_ids})
+    assert second.status_code == 201, second.text
+    assert [s["delivery"]["id"] for s in second.json()["data"]["stops"]] == second_ids
+
+    # The first route is still there with exactly its own stops, and a stop still being added joins neither.
+    await stop("C-1")
+    kept = (await client.get(f"/api/v1/routes/{first['id']}", headers=auth)).json()["data"]
+    assert sorted(s["delivery"]["id"] for s in kept["stops"]) == sorted(first_ids) and kept["newStops"] == 0
+    optimized = (await client.post(f"/api/v1/routes/{first['id']}/optimize", headers=auth, json={})).json()["data"]
+    assert sorted(s["delivery"]["id"] for s in optimized["stops"]) == sorted(first_ids)
+    names = [r["name"] for r in (await client.get("/api/v1/routes/by-date", headers=auth, params={"from": today})).json()["data"]]
+    assert names == ["Morning", "Afternoon"]
+
+    # Planning the same stops again moves them to the new route; the old route, left empty, is removed.
+    again = (await client.post("/api/v1/routes/build", headers=auth, json={"name": "Morning v2", "date": today, "deliveryIds": first_ids})).json()["data"]
+    assert sorted(s["delivery"]["id"] for s in again["stops"]) == sorted(first_ids)
+    assert (await client.get(f"/api/v1/routes/{first['id']}", headers=auth)).status_code == 404

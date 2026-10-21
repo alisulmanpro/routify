@@ -1,15 +1,18 @@
 import { useCallback, useState } from 'react';
-import { Alert, Image, Linking, Pressable, StyleSheet, Text, View } from 'react-native';
-import { KeyboardAwareScrollView } from '../components/KeyboardAware';
+import { ActivityIndicator, Alert, Image, Linking, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { StatusBar } from 'expo-status-bar';
+import { KeyboardAwareScrollView, useRevealOnFocus } from '../components/KeyboardAware';
 import * as ImagePicker from 'expo-image-picker';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useFocusEffect } from '../lib/useFocusEffect';
 import { get, post, del, postFile, fileUrl, ApiRequestError } from '../lib/api';
 import type { Delivery, FailureReason, Route } from '../lib/types';
-import { FAILURE_LABELS, stopLabel, timeOnly, todayKey } from '../lib/format';
+import { FAILURE_LABELS, stopCardText, stopLabel, timeOnly, todayKey } from '../lib/format';
 import { Screen } from '../components/Kit';
-import { ErrorBanner, IconCircle, PButton, PCard, PInput, Pill, SectionLabel, type PillTone } from '../components/Premium';
-import { premium as c, premiumRadius as r } from '../lib/theme';
+import { type PillTone } from '../components/Premium';
+import { LightButton, LightError } from '../components/LightKit';
+import ConfirmMap from '../components/scan/ConfirmMap';
+import { light as c, lightRadius as lr } from '../lib/theme';
 import { useNav } from '../lib/nav';
 
 const REASONS: FailureReason[] = ['customer_unavailable', 'customer_refused', 'wrong_address', 'phone_unreachable', 'business_closed', 'other'];
@@ -20,14 +23,24 @@ export const STATUS: Record<Delivery['status'], { label: string; tone: PillTone 
   failed: { label: 'Failed', tone: 'red' },
 };
 
-export default function DeliveryDetail({ id, onDone }: { id: string; onDone: () => void }) {
-  const { goBack } = useNav();
+/**
+ * Stop detail (design_pref "Stop detail" and "Failed delivery"): the stop's map, Eircode, address, parcel ID and notes,
+ * with Delivered / Failed. The server only takes a result (or a photo) once the stop is marked arrived, so a pending
+ * stop is marked arrived first, then the action runs.
+ */
+export default function DeliveryDetail({ id, onDone, initialStep }: { id: string; onDone: () => void; initialStep?: 'proof' | 'fail' }) {
+  const { goBack, resetTo } = useNav();
+  // Opened straight on Proof of delivery or Failed delivery (from Live Navigation): closing that step goes back there.
+  const closeStep = (hide: () => void) => { if (initialStep) goBack(); else hide(); };
   const [delivery, setDelivery] = useState<Delivery | null>(null);
   const [error, setError] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [showFail, setShowFail] = useState(false);
+  const [busy, setBusy] = useState<'deliver' | 'fail' | 'photo' | 'delete' | null>(null);
+  const [showFail, setShowFail] = useState(initialStep === 'fail');
   const [reason, setReason] = useState<FailureReason | null>(null);
   const [failNote, setFailNote] = useState('');
+  // Delivered opens Proof of delivery (photo, note) before the stop is completed.
+  const [showProof, setShowProof] = useState(initialStep === 'proof');
+  const [deliverNote, setDeliverNote] = useState('');
 
   const load = useCallback(async () => {
     try {
@@ -39,14 +52,18 @@ export default function DeliveryDetail({ id, onDone }: { id: string; onDone: () 
 
   useFocusEffect(useCallback(() => { load(); }, [load]));
 
-  const run = async (fn: () => Promise<void>) => {
-    setBusy(true);
+  const run = async (kind: NonNullable<typeof busy>, fn: () => Promise<void>) => {
+    setBusy(kind);
     setError('');
     try { await fn(); } catch (err) { setError(err instanceof ApiRequestError ? err.message : 'Something went wrong'); }
-    finally { setBusy(false); }
+    finally { setBusy(null); }
   };
 
-  const arrive = () => run(async () => setDelivery((await post<Delivery>(`/deliveries/${id}/arrive`)).data));
+  // Delivered, Failed and a photo all need the stop marked arrived first.
+  const ensureArrived = async () => {
+    if (delivery?.status !== 'pending') return;
+    setDelivery((await post<Delivery>(`/deliveries/${id}/arrive`)).data);
+  };
 
   const capturePhoto = async (fromCamera: boolean) => {
     const perm = fromCamera ? await ImagePicker.requestCameraPermissionsAsync() : await ImagePicker.requestMediaLibraryPermissionsAsync();
@@ -56,14 +73,34 @@ export default function DeliveryDetail({ id, onDone }: { id: string; onDone: () 
       : await ImagePicker.launchImageLibraryAsync({ quality: 0.7, mediaTypes: ['images'] });
     if (result.canceled || !result.assets?.[0]) return;
     const asset = result.assets[0];
-    await run(async () => {
+    await run('photo', async () => {
+      await ensureArrived();
       setDelivery((await postFile<Delivery>(`/deliveries/${id}/proof`, asset.uri, 'photo', asset.mimeType || 'image/jpeg')).data);
     });
   };
 
-  const confirmDelivery = (allowSkip = false) => run(async () => {
-    setDelivery((await post<Delivery>(`/deliveries/${id}/deliver`, allowSkip ? { allowSkip: true } : {})).data);
+  // After the last open stop the server completes the route: then Route complete, else back as before.
+  const finish = async () => {
+    const routeId = delivery?.routeId;
+    if (routeId) {
+      try {
+        if ((await get<Route>(`/routes/${routeId}`)).data.status === 'completed') { resetTo('RouteComplete', { routeId }); return; }
+      } catch { /* just go back */ }
+    }
     onDone();
+  };
+
+  const addPhoto = () => Alert.alert('Add photo', undefined, [
+    { text: 'Take photo', onPress: () => void capturePhoto(true) },
+    { text: 'Choose from gallery', onPress: () => void capturePhoto(false) },
+    { text: 'Cancel', style: 'cancel' },
+  ]);
+
+  const confirmDelivery = (allowSkip = false) => run('deliver', async () => {
+    await ensureArrived();
+    const note = deliverNote.trim();
+    setDelivery((await post<Delivery>(`/deliveries/${id}/deliver`, { ...(allowSkip ? { allowSkip: true } : {}), ...(note ? { note } : {}) })).data);
+    await finish();
   });
 
   const deliver = async () => {
@@ -91,164 +128,308 @@ export default function DeliveryDetail({ id, onDone }: { id: string; onDone: () 
     }
   };
 
-  const submitFail = () => run(async () => {
+  const submitFail = () => run('fail', async () => {
     if (!reason) { setError('Choose a reason'); return; }
-    await post(`/deliveries/${id}/fail`, { reason, note: failNote || undefined });
+    await ensureArrived();
+    await post(`/deliveries/${id}/fail`, { reason, note: failNote.trim() || undefined });
     setShowFail(false);
-    onDone();
+    await finish();
   });
 
   const removeDelivery = () => {
     Alert.alert('Delete this delivery?', 'It will be removed from your list and any planned route.', [
       { text: 'Cancel', style: 'cancel' },
-      { text: 'Delete', style: 'destructive', onPress: () => run(async () => { await del(`/deliveries/${id}`); goBack(); }) },
+      { text: 'Delete', style: 'destructive', onPress: () => run('delete', async () => { await del(`/deliveries/${id}`); goBack(); }) },
     ]);
   };
 
   if (!delivery) {
     return (
-      <Screen style={{ padding: 22, backgroundColor: c.background }}>
-        {error ? <ErrorBanner text={error} /> : <Text style={{ color: c.textSecondary }}>Loading…</Text>}
+      <Screen style={{ padding: 24, backgroundColor: c.background }}>
+        <StatusBar style="dark" />
+        {error ? <LightError text={error} /> : <ActivityIndicator color={c.ink} style={{ marginTop: 48 }} />}
       </Screen>
     );
   }
 
-  const status = STATUS[delivery.status];
+  const open = delivery.status === 'pending' || delivery.status === 'in_progress';
+  const proof = delivery.proof?.photoUrl ? fileUrl(delivery.proof.photoUrl) : null;
+
+  // Proof of delivery (design_pref "Proof of delivery" / "· Filled"): photo, note, then Complete delivery.
+  if (showProof) {
+    const { title: code } = stopCardText(delivery);
+    return (
+      <Screen style={{ backgroundColor: c.background }}>
+        <StatusBar style="dark" />
+        <KeyboardAwareScrollView contentContainerStyle={{ paddingHorizontal: 24, paddingTop: 24, paddingBottom: 120 }} keyboardShouldPersistTaps="handled">
+          <View style={[s.header, { alignItems: 'flex-start' }]}>
+            <Pressable onPress={() => closeStep(() => setShowProof(false))} hitSlop={12} accessibilityLabel="Back" style={{ marginTop: 2 }}>
+              <Ionicons name="arrow-back" size={26} color={c.text} />
+            </Pressable>
+            <View style={{ marginLeft: 18, flex: 1 }}>
+              <Text style={s.title}>Proof of delivery</Text>
+              <Text style={{ color: c.textSecondary, fontSize: 16, marginTop: 4 }}>{code}</Text>
+            </View>
+          </View>
+
+          <Text style={s.label}>Photo</Text>
+          {proof ? (
+            <View style={s.proofPhoto}>
+              <Image source={{ uri: proof }} style={StyleSheet.absoluteFill} resizeMode="cover" />
+              <View style={s.photoChip}>
+                <Ionicons name="checkmark" size={16} color={c.success} />
+                <Text style={{ color: c.success, fontSize: 14, fontWeight: '600' }}>Photo added{delivery.proof?.capturedAt ? ` · ${timeOnly(delivery.proof.capturedAt)}` : ''}</Text>
+              </View>
+              <Pressable onPress={() => void capturePhoto(true)} disabled={!!busy} style={({ pressed }) => [s.retake, pressed && { opacity: 0.85 }]}>
+                {busy === 'photo' ? <ActivityIndicator color="#fff" /> : <Ionicons name="refresh" size={18} color="#fff" />}
+                <Text style={{ color: '#fff', fontSize: 15, fontWeight: '600' }}>Retake</Text>
+              </Pressable>
+            </View>
+          ) : (
+            <Pressable onPress={() => void capturePhoto(true)} disabled={!!busy} style={({ pressed }) => [s.takePhoto, pressed && { opacity: 0.85 }]}>
+              <View style={s.takeIcon}>{busy === 'photo' ? <ActivityIndicator color={c.text} /> : <Ionicons name="camera-outline" size={28} color={c.text} />}</View>
+              <Text style={{ color: c.text, fontSize: 17, fontWeight: '600', marginTop: 14 }}>Take photo</Text>
+              <Text style={{ color: c.textSecondary, fontSize: 15, marginTop: 6 }}>Show the parcel at the door</Text>
+            </Pressable>
+          )}
+          {/* Not in the design: picking a photo already taken, as the old screen allowed. */}
+          <Pressable onPress={() => void capturePhoto(false)} disabled={!!busy} hitSlop={8} style={{ alignSelf: 'flex-start', marginTop: 10 }}>
+            <Text style={{ color: c.link, fontSize: 15, fontWeight: '500' }}>Choose from gallery</Text>
+          </Pressable>
+
+          {/* MISSING: see missing.md — signatures can't be captured or saved yet; shown disabled at the owner's request. */}
+          <View style={[s.sigHead, { opacity: 0.45 }]}>
+            <Text style={[s.label, { marginTop: 0, marginBottom: 0 }]}>Signature</Text>
+            <Text style={{ color: c.placeholder, fontSize: 15, fontWeight: '500' }}>Clear</Text>
+          </View>
+          <View style={s.signature} accessibilityState={{ disabled: true }}>
+            <Text style={{ color: c.placeholder, fontSize: 16 }}>Signature isn&apos;t available yet</Text>
+            <View style={s.sigLine} />
+          </View>
+
+          <Text style={s.label}>Note <Text style={{ color: c.placeholder, fontWeight: '400' }}>(optional)</Text></Text>
+          <NoteField value={deliverNote} onChangeText={setDeliverNote} placeholder="e.g. Left in the porch" short />
+          <LightError text={error} />
+        </KeyboardAwareScrollView>
+
+        <View style={s.footer}>
+          <Pressable onPress={() => void deliver()} disabled={!!busy} style={({ pressed }) => [s.resultBtn, s.delivered, (pressed || !!busy) && { opacity: 0.85 }]}>
+            {busy === 'deliver' ? <ActivityIndicator color="#fff" /> : <Ionicons name="checkmark" size={24} color="#fff" />}
+            <Text style={[s.resultBtnText, { color: '#fff' }]}>Complete delivery</Text>
+          </Pressable>
+        </View>
+      </Screen>
+    );
+  }
+
+  // "Why couldn't you deliver?" (design_pref "Failed delivery"), in place of the stop while it is open.
+  if (showFail) {
+    const ready = !!reason && !(reason === 'other' && !failNote.trim());
+    return (
+      <Screen style={{ backgroundColor: c.background }}>
+        <StatusBar style="dark" />
+        <KeyboardAwareScrollView contentContainerStyle={{ paddingHorizontal: 24, paddingTop: 24, paddingBottom: 120 }} keyboardShouldPersistTaps="handled">
+          <View style={s.header}>
+            <Pressable onPress={() => closeStep(() => setShowFail(false))} hitSlop={12} accessibilityLabel="Close">
+              <Ionicons name="close" size={28} color={c.text} />
+            </Pressable>
+            <Text style={[s.title, { marginLeft: 18, flex: 1 }]}>Why couldn&apos;t you deliver?</Text>
+          </View>
+
+          <View style={{ marginTop: 16 }}>
+            {REASONS.map((value, i) => {
+              const on = reason === value;
+              return (
+                <Pressable key={value} onPress={() => setReason(value)} style={[s.reason, i > 0 && s.divider]} accessibilityRole="radio" accessibilityState={{ selected: on }}>
+                  <View style={[s.radio, on && { borderColor: c.ink }]}>{on ? <View style={s.radioDot} /> : null}</View>
+                  <Text style={s.reasonText}>{FAILURE_LABELS[value]}</Text>
+                </Pressable>
+              );
+            })}
+          </View>
+
+          <Text style={s.label}>{reason === 'other' ? 'Describe what happened' : 'Add a note'} {reason === 'other' ? null : <Text style={{ color: c.placeholder, fontWeight: '400' }}>(optional)</Text>}</Text>
+          <NoteField value={failNote} onChangeText={setFailNote} placeholder="e.g. Left a card through the letterbox" />
+
+          <Pressable onPress={addPhoto} disabled={!!busy} style={({ pressed }) => [s.photoRow, pressed && { opacity: 0.85 }]}>
+            {proof ? <Image source={{ uri: proof }} style={s.photoThumb} /> : (
+              <View style={s.photoIcon}>{busy === 'photo' ? <ActivityIndicator color={c.text} /> : <Ionicons name="camera-outline" size={24} color={c.text} />}</View>
+            )}
+            <Text style={s.photoText}>{proof ? 'Photo added' : 'Add photo'}</Text>
+            <Ionicons name={proof ? 'refresh' : 'add'} size={24} color={c.textSecondary} />
+          </Pressable>
+          <LightError text={error} />
+        </KeyboardAwareScrollView>
+
+        <View style={s.footer}>
+          <LightButton title="Confirm" onPress={() => void submitFail()} loading={busy === 'fail'} disabled={!ready || !!busy} />
+        </View>
+      </Screen>
+    );
+  }
+
+  const { title, address } = stopCardText(delivery);
+  const point = delivery.address.latitude != null && delivery.address.longitude != null ? { latitude: delivery.address.latitude, longitude: delivery.address.longitude } : null;
   const { name, phone } = delivery.customer;
 
   return (
     <Screen style={{ backgroundColor: c.background }}>
-      <KeyboardAwareScrollView contentContainerStyle={{ padding: 16, paddingBottom: 32, gap: 14 }}>
-        {/* Parcel header */}
-        <PCard accent>
-          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
-            <View style={s.parcelTag}><Text style={s.parcelTagText}>{delivery.trackingId ? 'Parcel ID' : 'Stop'}{delivery.stopOrder ? ` · Stop ${delivery.stopOrder}` : ''}</Text></View>
-            <Pill text={status.label} tone={status.tone} />
-          </View>
-          <Text style={s.parcelId} selectable numberOfLines={2}>{delivery.trackingId || stopLabel(delivery)}</Text>
-          {delivery.deliveredAt ? <Text style={s.meta}>Delivered at {timeOnly(delivery.deliveredAt)}</Text> : null}
-          {delivery.failedAt ? <Text style={s.meta}>Failed at {timeOnly(delivery.failedAt)}</Text> : null}
-        </PCard>
-        <ErrorBanner text={error} />
+      <StatusBar style="dark" />
+      <KeyboardAwareScrollView contentContainerStyle={{ paddingHorizontal: 24, paddingTop: 24, paddingBottom: open ? 120 : 32 }}>
+        <View style={s.header}>
+          <Pressable onPress={goBack} hitSlop={12} accessibilityLabel="Back">
+            <Ionicons name="arrow-back" size={26} color={c.text} />
+          </Pressable>
+          <Text style={[s.title, { marginLeft: 18 }]}>{delivery.stopOrder ? `Stop ${delivery.stopOrder}` : 'Stop'}</Text>
+        </View>
 
-        {/* Address */}
-        <Pressable onPress={() => Linking.openURL(`https://maps.google.com/?q=${encodeURIComponent(delivery.address.raw)}`)}>
-          <PCard style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
-            <IconCircle icon="map-marker-outline" />
-            <View style={{ flex: 1 }}>
-              <SectionLabel style={{ marginBottom: 2 }}>Address</SectionLabel>
-              <Text style={s.value}>{delivery.address.raw}</Text>
-              {!delivery.address.geocoded ? (
-                <Text style={{ color: c.warning, fontSize: 12, marginTop: 6, lineHeight: 17 }}>
-                  {delivery.address.approximate ? 'Only an approximate area was found. Verify the address before navigating.' : 'Location not found on the map. Navigate using the address.'}
-                </Text>
-              ) : null}
+        <View style={s.map}>
+          {point ? <ConfirmMap point={point} fallback={null} style={{ flex: 1 }} /> : (
+            <View style={[s.mapEmpty, { flex: 1 }]}>
+              <MaterialCommunityIcons name="map-marker-off-outline" size={28} color={c.placeholder} />
+              <Text style={{ color: c.textSecondary, fontSize: 14 }}>Not on the map yet</Text>
             </View>
-            <Ionicons name="open-outline" size={18} color={c.textSecondary} />
-          </PCard>
-        </Pressable>
+          )}
+        </View>
 
-        {/* Customer (optional details) */}
+        <Text style={s.eircode} selectable>{title}</Text>
+        {address ? <Text style={s.address} selectable>{address}</Text> : null}
+        {/* Not in the design: opening the address in Google Maps, as the old screen did. */}
+        <Pressable onPress={() => Linking.openURL(`https://maps.google.com/?q=${encodeURIComponent(delivery.address.raw)}`)} hitSlop={6} style={s.mapsLink}>
+          <Ionicons name="open-outline" size={16} color={c.link} />
+          <Text style={{ color: c.link, fontSize: 15, fontWeight: '500' }}>Open in Google Maps</Text>
+        </Pressable>
+        {!delivery.address.geocoded ? (
+          <Text style={s.warning}>
+            {delivery.address.approximate ? 'Only an approximate area was found. Verify the address before navigating.' : 'Location not found on the map. Navigate using the address.'}
+          </Text>
+        ) : null}
+
+        {delivery.trackingId ? (
+          <View style={s.parcel}>
+            <Text style={s.parcelLabel}>Parcel ID</Text>
+            {/* Long-press to copy. MISSING: see missing.md — no clipboard library for the copy button. */}
+            <Text style={s.parcelId} selectable>{delivery.trackingId}</Text>
+            <Pressable disabled accessibilityState={{ disabled: true }} hitSlop={8} style={{ opacity: 0.35 }}>
+              <Ionicons name="copy-outline" size={22} color={c.link} />
+            </Pressable>
+          </View>
+        ) : null}
+
+        {/* Not in the design: the customer, when the stop has one, with a call button. */}
         {name || phone ? (
-          <PCard style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
-            <IconCircle icon="account-outline" />
+          <View style={[s.section, s.customer]}>
             <View style={{ flex: 1 }}>
-              <SectionLabel style={{ marginBottom: 2 }}>Customer</SectionLabel>
-              <Text style={s.value}>{name || 'No name'}</Text>
-              {phone ? <Text style={s.meta}>{phone}</Text> : null}
+              <Text style={s.sectionTitle}>Customer</Text>
+              <Text style={s.body}>{name || 'No name'}{phone ? ` · ${phone}` : ''}</Text>
             </View>
             {phone ? (
               <Pressable onPress={() => Linking.openURL(`tel:${phone}`)} hitSlop={6} style={s.callBtn} accessibilityLabel="Call customer">
                 <Ionicons name="call" size={18} color={c.success} />
               </Pressable>
             ) : null}
-          </PCard>
+          </View>
         ) : null}
 
-        {delivery.note ? (
-          <PCard style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
-            <IconCircle icon="note-text-outline" />
-            <View style={{ flex: 1 }}>
-              <SectionLabel style={{ marginBottom: 2 }}>Note</SectionLabel>
-              <Text style={s.value}>{delivery.note}</Text>
-            </View>
-          </PCard>
-        ) : null}
+        <View style={s.section}>
+          <Text style={s.sectionTitle}>Notes</Text>
+          <Text style={[s.body, !delivery.note && { color: c.placeholder }]}>{delivery.note || 'No notes for this stop.'}</Text>
+        </View>
 
-        {delivery.proof?.photoUrl ? (
-          <PCard>
-            <SectionLabel>Proof photo</SectionLabel>
-            <Image source={{ uri: fileUrl(delivery.proof.photoUrl) }} style={s.photo} resizeMode="cover" />
-          </PCard>
+        {/* Not in the design: the result and proof photo, once the stop is done. */}
+        {delivery.status === 'delivered' ? (
+          <View style={[s.result, { backgroundColor: c.successBg }]}>
+            <Ionicons name="checkmark-circle" size={22} color={c.success} />
+            <Text style={{ color: c.success, fontSize: 16, fontWeight: '600' }}>Delivered{delivery.deliveredAt ? ` at ${timeOnly(delivery.deliveredAt)}` : ''}</Text>
+          </View>
         ) : null}
-
         {delivery.failure ? (
-          <View style={s.failure}>
-            <MaterialCommunityIcons name="alert-circle" size={20} color={c.danger} />
+          <View style={[s.result, { backgroundColor: c.dangerBg, alignItems: 'flex-start' }]}>
+            <Ionicons name="close-circle" size={22} color={c.danger} />
             <View style={{ flex: 1 }}>
-              <Text style={{ color: c.danger, fontWeight: '800' }}>Failed: {FAILURE_LABELS[delivery.failure.reason] ?? delivery.failure.reason}</Text>
-              {delivery.failure.note ? <Text style={{ color: c.text, marginTop: 4, fontSize: 13 }}>{delivery.failure.note}</Text> : null}
+              <Text style={{ color: c.danger, fontSize: 16, fontWeight: '600' }}>Failed: {FAILURE_LABELS[delivery.failure.reason] ?? delivery.failure.reason}{delivery.failedAt ? ` · ${timeOnly(delivery.failedAt)}` : ''}</Text>
+              {delivery.failure.note ? <Text style={{ color: c.text, marginTop: 4, fontSize: 15 }}>{delivery.failure.note}</Text> : null}
             </View>
           </View>
         ) : null}
 
-        {/* Actions */}
-        {delivery.status === 'pending' ? <PButton title="Mark arrived" icon="flag-outline" onPress={arrive} loading={busy} chevron /> : null}
+        {/* Not in the design: the proof photo, once the stop is done. */}
+        {!open && proof ? <Image source={{ uri: proof }} style={s.photo} resizeMode="cover" /> : null}
 
-        {delivery.status === 'in_progress' && !showFail ? (
-          <View style={{ gap: 10 }}>
-            {!delivery.proof ? (
-              <View style={{ flexDirection: 'row', gap: 10 }}>
-                <PButton title="Take photo" icon="camera-outline" variant="secondary" onPress={() => capturePhoto(true)} disabled={busy} style={{ flex: 1 }} />
-                <PButton title="Choose photo" icon="images-outline" variant="secondary" onPress={() => capturePhoto(false)} disabled={busy} style={{ flex: 1 }} />
-              </View>
-            ) : null}
-            <PButton title="Confirm delivered" icon="checkmark-circle-outline" onPress={deliver} loading={busy} chevron />
-            <PButton title="Delivery failed" icon="close-circle-outline" variant="danger" onPress={() => setShowFail(true)} />
-          </View>
-        ) : null}
-
-        {showFail ? (
-          <PCard>
-            <Text style={{ color: c.text, fontSize: 16, fontWeight: '800', marginBottom: 12 }}>Why did this delivery fail?</Text>
-            <View style={{ gap: 8 }}>
-              {REASONS.map((value) => {
-                const on = reason === value;
-                return (
-                  <Pressable key={value} onPress={() => setReason(value)} style={[s.reason, on && s.reasonOn]}>
-                    <Text style={{ flex: 1, color: c.text, fontSize: 14, fontWeight: on ? '700' : '500' }}>{FAILURE_LABELS[value]}</Text>
-                    <View style={[s.radio, on && { borderColor: c.danger }]}>{on ? <View style={s.radioDot} /> : null}</View>
-                  </Pressable>
-                );
-              })}
-            </View>
-            {reason === 'other' ? <PInput icon="create-outline" value={failNote} onChangeText={setFailNote} multiline maxLength={1000} placeholder="Describe the issue" style={{ marginTop: 12 }} /> : null}
-            <PButton title="Submit" icon="send-outline" variant="danger" onPress={submitFail} loading={busy} disabled={!reason || (reason === 'other' && !failNote.trim())} style={{ marginTop: 14 }} />
-            <PButton title="Cancel" variant="secondary" onPress={() => setShowFail(false)} style={{ marginTop: 10 }} />
-          </PCard>
-        ) : null}
+        <LightError text={error} />
 
         {delivery.status === 'pending' ? (
-          <Pressable onPress={removeDelivery} disabled={busy} style={{ alignItems: 'center', paddingVertical: 12 }}>
-            <Text style={{ color: c.danger, fontWeight: '700', fontSize: 13 }}>Delete delivery</Text>
+          <Pressable onPress={removeDelivery} disabled={!!busy} style={{ alignItems: 'center', paddingVertical: 16 }}>
+            <Text style={{ color: c.danger, fontWeight: '600', fontSize: 15 }}>Delete delivery</Text>
           </Pressable>
         ) : null}
       </KeyboardAwareScrollView>
+
+      {open ? (
+        <View style={[s.footer, { flexDirection: 'row', gap: 12 }]}>
+          <Pressable onPress={() => { setError(''); setShowProof(true); }} disabled={!!busy} style={({ pressed }) => [s.resultBtn, s.delivered, (pressed || !!busy) && { opacity: 0.85 }]}>
+            <Ionicons name="checkmark" size={24} color="#fff" />
+            <Text style={[s.resultBtnText, { color: '#fff' }]}>Delivered</Text>
+          </Pressable>
+          <Pressable onPress={() => { setError(''); setShowFail(true); }} disabled={!!busy} style={({ pressed }) => [s.resultBtn, s.failed, (pressed || !!busy) && { opacity: 0.85 }]}>
+            <Ionicons name="close" size={24} color={c.danger} />
+            <Text style={[s.resultBtnText, { color: c.danger }]}>Failed</Text>
+          </Pressable>
+        </View>
+      ) : null}
     </Screen>
   );
 }
 
+function NoteField({ value, onChangeText, placeholder, short }: { value: string; onChangeText: (v: string) => void; placeholder: string; short?: boolean }) {
+  const reveal = useRevealOnFocus();
+  return (
+    <TextInput value={value} onChangeText={onChangeText} placeholder={placeholder} placeholderTextColor={c.placeholder}
+      multiline maxLength={1000} textAlignVertical="top" style={[s.note, short && { minHeight: 52 }]} onFocus={reveal} />
+  );
+}
+
 const s = StyleSheet.create({
-  parcelTag: { backgroundColor: 'rgba(255,170,50,0.14)', paddingHorizontal: 10, paddingVertical: 4, borderRadius: r.pill },
-  parcelTagText: { color: c.primary, fontSize: 10, fontWeight: '800', letterSpacing: 0.8, textTransform: 'uppercase' },
-  parcelId: { color: c.text, fontSize: 24, fontWeight: '800', marginTop: 10, letterSpacing: 0.5 },
-  value: { color: c.text, fontSize: 15, fontWeight: '600', lineHeight: 21 },
-  meta: { color: c.textSecondary, fontSize: 13, marginTop: 3 },
-  callBtn: { width: 42, height: 42, borderRadius: 21, backgroundColor: 'rgba(25,216,139,0.14)', alignItems: 'center', justifyContent: 'center' },
-  photo: { width: '100%', height: 220, borderRadius: r.medium, backgroundColor: c.surfaceSoft },
-  failure: { flexDirection: 'row', gap: 10, padding: 14, borderRadius: r.large, backgroundColor: 'rgba(255,83,104,0.1)', borderWidth: 1, borderColor: 'rgba(255,83,104,0.35)' },
-  reason: { flexDirection: 'row', alignItems: 'center', padding: 12, borderRadius: r.medium, borderWidth: 1, borderColor: c.border, backgroundColor: c.surfaceSoft },
-  reasonOn: { borderColor: 'rgba(255,83,104,0.6)', backgroundColor: 'rgba(255,83,104,0.08)' },
-  radio: { width: 20, height: 20, borderRadius: 10, borderWidth: 2, borderColor: c.border, alignItems: 'center', justifyContent: 'center' },
-  radioDot: { width: 10, height: 10, borderRadius: 5, backgroundColor: c.danger },
+  header: { flexDirection: 'row', alignItems: 'center' },
+  title: { color: c.text, fontSize: 24, fontWeight: '700' },
+  map: { height: 150, borderRadius: 20, overflow: 'hidden', marginTop: 24 },
+  mapEmpty: { alignItems: 'center', justifyContent: 'center', gap: 6, backgroundColor: c.soft },
+  eircode: { color: c.text, fontSize: 34, fontWeight: '800', letterSpacing: -0.5, marginTop: 24 },
+  address: { color: c.textSecondary, fontSize: 16, lineHeight: 23, marginTop: 6 },
+  mapsLink: { flexDirection: 'row', alignItems: 'center', gap: 6, alignSelf: 'flex-start', marginTop: 10 },
+  warning: { color: c.warning, fontSize: 14, lineHeight: 20, marginTop: 8 },
+  parcel: { flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 24, paddingBottom: 24, borderBottomWidth: 1, borderBottomColor: c.border },
+  parcelLabel: { color: c.textSecondary, fontSize: 15 },
+  parcelId: { color: c.text, fontSize: 18, fontWeight: '700', marginRight: 6 },
+  section: { paddingVertical: 20, borderBottomWidth: 1, borderBottomColor: c.border },
+  customer: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  sectionTitle: { color: c.text, fontSize: 17, fontWeight: '600' },
+  body: { color: c.textSecondary, fontSize: 16, lineHeight: 23, marginTop: 6 },
+  callBtn: { width: 44, height: 44, borderRadius: 22, backgroundColor: c.successBg, alignItems: 'center', justifyContent: 'center' },
+  result: { flexDirection: 'row', alignItems: 'center', gap: 10, padding: 14, borderRadius: lr.field, marginTop: 20 },
+  photoRow: { flexDirection: 'row', alignItems: 'center', gap: 14, padding: 12, borderRadius: 18, backgroundColor: c.soft, marginTop: 20 },
+  photoIcon: { width: 44, height: 44, borderRadius: 12, backgroundColor: c.surface, alignItems: 'center', justifyContent: 'center' },
+  photoThumb: { width: 44, height: 44, borderRadius: 12 },
+  photoText: { flex: 1, color: c.text, fontSize: 17, fontWeight: '600' },
+  photo: { width: '100%', height: 220, borderRadius: 18, marginTop: 20, backgroundColor: c.soft },
+  footer: { position: 'absolute', left: 0, right: 0, bottom: 0, paddingHorizontal: 20, paddingTop: 12, paddingBottom: 14, backgroundColor: c.background, borderTopWidth: 1, borderTopColor: c.border },
+  resultBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10, minHeight: 58, borderRadius: 18 },
+  delivered: { backgroundColor: '#15803D' },
+  failed: { backgroundColor: c.surface, borderWidth: 2, borderColor: c.danger },
+  resultBtnText: { fontSize: 18, fontWeight: '700' },
+  reason: { flexDirection: 'row', alignItems: 'center', gap: 16, paddingVertical: 18 },
+  divider: { borderTopWidth: 1, borderTopColor: c.border },
+  reasonText: { color: c.text, fontSize: 17 },
+  radio: { width: 24, height: 24, borderRadius: 12, borderWidth: 2, borderColor: c.placeholder, alignItems: 'center', justifyContent: 'center' },
+  radioDot: { width: 12, height: 12, borderRadius: 6, backgroundColor: c.ink },
+  label: { color: c.textLabel, fontSize: 15, fontWeight: '500', marginTop: 28, marginBottom: 10 },
+  takePhoto: { alignItems: 'center', justifyContent: 'center', height: 200, borderRadius: 20, borderWidth: 2, borderStyle: 'dashed', borderColor: c.border, backgroundColor: '#FAFAFA' },
+  takeIcon: { width: 56, height: 56, borderRadius: 28, backgroundColor: c.surface, alignItems: 'center', justifyContent: 'center' },
+  proofPhoto: { height: 200, borderRadius: 20, overflow: 'hidden', backgroundColor: c.soft },
+  photoChip: { position: 'absolute', left: 12, bottom: 12, flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 12, paddingVertical: 6, borderRadius: 999, backgroundColor: c.surface },
+  retake: { position: 'absolute', right: 12, bottom: 10, flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 16, paddingVertical: 10, borderRadius: 999, backgroundColor: c.ink },
+  sigHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 28, marginBottom: 10 },
+  signature: { height: 140, borderRadius: lr.field, borderWidth: 1, borderColor: c.border, backgroundColor: '#FAFAFA', alignItems: 'center', justifyContent: 'center' },
+  sigLine: { position: 'absolute', left: 20, right: 20, bottom: 28, height: 1, backgroundColor: c.border },
+  note: { minHeight: 96, borderRadius: lr.field, borderWidth: 1, borderColor: c.border, paddingHorizontal: 16, paddingVertical: 14, color: c.text, fontSize: 16 },
 });

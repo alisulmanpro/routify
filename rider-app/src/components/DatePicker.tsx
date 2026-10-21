@@ -3,12 +3,19 @@ import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { DARK_ON_PRIMARY } from './Premium';
 import { fromDayKey, toDayKey, todayKey } from '../lib/format';
-import { premium as c, premiumRadius as r } from '../lib/theme';
+import { light, premium as c, premiumRadius as r } from '../lib/theme';
 
 const WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
-/** A month calendar in plain JS (no native date picker, so it works on every build). Days before `min` can't be picked. */
-export default function DatePicker({ value, onChange, min = todayKey() }: { value: string; onChange: (key: string) => void; min?: string }) {
+/**
+ * A month calendar in plain JS (no native date picker, so it works on every build). Days before `min` can't be picked.
+ * `light` draws it for the light design_pref screens (Home); without it, it keeps the dark premium look.
+ */
+export default function DatePicker({ value, onChange, min = todayKey(), light: isLight = false }: { value: string; onChange: (key: string) => void; min?: string; light?: boolean }) {
+  const s = isLight ? lightStyles : darkStyles;
+  const t = isLight
+    ? { text: light.text, muted: light.placeholder, onSelected: light.onInk }
+    : { text: c.text, muted: c.textMuted, onSelected: DARK_ON_PRIMARY };
   const [month, setMonth] = useState(() => {
     const d = fromDayKey(value);
     return new Date(d.getFullYear(), d.getMonth(), 1);
@@ -30,11 +37,11 @@ export default function DatePicker({ value, onChange, min = todayKey() }: { valu
     <View style={s.box}>
       <View style={s.head}>
         <Pressable onPress={() => shift(-1)} disabled={!canGoBack} hitSlop={10} style={[s.arrow, !canGoBack && { opacity: 0.3 }]} accessibilityLabel="Previous month">
-          <Ionicons name="chevron-back" size={18} color={c.text} />
+          <Ionicons name="chevron-back" size={18} color={t.text} />
         </Pressable>
         <Text style={s.month}>{month.toLocaleDateString(undefined, { month: 'long', year: 'numeric' })}</Text>
         <Pressable onPress={() => shift(1)} hitSlop={10} style={s.arrow} accessibilityLabel="Next month">
-          <Ionicons name="chevron-forward" size={18} color={c.text} />
+          <Ionicons name="chevron-forward" size={18} color={t.text} />
         </Pressable>
       </View>
       <View style={s.grid}>
@@ -46,7 +53,7 @@ export default function DatePicker({ value, onChange, min = todayKey() }: { valu
           return (
             <Pressable key={key} onPress={() => onChange(key)} disabled={past} style={s.cell} accessibilityLabel={fromDayKey(key).toDateString()}>
               <View style={[s.day, key === today && s.today, on && s.dayOn]}>
-                <Text style={{ color: on ? DARK_ON_PRIMARY : past ? c.textMuted : c.text, fontWeight: on ? '800' : '600', fontSize: 13 }}>{Number(key.slice(8))}</Text>
+                <Text style={{ color: on ? t.onSelected : past ? t.muted : t.text, fontWeight: on ? '800' : '600', fontSize: 13 }}>{Number(key.slice(8))}</Text>
               </View>
             </Pressable>
           );
@@ -56,7 +63,7 @@ export default function DatePicker({ value, onChange, min = todayKey() }: { valu
   );
 }
 
-const s = StyleSheet.create({
+const darkStyles = StyleSheet.create({
   box: { marginTop: 10, padding: 12, borderRadius: r.medium, backgroundColor: c.surface, borderWidth: 1, borderColor: c.border },
   head: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 },
   arrow: { width: 32, height: 32, borderRadius: 16, alignItems: 'center', justifyContent: 'center', backgroundColor: c.surfaceSoft },
@@ -67,4 +74,14 @@ const s = StyleSheet.create({
   day: { width: 36, height: 36, borderRadius: 18, alignItems: 'center', justifyContent: 'center' },
   today: { borderWidth: 1, borderColor: c.primary },
   dayOn: { backgroundColor: c.primary, borderColor: c.primary },
+});
+
+const lightStyles = StyleSheet.create({
+  ...darkStyles,
+  box: { marginTop: 10, padding: 12, borderRadius: 16, backgroundColor: light.surface, borderWidth: 1, borderColor: light.border },
+  arrow: { width: 32, height: 32, borderRadius: 16, alignItems: 'center', justifyContent: 'center', backgroundColor: light.soft },
+  month: { color: light.text, fontWeight: '700', fontSize: 15 },
+  weekday: { color: light.textSecondary, fontSize: 11, fontWeight: '600', paddingVertical: 6 },
+  today: { borderWidth: 1, borderColor: light.link },
+  dayOn: { backgroundColor: light.ink, borderColor: light.ink },
 });

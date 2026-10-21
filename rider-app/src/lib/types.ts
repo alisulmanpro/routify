@@ -61,6 +61,8 @@ export type ReportRow = { id: string; date: string; summary: Record<string, numb
 
 /** A matching address for what the rider typed, from POST /deliveries/geocode-suggest. */
 export type AddressSuggestion = { label: string; latitude: number; longitude: number; approximate: boolean };
+/** POST /deliveries/geocode-check: the map's match for an address, without saving anything. */
+export type GeocodeCheck = { found: boolean; approximate: boolean; latitude: number | null; longitude: number | null; normalized: string | null; postalCode: string | null };
 
 export type ImportDraftItem = { trackingId: string; customerName: string; phone: string; address: string; note: string; flags: string[] };
 export type ImportDraft = { fileType: string; items: ImportDraftItem[] };

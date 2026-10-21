@@ -15,4 +15,12 @@ export const premium = {
   text: '#F7F8FC', textSecondary: '#AAB6CF', textMuted: '#71809D', border: '#23314B', divider: '#26344E',
 };
 export const premiumRadius = { small: 12, medium: 18, large: 24, xlarge: 30, pill: 999 };
-export const premiumShadow = { shadowColor: '#000', shadowOpacity: 0.25, shadowRadius: 18, shadowOffset: { width: 0, height: 8 }, elevation: 8 };
+// Light design system — used by the redesigned design_pref screens (auth, Home).
+export const light = {
+  background: '#FFFFFF', surface: '#FFFFFF', ink: '#18181B', onInk: '#FFFFFF',
+  text: '#18181B', textLabel: '#3F3F46', textSecondary: '#71717A', placeholder: '#A1A1AA',
+  border: '#E4E4E7', divider: '#D4D4D8', link: '#2563EB', accentDot: '#3B82F6', danger: '#DC2626', dangerBg: '#FEF2F2',
+  soft: '#F4F4F5', track: '#E4E4E7', success: '#16A34A', successBg: '#F0FDF4', linkBg: '#EFF6FF', warning: '#B45309', warningBg: '#FFFBEB',
+};
+export const lightRadius = { field: 14, button: 16, mark: 10 };
+export const premiumShadow ={ shadowColor: '#000', shadowOpacity: 0.25, shadowRadius: 18, shadowOffset: { width: 0, height: 8 }, elevation: 8 };
