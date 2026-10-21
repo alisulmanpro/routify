@@ -3,7 +3,7 @@ import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { KeyboardAwareScrollView } from '../components/KeyboardAware';
 import { useAuth } from '../lib/auth';
 import { ApiRequestError, get } from '../lib/api';
-import type { Currency, PublicConfig } from '../lib/types';
+import type { PublicConfig } from '../lib/types';
 import { StatusBar } from 'expo-status-bar';
 import { Screen } from '../components/Kit';
 import { GoogleButton, LightBrand, LightButton, LightDivider, LightError, LightField } from '../components/LightKit';
