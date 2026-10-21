@@ -446,3 +446,16 @@
 - None
 ### Notes
 - Owner's request. Completed routes no longer show as cards on Home (today's or the next day's). They are still in History, and their stops still count in "N / M delivered today" and the failed count.
+
+## Route preview: Edit stops opens Add stops (`rider-app/src/screens/RouteMapScreen.tsx`, `AddStops.tsx`, `App.tsx`), 2026-10-21
+### Missing in backend / API
+- Editing a started route's stops | a route that is underway can't be planned again (`ROUTE_ACTIVE`), so Edit stops only shows on planned routes
+### Missing functions / actions
+- None
+### Missing data / fields
+- None
+### Extra in app, not in design (kept)
+- None
+### Notes
+- Owner's request. Edit stops on a planned route's map opens Add stops (new `routeId` param) with that route's stops on the list, plus any unconfirmed stops for that day. The rider can add (type, scan, pin, import) or remove stops; "Review N stops" then plans the route again with exactly that list. The rebuilt route replaces the old one (its stops move over and the empty old route is removed, per the 2026-10-21 route fix).
+- Removing a stop there deletes it (pending stops only, as before) and takes it off the route.
