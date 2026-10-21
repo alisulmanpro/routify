@@ -1,10 +1,10 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { get, post, setAuthChangeHandler, setTokens, getTokens, ApiRequestError } from './api';
 import { forgetRider } from './revenuecat';
-import type { User, Currency } from './types';
+import type { User } from './types';
 
 type AuthState = { user: User | null; loading: boolean };
-type RegisterInput = { fullName: string; email: string; password: string; confirmPassword: string; currency: Currency };
+type RegisterInput = { fullName: string; email: string; password: string; confirmPassword: string };
 type AuthContextValue = AuthState & {
   login: (email: string, password: string) => Promise<void>;
   register: (input: RegisterInput) => Promise<void>;

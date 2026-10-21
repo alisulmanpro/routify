@@ -1,5 +1,6 @@
 import { useCallback, useState } from 'react';
 import { FlatList, Linking, Pressable, RefreshControl, StyleSheet, Text, TextInput, View } from 'react-native';
+import { iosNoAutofill } from '../lib/inputs';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useFocusEffect } from '../lib/useFocusEffect';
 import { get, post, fileUrl, ApiRequestError } from '../lib/api';
@@ -72,6 +73,7 @@ export default function Reports() {
                 <View style={s.dateBox}>
                   <MaterialCommunityIcons name="calendar-month-outline" size={18} color={c.primary} />
                   <TextInput
+                    {...iosNoAutofill()}
                     value={reportDate}
                     onChangeText={setReportDate}
                     placeholder="YYYY-MM-DD"

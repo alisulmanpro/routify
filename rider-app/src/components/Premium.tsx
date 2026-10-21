@@ -2,6 +2,7 @@ import type { ComponentProps, ReactNode } from 'react';
 import { ActivityIndicator, Pressable, StyleSheet, Text, TextInput, View, type TextInputProps, type TextStyle, type ViewStyle } from 'react-native';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useRevealOnFocus } from './KeyboardAware';
+import { iosNoAutofill } from '../lib/inputs';
 import { premium as c, premiumRadius as r, premiumShadow } from '../lib/theme';
 
 // Shared building blocks for screens on the premium navy + orange design system.
@@ -90,7 +91,7 @@ export function PInput({ icon, style, ...props }: TextInputProps & { icon?: IonN
     <View style={[s.input, style as ViewStyle]}>
       {icon ? <Ionicons name={icon} size={18} color={c.primary} /> : null}
       {/* Password fields must reach the API exactly as typed: no auto-capitalised first letter, no autocorrect. */}
-      <TextInput placeholderTextColor={c.textMuted} style={s.inputText}
+      <TextInput placeholderTextColor={c.textMuted} style={s.inputText} {...iosNoAutofill(props.secureTextEntry)}
         {...(props.secureTextEntry ? { autoCapitalize: 'none' as const, autoCorrect: false, spellCheck: false } : null)} {...props}
         onFocus={(e) => { reveal(); props.onFocus?.(e); }} />
     </View>

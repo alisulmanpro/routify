@@ -15,12 +15,6 @@ export default function Settings() {
 
   if (!settings) return <div className="loading-state">Loading settings…</div>;
 
-  const toggleCurrency = (c: Currency) => {
-    const has = settings.currencies.includes(c);
-    if (has && settings.currencies.length === 1) return;
-    setSettings({ ...settings, currencies: has ? settings.currencies.filter((x) => x !== c) : [...settings.currencies, c], defaultCurrency: has && settings.defaultCurrency === c ? settings.currencies.filter((x) => x !== c)[0] : settings.defaultCurrency });
-  };
-
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     setBusy(true);
@@ -48,15 +42,11 @@ export default function Settings() {
           <label className="field-label full-width">Payment instructions (shown to riders upgrading)<textarea className="input" rows={3} value={settings.platform.paymentInstructions} onChange={(e) => setSettings({ ...settings, platform: { ...settings.platform, paymentInstructions: e.target.value } })} /></label>
         </div>
 
-        <h3>Currencies</h3>
-        <div className="currency-toggles">
-          {ALL_CURRENCIES.map((c) => (
-            <label key={c} className="field-checkbox"><input type="checkbox" checked={settings.currencies.includes(c)} onChange={() => toggleCurrency(c)} /> {c}</label>
-          ))}
-        </div>
+        {/* Riders no longer pick a currency; this one is used for plan prices and new accounts. */}
+        <h3>Currency</h3>
         <label className="field-label">Default currency
           <select className="input" value={settings.defaultCurrency} onChange={(e) => setSettings({ ...settings, defaultCurrency: e.target.value as Currency })}>
-            {settings.currencies.map((c) => <option key={c} value={c}>{c}</option>)}
+            {ALL_CURRENCIES.map((c) => <option key={c} value={c}>{c}</option>)}
           </select>
         </label>
 

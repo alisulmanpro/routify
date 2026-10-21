@@ -1,15 +1,14 @@
-export type Currency = 'USD' | 'GBP' | 'EUR' | 'PKR' | 'INR';
 export type RoutePreference = 'smart' | 'nearest_first' | 'shortest';
 
 export type ServiceArea = { city: string; country: string | null; countryCode: string; latitude: number; longitude: number; source: 'gps' | 'manual'; confirmedAt: string | null };
 
 export type User = {
   id: string; fullName: string; phone: string; email: string; role: 'rider';
-  currency: Currency; routePreference: RoutePreference; notificationsEnabled: boolean; status: string;
+  routePreference: RoutePreference; notificationsEnabled: boolean; status: string;
   serviceArea: ServiceArea | null;
 };
 
-export type PublicConfig = { currencies: Currency[]; defaultCurrency: Currency; routePreference: RoutePreference; minPasswordLength: number; platformName: string; supportEmail: string; privacyUrl: string; paymentInstructions: string; trialDays: number };
+export type PublicConfig = { routePreference: RoutePreference; minPasswordLength: number; platformName: string; supportEmail: string; privacyUrl: string; paymentInstructions: string; trialDays: number };
 
 export type FailureReason = 'customer_unavailable' | 'customer_refused' | 'wrong_address' | 'phone_unreachable' | 'business_closed' | 'other';
 

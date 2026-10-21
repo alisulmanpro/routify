@@ -12,12 +12,12 @@ import { light as c } from '../lib/theme';
 export default function Register({ onGoLogin }: { onGoLogin: () => void }) {
   const { register } = useAuth();
   const [config, setConfig] = useState<PublicConfig | null>(null);
-  const [form, setForm] = useState({ fullName: '', email: '', password: '', confirmPassword: '', currency: 'USD' as Currency });
+  const [form, setForm] = useState({ fullName: '', email: '', password: '', confirmPassword: '' });
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const set = (key: keyof typeof form) => (value: string) => setForm((f) => ({ ...f, [key]: value }));
 
-  useEffect(() => { get<PublicConfig>('/config').then((res) => { setConfig(res.data); setForm((f) => ({ ...f, currency: res.data.defaultCurrency })); }).catch(() => {}); }, []);
+  useEffect(() => { get<PublicConfig>('/config').then((res) => setConfig(res.data)).catch(() => {}); }, []);
 
   const submit = async () => {
     if (form.password !== form.confirmPassword) { setError('Passwords do not match'); return; }
