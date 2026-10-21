@@ -31,7 +31,8 @@ const VoicePanel = loadVoicePanel();
 const SUGGEST_DELAY_MS = 350;
 
 // Step 2 of Add route: add stops as fast as possible. Each stop is saved straight away (for the route's day), so nothing is lost.
-export default function AddStops({ name, date }: { name: string; date: string }) {
+// With `routeId` (Edit stops on a planned route), that route's stops are on the list too, and Review plans it again.
+export default function AddStops({ name, date, routeId }: { name: string; date: string; routeId?: string }) {
   const { navigate, goBack } = useNav();
   const { user } = useAuth();
   const addressRef = useRef<TextInput>(null);
@@ -77,13 +78,13 @@ export default function AddStops({ name, date }: { name: string; date: string })
         all.push(...res.data);
         if (!res.meta || page >= res.meta.pages) break;
       }
-      setStops(all.filter((d) => !d.routeId).reverse());
+      setStops(all.filter((d) => !d.routeId || (routeId != null && d.routeId === routeId)).reverse());
     } catch (err) {
       setError(err instanceof ApiRequestError ? err.message : 'Could not load your stops');
     } finally {
       setLoading(false);
     }
-  }, [date]);
+  }, [date, routeId]);
   useFocusEffect(useCallback(() => { void load(); void getRouteOrigin().then(setOrigin); }, [load]));
 
   // Suggestions follow the typing, a moment after the rider pauses. They are hidden once a location is chosen.

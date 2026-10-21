@@ -355,9 +355,10 @@ export default function RouteMapScreen({ reveal = false, routeId }: { reveal?: b
         ) : route.status === 'active' && total ? (
           <LightButton title="Start navigation" icon={<Ionicons name="navigate-outline" size={22} color={c.onInk} />} onPress={() => navigate('LiveNavigation')} style={{ marginTop: 24 }} />
         ) : null}
-        {route.status !== 'completed' ? (
-          // Review stops for this route: its stops, their status, and the route type.
-          <Pressable onPress={() => navigate('RoutePreview', { routeId: route.id })} hitSlop={8} style={s.edit}>
+        {planned ? (
+          // Add stops with this route's stops on the list: add or remove, then Review plans the route again with them.
+          // A started route can't be planned again, so it has no Edit stops.
+          <Pressable onPress={() => navigate('AddStops', { name: route.name || 'Route', date: route.serviceDate, routeId: route.id })} hitSlop={8} style={s.edit}>
             <Text style={s.editText}>Edit stops</Text>
           </Pressable>
         ) : null}

@@ -56,7 +56,7 @@ function ScreenRouter() {
     case 'NewRoute': return <NewRoute initialDate={current.params?.date as string | undefined} />;
     // The old route detail screen is replaced by Review stops for that route.
     case 'RouteDetail': return <RoutePreview routeId={current.params!.id as string} />;
-    case 'AddStops': return <AddStops name={current.params!.name as string} date={current.params!.date as string} />;
+    case 'AddStops': return <AddStops name={current.params!.name as string} date={current.params!.date as string} routeId={current.params?.routeId as string | undefined} />;
     case 'RoutePreview': return <RoutePreview name={current.params?.name as string | undefined} date={current.params?.date as string | undefined} ids={current.params?.ids as string[] | undefined} routeId={current.params?.routeId as string | undefined} />;
     case 'LiveNavigation': return <LiveNavigation />;
     case 'DeliveryDetail': return <DeliveryDetail id={current.params!.id as string} initialStep={current.params?.step as 'proof' | 'fail' | undefined} onDone={() => { goBack(); refresh(); }} />;

@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Linking, Modal, Platform, Pressable, StyleSheet, Text, Vibration, View } from 'react-native';
-import { Camera, useCameraDevice, useCameraPermission, useFrameOutput, type Frame } from 'react-native-vision-camera';
+import { Camera, useCameraDevice, useCameraPermission, useFrameOutput, type CameraDevice, type CameraOutput, type Frame, type TorchMode } from 'react-native-vision-camera';
 import { useTextRecognition, type TextRecognitionOptions } from 'react-native-vision-camera-ocr-plus';
 import { createSynchronizable, scheduleOnRN } from 'react-native-worklets';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
@@ -27,6 +27,35 @@ const HELP_AFTER_MS = 6000;
 // The green "locked" box shows this long before the camera closes.
 const LOCKED_MS = 350;
 
+// Torch calls that the camera cancels because it stopped or was set up again ("Camera is not active", "There is a
+// new enableTorch being set") are harmless: the next state wins. Logged once in dev, never shown as an error.
+let canceledLogged = false;
+const isCanceled = (err: Error) => /OperationCanceled|not active|new enableTorch/i.test(`${err.name} ${err.message}`);
+let configures = 0;
+
+/**
+ * The camera alone, memoised: its props are all stable, so the scan status, hints and the green box re-render only the
+ * overlay, never the camera, and the session is configured once per open (not on every state change).
+ */
+const ScanCamera = memo(function ScanCamera({ device, outputs, torchMode, onStarted, onStopped }: {
+  device: CameraDevice; outputs: CameraOutput[]; torchMode: TorchMode | undefined; onStarted: () => void; onStopped: () => void;
+}) {
+  const onError = useCallback((err: Error) => {
+    if (isCanceled(err)) {
+      if (__DEV__ && !canceledLogged) { canceledLogged = true; console.log('[scanner] ignored a canceled camera call:', err.message); }
+      return;
+    }
+    if (__DEV__) console.warn('[scanner] camera error', err);
+  }, []);
+  // Dev only: should print 1 per scanner open.
+  const onConfigured = useCallback(() => { if (__DEV__) console.log(`[scanner] session configured (${++configures})`); }, []);
+  return (
+    <Camera style={StyleSheet.absoluteFill} device={device} isActive outputs={outputs} torchMode={torchMode}
+      onStarted={onStarted} onStopped={onStopped} onError={onError} onConfigured={onConfigured}
+      resizeMode="cover" enableNativeTapToFocusGesture />
+  );
+});
+
 type Props = {
   visible: boolean;
   /** A steady Eircode, "R93 Y201". */
@@ -52,6 +81,10 @@ function ScannerBody({ onEircode, onTypeInstead, onClose }: Omit<Props, 'visible
   const device = useCameraDevice('back');
   const { hasPermission, canRequestPermission, requestPermission, status } = useCameraPermission();
   const [torch, setTorch] = useState(false);
+  // The torch is only sent to a running camera; before it starts (and after it stops) nothing is sent.
+  const [started, setStarted] = useState(false);
+  const onStarted = useCallback(() => setStarted(true), []);
+  const onStopped = useCallback(() => setStarted(false), []);
   const [locked, setLocked] = useState<string | null>(null);
   const [ambiguous, setAmbiguous] = useState<string[]>([]);
   const [help, setHelp] = useState(false);
@@ -68,18 +101,25 @@ function ScannerBody({ onEircode, onTypeInstead, onClose }: Omit<Props, 'visible
     return () => clearTimeout(timer);
   }, []);
 
+  // The parent's callback changes on every render; keeping it in a ref keeps onRead (and so the frame processor and
+  // the camera's outputs) the same for the whole scan.
+  const onEircodeRef = useRef(onEircode);
+  useEffect(() => { onEircodeRef.current = onEircode; }, [onEircode]);
+
   // Runs on the JS thread for each new read (a few times a second): pull out Eircodes and vote.
   const onRead = useCallback((text: string) => {
     if (done.current) return;
     const result = vote.push(eircodesInText(text));
-    if (result.kind === 'ambiguous') { setAmbiguous(result.eircodes); return; }
-    setAmbiguous([]);
+    if (result.kind === 'ambiguous') { setAmbiguous((prev) => (prev.join() === result.eircodes.join() ? prev : result.eircodes)); return; }
+    setAmbiguous((prev) => (prev.length ? [] : prev));
     if (result.kind !== 'locked') return;
+    // Locked: reads stop here (done), the torch goes off while the camera is still running, then the scanner closes.
     done.current = true;
+    setTorch(false);
     setLocked(result.eircode);
     Vibration.vibrate(40);
-    setTimeout(() => onEircode(result.eircode), LOCKED_MS);
-  }, [vote, onEircode]);
+    setTimeout(() => onEircodeRef.current(result.eircode), LOCKED_MS);
+  }, [vote]);
 
   const { scanText } = useTextRecognition(OCR);
   const last = useMemo(() => createSynchronizable({ key: '', at: 0 }), []);
@@ -104,6 +144,9 @@ function ScannerBody({ onEircode, onTypeInstead, onClose }: Omit<Props, 'visible
     dropFramesWhileBusy: true,
     onFrame,
   });
+  // A new array here would make the camera set up its session again.
+  const outputs = useMemo(() => [frameOutput], [frameOutput]);
+  const torchMode: TorchMode | undefined = started ? (torch ? 'on' : 'off') : undefined;
 
   // White while looking: it stands out on any camera image. Green once an Eircode is locked, amber when unsure.
   const boxColor = locked ? c.success : ambiguous.length ? c.warning : '#FFFFFF';
@@ -131,8 +174,7 @@ function ScannerBody({ onEircode, onTypeInstead, onClose }: Omit<Props, 'visible
       ) : !device ? (
         <View style={[StyleSheet.absoluteFill, s.center]}><Text style={{ color: c.textSecondary }}>No camera found on this phone.</Text></View>
       ) : (
-        <Camera style={StyleSheet.absoluteFill} device={device} isActive={!locked} outputs={[frameOutput]} torchMode={torch ? 'on' : 'off'}
-          resizeMode="cover" enableNativeTapToFocusGesture />
+        <ScanCamera device={device} outputs={outputs} torchMode={torchMode} onStarted={onStarted} onStopped={onStopped} />
       )}
 
       {hasPermission ? (
@@ -147,7 +189,7 @@ function ScannerBody({ onEircode, onTypeInstead, onClose }: Omit<Props, 'visible
       <View style={[s.top, { paddingTop: Platform.OS === 'ios' ? 54 : 18 }]}>
         <Text style={s.title}>Scan Eircode</Text>
         {hasPermission && device?.hasTorch ? (
-          <Pressable onPress={() => setTorch((t) => !t)} hitSlop={8} style={s.round} accessibilityLabel={torch ? 'Torch off' : 'Torch on'}>
+          <Pressable onPress={() => setTorch((t) => !t)} disabled={!started || !!locked} hitSlop={8} style={[s.round, (!started || !!locked) && { opacity: 0.5 }]} accessibilityLabel={torch ? 'Torch off' : 'Torch on'}>
             <Ionicons name={torch ? 'flash' : 'flash-outline'} size={18} color={torch ? '#FFE27A' : '#fff'} />
           </Pressable>
         ) : null}
