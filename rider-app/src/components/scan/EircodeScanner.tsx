@@ -26,6 +26,10 @@ const REPEAT_MS = 400;
 const HELP_AFTER_MS = 6000;
 // The green "locked" box shows this long before the camera closes.
 const LOCKED_MS = 350;
+// Frame output settings must be constants: useFrameOutput creates a new output (and the camera sets up its session
+// again) whenever one of them is a new object, which an inline `{ width, height }` is on every render.
+const FRAME_RESOLUTION = { width: 1280, height: 720 };
+const PIXEL_FORMAT = Platform.OS === 'android' ? 'rgb' : 'yuv';
 
 // Torch calls that the camera cancels because it stopped or was set up again ("Camera is not active", "There is a
 // new enableTorch being set") are harmless: the next state wins. Logged once in dev, never shown as an error.
@@ -139,8 +143,8 @@ function ScannerBody({ onEircode, onTypeInstead, onClose }: Omit<Props, 'visible
   }, [scanText, last, onRead]);
   const frameOutput = useFrameOutput({
     // ML Kit on Android needs RGB frames; a 720p frame is plenty for one line of print and keeps each read fast.
-    pixelFormat: Platform.OS === 'android' ? 'rgb' : 'yuv',
-    targetResolution: { width: 1280, height: 720 },
+    pixelFormat: PIXEL_FORMAT,
+    targetResolution: FRAME_RESOLUTION,
     dropFramesWhileBusy: true,
     onFrame,
   });
