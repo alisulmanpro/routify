@@ -5,7 +5,6 @@ from typing import Annotated, Literal, Optional
 
 from fastapi import APIRouter, Request
 from pydantic import Field, StringConstraints, model_validator
-from starlette.responses import FileResponse
 
 from ..auth import authenticate
 from ..errors import not_found
@@ -42,9 +41,7 @@ async def get_file(request: Request, kind: str, name: str):
     disposition = q.get("d")
     if not verify_file_signature(key, q.get("exp"), disposition, q.get("sig")):
         raise not_found("File")
-    full = storage.resolve_key(key)
-    info = storage.stat(key)
-    return FileResponse(full, media_type=storage.content_type_for(key), stat_result=info, headers={
+    return await storage.file_response(key, disposition, name, {
         "Content-Disposition": f'{disposition}; filename="{name}"',
         "Cache-Control": "private, max-age=300", "X-Content-Type-Options": "nosniff", "Cross-Origin-Resource-Policy": "cross-origin",
     })

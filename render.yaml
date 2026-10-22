@@ -43,6 +43,18 @@ services:
       - key: CORS_ORIGINS
         value: http://localhost:5173
 
+      # Files in Cloudflare R2 (S3-compatible). Copy existing files first: python -m scripts.migrate_files_to_s3.
+      - key: S3_ENDPOINT              # https://<account-id>.r2.cloudflarestorage.com
+        sync: false
+      - key: S3_BUCKET
+        sync: false
+      - key: S3_ACCESS_KEY_ID
+        sync: false
+      - key: S3_SECRET_ACCESS_KEY
+        sync: false
+      - key: S3_REGION
+        value: auto
+
       # Rider app versions (GET /config): below MIN the app must update; below LATEST it suggests updating.
       - key: MIN_APP_VERSION
         value: "1.0.0"
