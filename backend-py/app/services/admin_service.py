@@ -4,6 +4,7 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from ..auth import invalidate_user
 from ..db import db
 from ..errors import conflict, not_found
 from ..http import js_round, now, page_meta, paginate, round2, today_key
@@ -166,6 +167,7 @@ async def update_rider(rider_id: str, patch: dict) -> dict:
     if not user:
         raise not_found("Rider")
     user = await db.user.update(where={"id": user.id}, data=patch)
+    invalidate_user(user.id)
     if patch.get("status") == "suspended":
         await db.refreshtoken.update_many(where={"userId": user.id, "revokedAt": None}, data={"revokedAt": now()})
     return serialize_user(user)

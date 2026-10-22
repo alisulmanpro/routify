@@ -9,6 +9,7 @@ from typing import Any
 
 from prisma.errors import UniqueViolationError
 
+from ..auth import invalidate_user
 from ..background import spawn
 from ..config import env
 from ..db import db
@@ -249,6 +250,7 @@ async def update_profile(user_id: str, patch: dict) -> dict:
                 raise validation_error([{"path": "city", "message": 'We could not find that city. Try adding the country, e.g. "Lahore, Pakistan".'}])
             data.update(area_columns(area, "manual"))
     user = await db.user.update(where={"id": user_id}, data=data) if data else await db.user.find_unique(where={"id": user_id})
+    invalidate_user(user_id)
     return serialize_user(user)
 
 
@@ -277,6 +279,7 @@ async def change_password(user_id: str, current_password: str, new_password: str
         raise unprocessable("Current password is incorrect", "INVALID_CREDENTIALS")
     await db.refreshtoken.update_many(where={"userId": user.id, "revokedAt": None}, data={"revokedAt": now()})
     user = await db.user.update(where={"id": user.id}, data={"passwordHash": await hash_password(new_password), "tokenVersion": {"increment": 1}})
+    invalidate_user(user.id)
     await _notify_password_changed(user)
     return {"changed": True, **await _issue_tokens(user, user_agent=ctx.get("userAgent"))}
 
@@ -359,6 +362,7 @@ async def reset_password(email: str, code: str, new_password: str, ctx: dict) ->
     user = await db.user.update(where={"id": user.id}, data={
         "passwordHash": await hash_password(new_password), "tokenVersion": {"increment": 1}, "failedLoginCount": 0, "lockedUntil": None,
     })
+    invalidate_user(user.id)
     await audit({"id": user.id, "email": user.email}, "auth.password_reset", ip=ctx.get("ip"))
     await _notify_password_changed(user)
     return {"reset": True}

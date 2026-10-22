@@ -331,6 +331,41 @@ async def test_suspension_kills_access_and_refresh_immediately(client):
     assert (await client.patch(f"/api/v1/admin/riders/{admin_row.id}", headers=admin_auth, json={"status": "suspended"})).status_code == 404
 
 
+async def test_cached_account_skips_lookups_but_changes_apply_at_once(client, monkeypatch):
+    from app import auth as auth_module
+
+    body, auth = await rider(client, "cached-account@example.com")
+    admin_auth, _ = await make_admin(client, "cache-admin@example.com")
+    client.cookies.clear()
+    assert (await client.get("/api/v1/auth/me", headers=auth)).status_code == 200
+
+    lookups = []
+    actions = type(auth_module.db.user)
+    find_unique = actions.find_unique
+
+    async def counting_find_unique(self, *args, **kwargs):
+        lookups.append(kwargs.get("where"))
+        return await find_unique(self, *args, **kwargs)
+
+    monkeypatch.setattr(actions, "find_unique", counting_find_unique)
+    for _ in range(3):
+        assert (await client.get("/api/v1/auth/me", headers=auth)).status_code == 200
+    # Only /auth/me's own profile read is left: authenticate() answered from the cache (it was 2 lookups per request).
+    assert len([w for w in lookups if w == {"id": body["user"]["id"]}]) == 3
+
+    # A password change revokes old tokens straight away, even though the account was cached.
+    changed = await client.post("/api/v1/auth/change-password", headers=auth,
+                                json={"currentPassword": PASSWORD, "newPassword": PASSWORD + "x", "confirmPassword": PASSWORD + "x"})
+    assert changed.status_code == 200, changed.text
+    assert (await client.get("/api/v1/auth/me", headers=auth)).json()["error"]["code"] == "TOKEN_REVOKED"
+    fresh = {"Authorization": f"Bearer {changed.json()['data']['accessToken']}"}
+    assert (await client.get("/api/v1/auth/me", headers=fresh)).status_code == 200
+
+    # So does a suspension.
+    assert (await client.patch(f"/api/v1/admin/riders/{body['user']['id']}", headers=admin_auth, json={"status": "suspended"})).status_code == 200
+    assert (await client.get("/api/v1/auth/me", headers=fresh)).status_code == 403
+
+
 # ---------------------------------------------------------------- refresh tokens / cookies / CSRF
 
 async def test_refresh_token_edge_cases(client):
