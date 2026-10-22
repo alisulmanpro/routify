@@ -245,9 +245,10 @@ async def deliver(actor: dict, delivery_id: str, note: Optional[str] = None, all
         raise conflict("Mark the delivery as Arrived first", "INVALID_STATE")
 
     if delivery.routeId and delivery.stopOrder is not None and not allow_skip:
+        # One row is enough to refuse; the app only reads the error code (details list the first open stop).
         earlier = await db.delivery.find_many(
             where={"routeId": delivery.routeId, "stopOrder": {"lt": delivery.stopOrder}, "status": {"in": ["pending", "in_progress"]}},
-            order={"stopOrder": "asc"},
+            order={"stopOrder": "asc"}, take=1,
         )
         if earlier:
             raise conflict("Earlier deliveries are still open", "EARLIER_STOPS_REMAIN",
