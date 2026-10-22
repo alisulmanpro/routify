@@ -7,7 +7,7 @@ from pydantic import Field, StringConstraints, model_validator
 
 from ..auth import authenticate
 from ..http import respond
-from ..middleware import geocode_limiter, limit, suggest_limiter, upload_limiter
+from ..middleware import geocode_daily_limiter, geocode_limiter, limit, limit_rider, suggest_daily_limiter, suggest_limiter, upload_limiter
 from ..services import delivery_service as deliveries
 from ..services import geocoding_service as geocoding
 from ..services.file_import import build_draft_from_file
@@ -149,6 +149,7 @@ async def geocode_check(request: Request):
     """Looks an address up on the map without saving anything (used by the camera before adding a stop)."""
     actor = await authenticate(request, "rider")
     await limit(request, geocode_limiter)
+    await limit_rider(actor, geocode_daily_limiter)
     body = (await validate(request, body=GeocodeCheckBody))["body"]
     origin = {"latitude": body.latitude, "longitude": body.longitude} if body.latitude is not None and body.longitude is not None else None
     area = await service_area_for(actor, origin)
@@ -164,6 +165,7 @@ async def geocode_suggest(request: Request):
     """Up to 5 matching addresses for what the rider is typing (street, place name or postcode), nearest their city first."""
     actor = await authenticate(request, "rider")
     await limit(request, suggest_limiter)
+    await limit_rider(actor, suggest_daily_limiter)
     body = (await validate(request, body=SuggestBody))["body"]
     origin = {"latitude": body.latitude, "longitude": body.longitude} if body.latitude is not None and body.longitude is not None else None
     area = await service_area_for(actor, origin)
@@ -173,8 +175,9 @@ async def geocode_suggest(request: Request):
 @router.post("/geocode-reverse")
 async def geocode_reverse(request: Request):
     """The street address at a pin the rider dropped on the map (null when none is known)."""
-    await authenticate(request, "rider")
+    actor = await authenticate(request, "rider")
     await limit(request, geocode_limiter)
+    await limit_rider(actor, geocode_daily_limiter)
     body = (await validate(request, body=Coordinates))["body"]
     return respond({"address": await geocoding.reverse_geocode(body.latitude, body.longitude)})
 

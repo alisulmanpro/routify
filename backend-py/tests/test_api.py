@@ -502,21 +502,21 @@ async def test_an_eircode_alone_gets_its_street_and_postal_code(client):
             return {"latitude": 53.3494, "longitude": -6.2603, "normalized": "Dublin 1, D01 F5P2", "approximate": True} if code == "D01 F5P2" else None
 
         async def street(latitude, longitude):
-            return "General Post Office, O'Connell Street Lower, Dublin 1, D01 F5P2, Ireland"
+            raise AssertionError("P5.3: an Eircode costs one forward lookup, no reverse geocode")
         geocoding_service.set_eircode_geocoder_for_tests(by_code)
         original_reverse = geocoding_service.reverse_geocode
         geocoding_service.reverse_geocode = street
 
         check = (await client.post("/api/v1/deliveries/geocode-check", headers=auth, json={"address": "D01 F5P2"})).json()["data"]
         assert check["found"] and check["approximate"] and check["postalCode"] == "D01 F5P2"
-        assert check["normalized"].startswith("General Post Office")
+        assert check["normalized"] == "Dublin 1, D01 F5P2"  # the code's own address (no reverse lookup for a street since P5.3)
 
         location = {"latitude": check["latitude"], "longitude": check["longitude"]}
         made = await client.post("/api/v1/deliveries/manual", headers=auth, json={"address": {"raw": "d01f5p2"}, "location": location})
         assert made.status_code == 201, made.text
         address = made.json()["data"]["address"]
         assert address["raw"] == "D01 F5P2" and address["postalCode"] == "D01 F5P2"
-        assert address["normalized"].startswith("General Post Office") and address["geocodeStatus"] == "approximate"
+        assert address["normalized"] == "Dublin 1, D01 F5P2" and address["geocodeStatus"] == "approximate"
         assert address["approximate"] is True and address["geocoded"] is True
 
         # A place name keeps the street the map found for it; a plain street address has no postcode.

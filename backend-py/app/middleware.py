@@ -235,6 +235,17 @@ upload_limiter = RateLimiter("upload", 15 * 60, 120)
 geocode_limiter = RateLimiter("geocode", 15 * 60, 200, "Too many address checks. Wait a moment and try again.", store="memory")
 # Suggestions are requested while the rider types, so they get a bigger allowance than full lookups.
 suggest_limiter = RateLimiter("geocode-suggest", 15 * 60, 1500, "Too many address searches. Wait a moment and try again.", store="memory")
+# Per rider per day (P5.5), shared by every worker (database): caps what one account (or a stuck app loop) can spend on
+# Google. Address lookups (check, pin, picked suggestion) and suggestions while typing are counted separately.
+DAY = 24 * 60 * 60
+geocode_daily_limiter = RateLimiter("geocode-day", DAY, 600, "You have reached today's limit of address lookups. It resets within 24 hours.")
+suggest_daily_limiter = RateLimiter("suggest-day", DAY, 4000, "You have reached today's limit of address searches. It resets within 24 hours.")
+
+
+async def limit_rider(actor: dict, limiter: RateLimiter) -> None:
+    await limiter.check(actor["id"])
+
+
 # Registration has to say when an email is taken (it signs the rider straight in), so cap how often one IP can learn that.
 email_taken_limiter = RateLimiter("email-taken", 60 * 60, 5, "Too many sign-up attempts. Please try again later or sign in instead.")
 # Keyed by the email address, not the IP: caps the codes one inbox can receive.

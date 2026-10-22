@@ -16,6 +16,7 @@ import httpx
 
 from ..config import env
 from ..logger import log
+from . import google_usage
 
 TIMEOUT = 10.0
 # The demo server accepts up to 100 coordinates per table request; stay well below it.
@@ -38,6 +39,7 @@ def _travel_mode() -> dict:
 
 async def _google_block(client: httpx.AsyncClient, points: list[dict], rows: list[int], cols: list[int],
                         durations: list[list], distances: list[list]) -> None:
+    await google_usage.record("routes_matrix")
     res = await client.post(
         GOOGLE_MATRIX_URL,
         json={"origins": [_waypoint(points[i]) for i in rows], "destinations": [_waypoint(points[j]) for j in cols],

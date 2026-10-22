@@ -9,6 +9,7 @@ from ..auth import authenticate
 from ..http import ApiJSONResponse, respond
 from ..services import admin_service as admin
 from ..services import delivery_service as deliveries
+from ..services import google_usage
 from ..services import payment_service as payments
 from ..services.audit_service import audit
 from ..services.settings_service import get_settings, update_settings
@@ -57,6 +58,21 @@ async def overview(request: Request):
     return respond(await admin.overview(query.days or 7))
 
 
+class GoogleUsageQuery(Schema):
+    # Inclusive days (YYYY-MM-DD); one rider's calls when riderId is given.
+    date_from: DateKey = Field(alias="from")
+    to: DateKey
+    riderId: ObjectId | None = None
+
+
+@router.get("/google-usage")
+async def google_usage_report(request: Request):
+    """Google Maps Platform calls per day, API and rider (P5.6)."""
+    await _admin(request)
+    query = (await validate(request, query=GoogleUsageQuery))["query"]
+    return respond(await google_usage.usage(query.date_from, query.to, query.riderId))
+
+
 # Riders: every rider is an independent account that signs up, subscribes and runs their own deliveries.
 class RidersQuery(Pagination):
     search: Search = None
@@ -92,7 +108,7 @@ class DeliveriesQuery(Pagination):
     search: Search = None
     date: Optional[DateKey] = None
     status: Optional[Literal["pending", "in_progress", "delivered", "failed"]] = None
-    riderId: Optional[ObjectId] = None
+    riderId: ObjectId | None = None
 
 
 @router.get("/deliveries")
@@ -116,7 +132,7 @@ class ReportsQuery(Pagination):
     dateFrom: Optional[DateKey] = None
     dateTo: Optional[DateKey] = None
     search: Search = None
-    riderId: Optional[ObjectId] = None
+    riderId: ObjectId | None = None
 
 
 @router.get("/reports")
@@ -198,7 +214,7 @@ async def update_plan(request: Request):
 class PaymentsQuery(Pagination):
     search: Search = None
     status: Optional[Literal["pending", "succeeded", "failed", "refunded"]] = None
-    riderId: Optional[ObjectId] = None
+    riderId: ObjectId | None = None
 
 
 class PaymentBody(Schema):

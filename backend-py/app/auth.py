@@ -11,6 +11,7 @@ from .errors import forbidden, unauthorized
 from .http import now
 from .ids import is_object_id
 from .security import verify_access_token
+from .services.google_usage import current_rider
 
 TOUCH_INTERVAL = timedelta(minutes=5)
 _background: set[asyncio.Task] = set()
@@ -69,6 +70,8 @@ async def authenticate(request: Request, *roles: str) -> dict:
 
     actor = {"id": user["id"], "role": user["role"], "email": user["email"], "fullName": user["fullName"]}
     request.state.user = actor
+    # Google calls made for this request are counted against this rider (P5.6).
+    current_rider.set(user["id"])
 
     if not user["lastActiveAt"] or now() - user["lastActiveAt"] > TOUCH_INTERVAL:
         user["lastActiveAt"] = now()  # the cached copy too, so the next requests do not touch again

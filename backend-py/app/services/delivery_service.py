@@ -43,9 +43,9 @@ async def _to_row(actor: dict, item: dict) -> dict:
     if location := item.get("location"):
         row.update(addressLatitude=location["latitude"], addressLongitude=location["longitude"], addressNormalized=normalized,
                    addressGeocoded=True, geocodeStatus="found")
-        # Only an Eircode: show the street at that point, and say when the provider's match is not a rooftop one.
+        # Only an Eircode: show the provider's address for it, and say when its match is not a rooftop one.
         # The lookup was just made by geocode-check, so this is normally a cache hit.
-        if is_only_eircode(raw) and (hit := await geocode_eircode(row["postalCode"], street=True)):
+        if is_only_eircode(raw) and (hit := await geocode_eircode(row["postalCode"])):
             row["addressNormalized"] = hit.get("normalized") or normalized
             if hit.get("approximate"):
                 row.update(addressApproximate=True, geocodeStatus="approximate")

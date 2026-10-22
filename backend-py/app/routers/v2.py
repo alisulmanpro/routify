@@ -10,9 +10,11 @@ from starlette.responses import Response
 
 from ..auth import authenticate
 from ..http import respond, today_key
-from ..middleware import limit, upload_limiter
+from ..middleware import geocode_daily_limiter, geocode_limiter, limit, limit_rider, suggest_daily_limiter, suggest_limiter, upload_limiter
+from ..services import geocoding_service as geocoding
 from ..services import idempotency_service as idempotency
 from ..services import v2_service as v2
+from ..services.route_service import service_area_for
 from ..uploads import PHOTO, receive
 from ..validation import DateKey, IdParams, ObjectId, Schema, validate
 from .deliveries import DeliveryInput, Text
@@ -133,3 +135,49 @@ async def upload_proof(request: Request):
         return 200, {"success": True, "data": await v2.upload_proof(actor, stop_id, photo)}
 
     return await idempotency.run(request, actor, "POST /v2/uploads/proof", idempotency.request_hash(stop_id, photo.data if photo else b""), action)
+
+
+# ---------- Address search: Places Autocomplete (New) + Place Details, one billing session per address (P5.1) ----------
+
+# A UUID the app makes when the rider starts typing an address, sent with every keystroke's request and with the pick.
+SessionToken = Annotated[str, Field(pattern=r"^[A-Za-z0-9_-]{8,64}$")]
+
+
+class AutocompleteBody(Schema):
+    input: Annotated[str, Field(min_length=1, max_length=200)]
+    sessionToken: SessionToken
+    # Where the rider is (riders without a saved city still get nearby results first).
+    latitude: Annotated[float, Field(ge=-90, le=90)] | None = None
+    longitude: Annotated[float, Field(ge=-180, le=180)] | None = None
+
+
+@router.post("/places/autocomplete")
+async def places_autocomplete(request: Request):
+    """Up to 5 suggestions for what the rider is typing: {placeId, label, latitude, longitude, approximate}. With Google
+    the point is not included (placeId set): POST /v2/places/details with the same sessionToken when the rider picks."""
+    actor = await authenticate(request, "rider")
+    await limit(request, suggest_limiter)
+    await limit_rider(actor, suggest_daily_limiter)
+    body = (await validate(request, body=AutocompleteBody))["body"]
+    near = {"latitude": body.latitude, "longitude": body.longitude} if body.latitude is not None and body.longitude is not None else None
+    area = await service_area_for(actor, near)
+    return respond({"suggestions": await geocoding.autocomplete(body.input.strip(), session_token=body.sessionToken, area=area, near=near)})
+
+
+class DetailsBody(Schema):
+    placeId: Annotated[str, Field(min_length=1, max_length=300, pattern=r"^[A-Za-z0-9_-]+$")]
+    sessionToken: SessionToken | None = None
+
+
+@router.post("/places/details")
+async def places_details(request: Request):
+    """The point of a picked suggestion (ends the billing session): {found, latitude, longitude, normalized, postalCode, approximate}."""
+    actor = await authenticate(request, "rider")
+    await limit(request, geocode_limiter)
+    await limit_rider(actor, geocode_daily_limiter)
+    body = (await validate(request, body=DetailsBody))["body"]
+    hit = await geocoding.place_details(body.placeId, session_token=body.sessionToken, area=await service_area_for(actor, None))
+    if not hit:
+        return respond({"found": False, "latitude": None, "longitude": None, "normalized": None, "postalCode": None, "approximate": False})
+    return respond({"found": True, "latitude": hit["latitude"], "longitude": hit["longitude"], "normalized": hit.get("normalized"),
+                    "postalCode": hit.get("postalCode"), "approximate": bool(hit.get("approximate"))})

@@ -15,6 +15,7 @@ from ..db import db
 from ..errors import AppError
 from ..http import now
 from ..logger import log
+from . import google_usage
 from .geo import normalize_address
 
 TIMEOUT = 8.0
@@ -158,6 +159,7 @@ async def _provider_nominatim(address: str, area: Any) -> Optional[dict]:
 
 async def google_geocode(params: dict) -> list[dict]:
     """Calls the Google Geocoding API (forward or reverse). Returns its results; [] when nothing matched."""
+    await google_usage.record("geocoding_reverse" if "latlng" in params else "geocoding")
     async with httpx.AsyncClient(timeout=TIMEOUT) as client:
         res = await client.get("https://maps.googleapis.com/maps/api/geocode/json", params={**params, "key": env.GOOGLE_MAPS_API_KEY})
     if res.status_code >= 400:
@@ -221,6 +223,7 @@ async def google_places(query: str, area: Any, *, limit: int) -> list[dict]:
     body = {"textQuery": query, "pageSize": limit,
             "locationRestriction": {"rectangle": {"low": {"latitude": min_lat, "longitude": min_lon}, "high": {"latitude": max_lat, "longitude": max_lon}}}}
     headers = {"X-Goog-Api-Key": env.GOOGLE_MAPS_API_KEY, "X-Goog-FieldMask": "places.displayName,places.formattedAddress,places.location"}
+    await google_usage.record("places_text_search")
     async with httpx.AsyncClient(timeout=TIMEOUT) as client:
         res = await client.post("https://places.googleapis.com/v1/places:searchText", json=body, headers=headers)
     if res.status_code >= 400:
@@ -320,12 +323,12 @@ def set_eircode_geocoder_for_tests(fn=None) -> None:
     _eircode_lookup = fn or EIRCODE_PROVIDERS["none" if env.is_test else env.GEOCODING_PROVIDER]
 
 
-async def geocode_eircode(code: str, *, street: bool = False) -> Optional[dict]:
+async def geocode_eircode(code: str) -> Optional[dict]:
     """{latitude, longitude, normalized, approximate, postalCode, eircode=True} for an Eircode match, else None (never raises).
-    With `street` (the rider typed only the Eircode), `normalized` is the street address at that point, from a reverse
-    lookup with the same provider, since a forward match is often just "Dublin 1, D01 F5P2"."""
-    # v4: full Google Eircode matches are no longer flagged approximate; older cached flags are looked up again.
-    key = hashlib.sha1(f"v4|eircode{'-street' if street else ''}|{code}".encode()).hexdigest()
+    One forward lookup only (P5.3): no reverse geocode for a street name, so a scanned Eircode costs one call (and none
+    while it is cached). `normalized` is the provider's own address for the code (e.g. "Dublin 1, D01 F5P2")."""
+    # v5: one lookup per code (the "-street" variants with a reverse lookup are gone).
+    key = hashlib.sha1(f"v5|eircode|{code}".encode()).hexdigest()
     cached = await db.geocodecache.find_unique(where={"key": key})
     if cached and cached.expiresAt > now() and cached.found:
         return {"latitude": cached.latitude, "longitude": cached.longitude, "normalized": cached.normalized,
@@ -337,10 +340,8 @@ async def geocode_eircode(code: str, *, street: bool = False) -> Optional[dict]:
         return None
     if not result:
         return None
-    if street:
-        result = {**result, "normalized": await reverse_geocode(result["latitude"], result["longitude"]) or result.get("normalized")}
     data = {"found": True, "latitude": result["latitude"], "longitude": result["longitude"], "normalized": result.get("normalized"),
-            "approximate": bool(result.get("approximate")), "provider": env.GEOCODING_PROVIDER, "expiresAt": now() + timedelta(days=180)}
+            "approximate": bool(result.get("approximate")), "provider": env.GEOCODING_PROVIDER, "expiresAt": now() + timedelta(days=FOUND_CACHE_DAYS)}
     try:
         await db.geocodecache.upsert(where={"key": key}, data={"create": {"key": key, **data}, "update": data})
     except Exception:  # noqa: BLE001
@@ -360,6 +361,11 @@ def cache_key(raw: str, area: Any) -> str:
 
 
 NOT_FOUND_CACHE_DAYS = 1
+# Cache policy (P5.4, perf.md "Google cost"): place IDs may be stored indefinitely (Places policies); coordinates and
+# other Google content only for a limited time. We keep them at most 30 days (the limit commonly cited from the Service
+# Specific Terms, which could not be fetched to confirm: ISSUE-26), approximate matches 7 days, "not found" 1 day.
+FOUND_CACHE_DAYS = 30
+APPROXIMATE_CACHE_DAYS = 7
 
 
 def _caches_misses() -> bool:
@@ -372,7 +378,7 @@ async def geocode_address(raw: str, *, retry_approximate: bool = False, area: An
     for NOT_FOUND_CACHE_DAYS (a retry asks the provider again anyway).
     An Eircode in the address is looked up first; the full address only when that finds nothing."""
     code = find_eircode(raw)
-    if code and (hit := await geocode_eircode(code, street=is_only_eircode(raw))):
+    if code and (hit := await geocode_eircode(code)):
         return hit
     key = cache_key(raw, area)
     cached = await db.geocodecache.find_unique(where={"key": key})
@@ -392,7 +398,7 @@ async def geocode_address(raw: str, *, retry_approximate: bool = False, area: An
         data = {
             "found": True, "latitude": result.get("latitude"), "longitude": result.get("longitude"), "normalized": result.get("normalized"),
             "approximate": bool(result.get("approximate")), "provider": env.GEOCODING_PROVIDER,
-            "expiresAt": now() + timedelta(days=7 if result.get("approximate") else 180),
+            "expiresAt": now() + timedelta(days=APPROXIMATE_CACHE_DAYS if result.get("approximate") else FOUND_CACHE_DAYS),
         }
     elif _caches_misses():
         data = {"found": False, "latitude": None, "longitude": None, "normalized": None, "approximate": False, "provider": env.GEOCODING_PROVIDER,
@@ -512,7 +518,7 @@ async def suggest_addresses(query: str, *, area: Any = None, near: Optional[dict
     """[{label, latitude, longitude, approximate}] for a street address, place name or postcode, closest to the rider first."""
     out: list[dict] = []
     code = find_eircode(query)
-    if code and (hit := await geocode_eircode(code, street=is_only_eircode(query))):
+    if code and (hit := await geocode_eircode(code)):
         out.append({"label": hit.get("normalized") or code, "latitude": hit["latitude"], "longitude": hit["longitude"], "approximate": False})
     # Riders without a saved city still get results around where they are.
     area = area or ({"latitude": near["latitude"], "longitude": near["longitude"], "countryCode": None} if near else None)
@@ -525,6 +531,116 @@ async def suggest_addresses(query: str, *, area: Any = None, near: Optional[dict
     # Matches in the rider's city first; otherwise keep the provider's relevance order.
     unique.sort(key=lambda s: s["approximate"])
     return unique[:SUGGEST_LIMIT]
+
+
+# ---- Places Autocomplete (New) + Place Details, billed per session (P5.1) ----
+# https://developers.google.com/maps/documentation/places/web-service/place-autocomplete
+# https://developers.google.com/maps/documentation/places/web-service/session-pricing
+# Typing asks Autocomplete only (no Geocoding, no Text Search per keystroke, P5.2); picking a suggestion asks Place
+# Details once with the same session token, which ends the session. Details asks only for Essentials fields:
+# displayName would make it Place Details Pro.
+AUTOCOMPLETE_URL = "https://places.googleapis.com/v1/places:autocomplete"
+DETAILS_URL = "https://places.googleapis.com/v1/places/"
+AUTOCOMPLETE_FIELDS = "suggestions.placePrediction.placeId,suggestions.placePrediction.text.text,suggestions.placePrediction.structuredFormat"
+DETAILS_FIELDS = "id,location,formattedAddress,addressComponents"
+
+
+async def _autocomplete_google(query: str, area: Any, session_token: str) -> list[dict]:
+    body: dict[str, Any] = {"input": query, "sessionToken": session_token}
+    if area:
+        body["locationBias"] = {"circle": {"center": {"latitude": _area(area, "latitude"), "longitude": _area(area, "longitude")},
+                                           "radius": float(min(50_000, SERVICE_AREA_RADIUS_KM * 1000))}}
+        if _area(area, "countryCode"):
+            body["includedRegionCodes"] = [_area(area, "countryCode")]
+    await google_usage.record("places_autocomplete")
+    async with httpx.AsyncClient(timeout=TIMEOUT) as client:
+        res = await client.post(AUTOCOMPLETE_URL, json=body, headers={"X-Goog-Api-Key": env.GOOGLE_MAPS_API_KEY or "", "X-Goog-FieldMask": AUTOCOMPLETE_FIELDS})
+    if res.status_code >= 400:
+        raise RuntimeError(f"Google Autocomplete responded {res.status_code}")
+    out = []
+    for suggestion in res.json().get("suggestions", []):
+        p = suggestion.get("placePrediction")
+        if not p or not p.get("placeId"):
+            continue
+        out.append({"placeId": p["placeId"], "label": (p.get("text") or {}).get("text") or "", "latitude": None, "longitude": None, "approximate": False})
+    return out[:SUGGEST_LIMIT]
+
+
+async def _details_google(place_id: str, session_token: str | None) -> dict | None:
+    params = {"sessionToken": session_token} if session_token else {}
+    await google_usage.record("places_details")
+    async with httpx.AsyncClient(timeout=TIMEOUT) as client:
+        res = await client.get(DETAILS_URL + place_id, params=params, headers={"X-Goog-Api-Key": env.GOOGLE_MAPS_API_KEY or "", "X-Goog-FieldMask": DETAILS_FIELDS})
+    if res.status_code == 404:
+        return None
+    if res.status_code >= 400:
+        raise RuntimeError(f"Google Place Details responded {res.status_code}")
+    place = res.json()
+    loc = place.get("location") or {}
+    if "latitude" not in loc:
+        return None
+    parts = place.get("addressComponents") or []
+    code = next((c.get("longText") for c in parts if "postal_code" in (c.get("types") or [])), None)
+    country = next((c.get("shortText") for c in parts if "country" in (c.get("types") or [])), None)
+    return {"latitude": loc["latitude"], "longitude": loc["longitude"], "normalized": place.get("formattedAddress"),
+            "postalCode": postal_code_of(code, country)}
+
+
+_autocomplete: Callable[[str, Any, str], Awaitable[list[dict]]] | None = None
+_details: Callable[[str, str | None], Awaitable[dict | None]] | None = None
+
+
+def set_places_for_tests(autocomplete=None, details=None) -> None:
+    global _autocomplete, _details
+    _autocomplete, _details = autocomplete, details
+
+
+def _uses_google_places() -> bool:
+    return env.GEOCODING_PROVIDER == "google" and not env.is_test
+
+
+async def autocomplete(query: str, *, session_token: str, area: Any = None, near: dict | None = None) -> list[dict]:
+    """Suggestions while typing: [{placeId, label, latitude, longitude, approximate}]. With Google, placeId is set and
+    the point comes later from place_details (one call, on pick). A typed Eircode, and the other providers, come with
+    their point already (placeId None)."""
+    area = area or ({"latitude": near["latitude"], "longitude": near["longitude"], "countryCode": None} if near else None)
+    out: list[dict] = []
+    code = find_eircode(query)
+    if code and (hit := await geocode_eircode(code)):
+        out.append({"placeId": None, "label": hit.get("normalized") or code, "latitude": hit["latitude"], "longitude": hit["longitude"], "approximate": False})
+    try:
+        if _autocomplete or _uses_google_places():
+            out += await (_autocomplete or _autocomplete_google)(query, area, session_token)
+        else:
+            out += [{"placeId": None, **s} for s in await _suggest(query, area)]
+    except Exception:  # noqa: BLE001
+        log(logging.WARNING, "Address autocomplete failed", exc_info=True)
+        raise AppError(503, "GEOCODING_UNAVAILABLE", "Address search is temporarily unavailable. Check your connection and try again.") from None
+    return out[:SUGGEST_LIMIT]
+
+
+async def place_details(place_id: str, *, session_token: str | None, area: Any = None) -> dict | None:
+    """The point of a picked suggestion: {latitude, longitude, normalized, postalCode, approximate}. Cached by place ID
+    for FOUND_CACHE_DAYS (the ID itself may be kept; the coordinates only for a limited time)."""
+    key = hashlib.sha1(f"v1|place|{place_id}".encode()).hexdigest()
+    cached = await db.geocodecache.find_unique(where={"key": key})
+    if cached and cached.expiresAt > now() and cached.found:
+        hit = {"latitude": cached.latitude, "longitude": cached.longitude, "normalized": cached.normalized, "postalCode": find_eircode(cached.normalized)}
+    else:
+        try:
+            hit = await (_details or _details_google)(place_id, session_token)
+        except Exception:  # noqa: BLE001
+            log(logging.WARNING, "Place details failed", exc_info=True)
+            raise AppError(503, "GEOCODING_UNAVAILABLE", "Could not look up that address right now. Check your connection and try again.") from None
+        if not hit:
+            return None
+        data = {"found": True, "latitude": hit["latitude"], "longitude": hit["longitude"], "normalized": hit.get("normalized"), "approximate": False,
+                "provider": "google_places", "expiresAt": now() + timedelta(days=FOUND_CACHE_DAYS)}
+        try:
+            await db.geocodecache.upsert(where={"key": key}, data={"create": {"key": key, **data}, "update": data})
+        except Exception:  # noqa: BLE001, S110 - the answer stands without the cache
+            pass
+    return {**hit, "approximate": bool(area) and not is_inside_area(hit, area)}
 
 
 async def reverse_geocode(latitude: float, longitude: float) -> Optional[str]:

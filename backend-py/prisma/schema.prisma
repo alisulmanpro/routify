@@ -522,6 +522,20 @@ model DeletedDelivery {
   @@map("deleted_deliveries")
 }
 
+// Google Maps Platform calls made by the API, per day, rider and API (P5.6): what each rider costs, and where a
+// runaway client or loop shows up first. riderId "-" = not on behalf of a rider (maintenance, admin).
+model GoogleUsage {
+  day     String @db.VarChar(10)
+  riderId String @db.VarChar(24)
+  /// geocoding · geocoding_reverse · places_autocomplete · places_details · places_text_search · routes_matrix
+  api     String @db.VarChar(32)
+  calls   Int    @default(0)
+
+  @@id([day, riderId, api])
+  @@index([riderId, day])
+  @@map("google_usage")
+}
+
 // Shared counters for rate limits and unknown-email login lockouts, so every API worker sees the same numbers.
 model RateLimit {
   key         String    @id @db.VarChar(300)
