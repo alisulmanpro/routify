@@ -8,7 +8,11 @@ export type User = {
   serviceArea: ServiceArea | null;
 };
 
-export type PublicConfig = { routePreference: RoutePreference; minPasswordLength: number; platformName: string; supportEmail: string; privacyUrl: string; paymentInstructions: string; trialDays: number };
+export type PublicConfig = {
+  routePreference: RoutePreference; minPasswordLength: number; platformName: string; supportEmail: string; privacyUrl: string; paymentInstructions: string; trialDays: number;
+  /** Below this app version the app must be updated before it can be used; below latestAppVersion an update is suggested. */
+  minAppVersion?: string; latestAppVersion?: string; storeUrls?: { android: string | null; ios: string | null };
+};
 
 export type FailureReason = 'customer_unavailable' | 'customer_refused' | 'wrong_address' | 'phone_unreachable' | 'business_closed' | 'other';
 

@@ -345,3 +345,15 @@ async def test_v1_keeps_its_shapes_and_behaviour(client):
     by_date = (await client.get("/api/v1/routes/by-date", headers=auth, params={"from": TODAY})).json()["data"]
     assert set(by_date[0]) == {"id", "name", "status", "preference", "serviceDate", "distanceKm", "durationMin", "startedAt", "completedAt", "progress", "summary"}
     assert (await client.get("/api/v1/routes/leftover", headers=auth, params={"date": TODAY})).json()["data"] == {"total": 0, "days": []}
+
+
+# ---------------------------------------------------------------- app versions in /config (P2.8)
+
+async def test_config_tells_the_app_which_versions_are_supported(client):
+    res = await client.get("/api/v1/config")
+    assert res.status_code == 200
+    data = res.json()["data"]
+    # Everything /config had before is still there; the version fields are additions.
+    assert {"routePreference", "minPasswordLength", "platformName", "supportEmail", "privacyUrl", "paymentInstructions", "trialDays"} <= set(data)
+    assert data["minAppVersion"] == "1.0.0" and data["latestAppVersion"] == "1.0.0"
+    assert set(data["storeUrls"]) == {"android", "ios"}

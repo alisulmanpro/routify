@@ -41,6 +41,12 @@ services:
       - key: CORS_ORIGINS
         value: http://localhost:5173
 
+      # Rider app versions (GET /config): below MIN the app must update; below LATEST it suggests updating.
+      - key: MIN_APP_VERSION
+        value: "1.0.0"
+      - key: LATEST_APP_VERSION
+        value: "1.0.0"
+
       - key: GEOCODING_PROVIDER
         value: google
       - key: GOOGLE_MAPS_API_KEY

@@ -24,6 +24,16 @@ _EMAIL_RE = re.compile(r"[^@\s]+@[^@\s]+\.[^@\s]+")
 _problems: list[str] = []
 
 
+_VERSION_RE = re.compile(r"^\d{1,4}(\.\d{1,4}){0,2}$")
+
+
+def _version(name: str, default: str) -> str:
+    value = _str(name, default) or default
+    if not _VERSION_RE.fullmatch(value):
+        _problems.append(f"  - {name}: expected a version such as 1.4.0")
+    return value
+
+
 def _str(name: str, default: str | None = None, *, required: bool = False, min_len: int = 0) -> str | None:
     value = os.environ.get(name)
     if value is None or value == "":
@@ -118,6 +128,8 @@ class Settings:
     GOOGLE_SERVICE_ACCOUNT_FILE: str | None
     GOOGLE_PUBSUB_AUDIENCE: str | None
     GOOGLE_PUBSUB_SERVICE_ACCOUNT: str | None
+    MIN_APP_VERSION: str
+    LATEST_APP_VERSION: str
     REVENUECAT_SECRET_API_KEY: str | None
     REVENUECAT_WEBHOOK_AUTH: str | None
     REVENUECAT_ENTITLEMENT: str
@@ -199,6 +211,9 @@ def load_settings() -> Settings:
         GOOGLE_SERVICE_ACCOUNT_FILE=_str("GOOGLE_SERVICE_ACCOUNT_FILE"),
         GOOGLE_PUBSUB_AUDIENCE=_str("GOOGLE_PUBSUB_AUDIENCE"),
         GOOGLE_PUBSUB_SERVICE_ACCOUNT=_str("GOOGLE_PUBSUB_SERVICE_ACCOUNT"),
+        # The app shows a blocking "Update the app" screen below MIN_APP_VERSION and a gentle prompt below LATEST_APP_VERSION.
+        MIN_APP_VERSION=_version("MIN_APP_VERSION", "1.0.0"),
+        LATEST_APP_VERSION=_version("LATEST_APP_VERSION", "1.0.0"),
         REVENUECAT_SECRET_API_KEY=_str("REVENUECAT_SECRET_API_KEY"),
         REVENUECAT_WEBHOOK_AUTH=_str("REVENUECAT_WEBHOOK_AUTH", min_len=16),
         REVENUECAT_ENTITLEMENT=_str("REVENUECAT_ENTITLEMENT", "routify_pro") or "routify_pro",

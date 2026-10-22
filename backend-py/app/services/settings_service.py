@@ -4,6 +4,7 @@ import copy
 import time
 from typing import Any
 
+from ..config import env
 from ..db import as_json, db
 from ..ids import new_id
 
@@ -74,6 +75,13 @@ async def get_public_config() -> dict:
         "privacyUrl": s["platform"]["privacyUrl"],
         "paymentInstructions": s["platform"]["paymentInstructions"],
         "trialDays": s["trialDays"],
+        # Versions of the rider app (P2.8): below min the app asks to update before anything else; below latest it suggests it.
+        "minAppVersion": env.MIN_APP_VERSION,
+        "latestAppVersion": env.LATEST_APP_VERSION,
+        "storeUrls": {
+            "android": f"https://play.google.com/store/apps/details?id={env.GOOGLE_PACKAGE_NAME}" if env.GOOGLE_PACKAGE_NAME else None,
+            "ios": f"https://apps.apple.com/app/id{env.APPLE_APP_ID}" if env.APPLE_APP_ID else None,
+        },
     }
 
 
