@@ -9,7 +9,8 @@ services:
     region: ohio                   # same area as the Neon database (aws us-east-2)
     rootDir: backend-py
     # Migrations run during the build (pre-deploy commands need a paid plan). They only ever add to the schema.
-    buildCommand: pip install -r requirements.txt && prisma generate && prisma migrate deploy
+    # They use DIRECT_URL (Neon's direct host); until it is set in the dashboard they fall back to DATABASE_URL.
+    buildCommand: pip install -r requirements.txt && prisma generate && DIRECT_URL="${DIRECT_URL:-$DATABASE_URL}" prisma migrate deploy
     startCommand: python -m app
     healthCheckPath: /ready
     envVars:
@@ -26,7 +27,9 @@ services:
       - key: TRUST_PROXY
         value: "1"
 
-      - key: DATABASE_URL           # Neon connection string (...?sslmode=require&channel_binding=require)
+      - key: DATABASE_URL           # Neon pooled connection string: "-pooler" host, ...?sslmode=require&channel_binding=require&pgbouncer=true
+        sync: false
+      - key: DIRECT_URL             # Neon direct connection string (no "-pooler"), used only by prisma migrate deploy
         sync: false
       - key: JWT_ACCESS_SECRET
         generateValue: true

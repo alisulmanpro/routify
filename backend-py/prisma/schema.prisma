@@ -8,9 +8,12 @@ generator client {
   recursive_type_depth = 5
 }
 
+// DATABASE_URL: Neon's pooled host ("-pooler", with pgbouncer=true) for the app. DIRECT_URL: the direct host, used by
+// prisma migrate / db push, which need a session the pooler does not give them.
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
 }
 
 enum Role {

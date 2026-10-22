@@ -10,21 +10,23 @@ envelopes, error codes, cookies, signed file URLs and JWT format. Neither app ne
 python -m venv .venv
 .venv\Scripts\activate                     # macOS/Linux: source .venv/bin/activate
 pip install -r requirements-dev.txt
-cp .env.example .env                       # fill in the three secrets + DATABASE_URL (Neon)
+cp .env.example .env                       # fill in the three secrets + DATABASE_URL / DIRECT_URL (Neon)
 prisma migrate deploy                      # create the tables
 python -m scripts.seed_admin               # first platform admin (ADMIN_EMAIL / ADMIN_PASSWORD)
 python -m app                              # http://localhost:4000 (reloads on code changes)
 ```
 
 The database is hosted on [Neon](https://neon.tech) (serverless PostgreSQL); no local database or Docker
-is needed. Copy the connection string from the Neon console into `DATABASE_URL`.
+is needed. From the Neon console (a dev branch, never production), copy the **pooled** connection string ("-pooler" host,
+add `&pgbouncer=true`) into `DATABASE_URL` and the **direct** one into `DIRECT_URL`. The app uses the pooler; `prisma migrate`
+and `prisma db push` use the direct connection.
 
 API docs are served at `http://localhost:4000/docs` outside production.
 
 ## Tests
 
 ```bash
-psql "$DATABASE_URL" -c "CREATE DATABASE neondb_test;"   # once (or create it in the Neon console)
+psql "$DIRECT_URL" -c "CREATE DATABASE neondb_test;"     # once (or create it in the Neon console)
 pytest
 ```
 
@@ -102,7 +104,7 @@ Connect set each subscription's introductory offer to the same length (1 week, 2
 `render.yaml` at the repo root is a Render Blueprint for this API (free plan, Ohio, next to the Neon database).
 
 1. Push the repo to GitHub, then in Render choose **New > Blueprint** and pick the repo.
-2. Fill in the values it asks for: `DATABASE_URL` (Neon), `GOOGLE_MAPS_API_KEY`, `REVENUECAT_SECRET_API_KEY` (`sk_...`),
+2. Fill in the values it asks for: `DATABASE_URL` (Neon, pooled host + `pgbouncer=true`), `DIRECT_URL` (Neon, direct host), `GOOGLE_MAPS_API_KEY`, `REVENUECAT_SECRET_API_KEY` (`sk_...`),
    and for Brevo email `EMAIL_FROM` (a verified Brevo sender), `SMTP_USERNAME` and `SMTP_PASSWORD` (the SMTP key).
    Render generates the JWT, file-signing and webhook secrets itself.
 3. The build installs the requirements, generates the Prisma client and runs `prisma migrate deploy`. Render checks `/ready`.

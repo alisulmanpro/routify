@@ -18,22 +18,34 @@ from dotenv import dotenv_values  # noqa: E402
 _dotenv = dotenv_values(ROOT / ".env")
 
 
-def _test_database_url() -> str:
-    """TEST_DATABASE_URL, else the dev URL with "_test" appended to the database name.
+def _setting(name: str) -> str:
+    return os.environ.get(name) or _dotenv.get(name) or ""
 
-    The suite force-resets this database, so it must never be the dev one."""
-    dev_url = os.environ.get("DATABASE_URL") or _dotenv.get("DATABASE_URL") or ""
-    url = os.environ.get("TEST_DATABASE_URL") or _dotenv.get("TEST_DATABASE_URL")
+
+def _with_test_suffix(url: str) -> str:
+    parts = urlsplit(url)
+    return urlunsplit(parts._replace(path=parts.path.rstrip("/") + "_test"))
+
+
+def _test_database_urls() -> tuple[str, str]:
+    """(TEST_DATABASE_URL, TEST_DIRECT_URL), else the dev URLs with "_test" appended to the database name.
+
+    The suite force-resets this database (through the direct URL), so neither may be a dev one."""
+    dev_urls = {_setting("DATABASE_URL"), _setting("DIRECT_URL")} - {""}
+    url = _setting("TEST_DATABASE_URL")
+    direct = _setting("TEST_DIRECT_URL")
     if not url:
-        parts = urlsplit(dev_url)
-        url = urlunsplit(parts._replace(path=parts.path.rstrip("/") + "_test"))
-    if not urlsplit(url).path.strip("/") or url == dev_url:
-        raise RuntimeError("TEST_DATABASE_URL must point at a separate database; the tests wipe it.")
-    return url
+        url = _with_test_suffix(_setting("DATABASE_URL"))
+        direct = direct or (_with_test_suffix(_setting("DIRECT_URL")) if _setting("DIRECT_URL") else "")
+    direct = direct or url
+    for candidate in (url, direct):
+        if not urlsplit(candidate).path.strip("/") or candidate in dev_urls:
+            raise RuntimeError("TEST_DATABASE_URL / TEST_DIRECT_URL must point at a separate database; the tests wipe it.")
+    return url, direct
 
 
 os.environ["NODE_ENV"] = "test"
-os.environ["DATABASE_URL"] = _test_database_url()
+os.environ["DATABASE_URL"], os.environ["DIRECT_URL"] = _test_database_urls()
 os.environ.setdefault("JWT_ACCESS_SECRET", "a" * 32)
 os.environ.setdefault("JWT_REFRESH_SECRET", "b" * 32)
 os.environ.setdefault("FILE_SIGNING_SECRET", "c" * 32)
@@ -41,7 +53,7 @@ os.environ["STORAGE_DIR"] = "./tests/tmp-uploads"
 # Billing tests enable the stores they need themselves; never inherit the dev stores or call RevenueCat with a real key.
 os.environ["PAYMENT_STORES"] = "mock"
 # Same for maps: never make billed Google calls from tests.
-os.environ["GEOCODING_PROVIDER"] = "nominatim"
+os.environ["GEOCODING_PROVIDER"] = "none"  # tests stub the geocoder they need; never call live OSM/Google
 os.environ["ROUTING_PROVIDER"] = "osrm"
 os.environ["EMAIL_PROVIDER"] = "console"  # and never send real email
 for _name in ("REVENUECAT_SECRET_API_KEY", "REVENUECAT_WEBHOOK_AUTH", "GOOGLE_MAPS_API_KEY"):
