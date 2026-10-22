@@ -5,19 +5,28 @@ import asyncio
 from ..db import db
 from ..http import js_round, round2
 from . import storage_service as storage
-from .route_service import OPEN, summarize
+from .route_service import OPEN, summarize_counts
+
+# The map needs five columns of the located stops only, not whole rows. Same filter as the counts in dashboard().
+_MAP_SQL = """
+SELECT "id", "addressLatitude" AS "latitude", "addressLongitude" AS "longitude", "status"::text AS "status", "stopOrder" AS "order"
+FROM "deliveries"
+WHERE "riderId" = $1 AND "addressGeocoded" AND ("serviceDate" = $2 OR ("status" IN ('pending', 'in_progress') AND "serviceDate" <= $2))
+"""
 
 
 async def dashboard(actor: dict, date: str) -> dict:
     # Today's work plus anything still open from earlier days; stops planned for later days are not counted yet.
-    user, deliveries, active, planned = await asyncio.gather(
+    user, counts, located, active, planned = await asyncio.gather(
         db.user.find_unique(where={"id": actor["id"]}),
-        db.delivery.find_many(where={"riderId": actor["id"], "OR": [{"serviceDate": date}, {"status": {"in": list(OPEN)}, "serviceDate": {"lte": date}}]}),
+        db.delivery.group_by(by=["status"], where={"riderId": actor["id"], "OR": [{"serviceDate": date}, {"status": {"in": list(OPEN)}, "serviceDate": {"lte": date}}]},
+                             count=True),
+        db.query_raw(_MAP_SQL, actor["id"], date),
         db.route.find_first(where={"riderId": actor["id"], "status": "active"}, order=[{"createdAt": "desc"}, {"id": "desc"}]),
         db.route.find_first(where={"riderId": actor["id"], "status": "planned", "serviceDate": {"lte": date}}, order=[{"createdAt": "desc"}, {"id": "desc"}]),
     )
     route = active or planned
-    s = summarize(deliveries, route if route and route.status == "active" else None)
+    s = summarize_counts({str(row["status"]): row["_count"]["_all"] for row in counts}, route if route and route.status == "active" else None)
     finished = s["delivered"] + s["failed"]
 
     next_action = "setup"
@@ -35,8 +44,7 @@ async def dashboard(actor: dict, date: str) -> dict:
         "routeId": route.id if route else None,
         "routeStatus": str(route.status) if route else None,
         "nextAction": next_action,
-        "map": [{"id": d.id, "latitude": d.addressLatitude, "longitude": d.addressLongitude, "status": str(d.status), "order": d.stopOrder}
-                for d in deliveries if d.addressGeocoded],
+        "map": [{"id": m["id"], "latitude": m["latitude"], "longitude": m["longitude"], "status": m["status"], "order": m["order"]} for m in located],
     }
 
 

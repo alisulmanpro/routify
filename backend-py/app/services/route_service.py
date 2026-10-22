@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from typing import Any, Optional
+
+from prisma.errors import UniqueViolationError
 
 from ..db import db, lock_rider, transaction
 from ..errors import AppError, conflict, forbidden, not_found, unprocessable
@@ -23,15 +26,22 @@ _FRESH_ADDRESS = {"addressNormalized": None, "addressLatitude": None, "addressLo
 
 
 def summarize(deliveries: list[Any], route: Any = None) -> dict:
-    statuses = [str(d.status) for d in deliveries]
+    counts: dict[str, int] = {}
+    for d in deliveries:
+        counts[str(d.status)] = counts.get(str(d.status), 0) + 1
+    return summarize_counts(counts, route)
+
+
+def summarize_counts(counts: dict[str, int], route: Any = None) -> dict:
+    """The same summary from {status: number of stops}, for callers that count in SQL instead of loading rows."""
     minutes = None
     if route is not None and route.startedAt and route.completedAt:
         minutes = max(1, js_round((route.completedAt - route.startedAt).total_seconds() / 60))
     return {
-        "total": len(statuses),
-        "delivered": statuses.count("delivered"),
-        "failed": statuses.count("failed"),
-        "pending": sum(1 for s in statuses if s in OPEN),
+        "total": sum(counts.values()),
+        "delivered": counts.get("delivered", 0),
+        "failed": counts.get("failed", 0),
+        "pending": sum(n for status, n in counts.items() if status in OPEN),
         "distanceKm": route.distanceKm if route is not None and route.distanceKm is not None else 0,
         "routeMinutes": minutes,
     }
@@ -43,14 +53,30 @@ def _origin(route: Any) -> Optional[dict]:
     return {"latitude": route.originLatitude, "longitude": route.originLongitude}
 
 
-async def serialize_route(route: Any) -> dict:
-    stop_rows = sorted(await db.routestop.find_many(where={"routeId": route.id}), key=lambda s: s.order)
+async def serialize_routes(routes: list[Any]) -> list[dict]:
+    """Full routes with their stops: two queries however many routes there are."""
+    if not routes:
+        return []
+    ids = [r.id for r in routes]
+    stop_rows = await db.routestop.find_many(where={"routeId": {"in": ids}})
     # A stop carried over to another day keeps its row here for the record, but belongs to its new route now.
-    deliveries = await db.delivery.find_many(where={"id": {"in": [s.deliveryId for s in stop_rows]}, "routeId": route.id}) if stop_rows else []
+    deliveries = await db.delivery.find_many(where={"routeId": {"in": ids}}) if stop_rows else []
     by_id = {d.id: d for d in deliveries}
+    rows_by_route: dict[str, list[Any]] = {}
+    for s in stop_rows:
+        rows_by_route.setdefault(s.routeId, []).append(s)
+    return [_serialize_route(route, sorted(rows_by_route.get(route.id, []), key=lambda s: s.order), by_id) for route in routes]
+
+
+async def serialize_route(route: Any) -> dict:
+    return (await serialize_routes([route]))[0]
+
+
+def _serialize_route(route: Any, stop_rows: list[Any], by_id: dict[str, Any]) -> dict:
+    mine = [s for s in stop_rows if s.deliveryId in by_id and by_id[s.deliveryId].routeId == route.id]
     stops = [
         {"order": i + 1, "legDistanceKm": s.legDistanceKm, "legDurationMin": s.legDurationMin, "delivery": serialize_delivery(by_id[s.deliveryId])}
-        for i, s in enumerate(s for s in stop_rows if s.deliveryId in by_id)
+        for i, s in enumerate(mine)
     ]
     done = sum(1 for s in stops if s["delivery"]["status"] not in OPEN)
     current = next((s for s in stops if s["delivery"]["status"] in OPEN), None)
@@ -73,14 +99,10 @@ def _require_rider(actor: dict) -> None:
         raise forbidden("Only riders manage routes")
 
 
-async def _release_planned(actor: dict, date: str) -> None:
+async def _release_planned(client: Any, route_ids: list[str]) -> None:
     """Replanning a day replaces that day's unstarted route; routes planned for other days stay."""
-    planned = await db.route.find_many(where={"riderId": actor["id"], "status": "planned", "serviceDate": date})
-    if not planned:
-        return
-    ids = [r.id for r in planned]
-    await db.delivery.update_many(where={"routeId": {"in": ids}, "status": "pending"}, data={"routeId": None, "stopOrder": None})
-    await db.route.delete_many(where={"id": {"in": ids}})
+    await client.delivery.update_many(where={"routeId": {"in": route_ids}, "status": "pending"}, data={"routeId": None, "stopOrder": None})
+    await client.route.delete_many(where={"id": {"in": route_ids}})
 
 
 def area_of_user(user: Any) -> Optional[dict]:
@@ -110,15 +132,36 @@ async def service_area_for(actor: dict, origin: Optional[dict]) -> Optional[dict
     return area_of_user(user)
 
 
-async def _refresh_delivery_geocodes(deliveries: list[Any], *, retry_approximate: bool = False, area: Optional[dict] = None) -> list[Any]:
-    """Looks up stops without coordinates. Returns the deliveries as saved (same order)."""
-    from .delivery_service import save_delivery
+# Every stop the lookup changed is saved in one statement. Like save_delivery it only lands on rows nobody saved since
+# they were read (same version), so a parallel edit is never overwritten.
+_SAVE_GEOCODES_SQL = """
+UPDATE "deliveries" AS d SET
+  "addressRaw" = v."addressRaw", "addressNormalized" = v."addressNormalized", "addressLatitude" = v."addressLatitude",
+  "addressLongitude" = v."addressLongitude", "addressGeocoded" = v."addressGeocoded", "addressApproximate" = v."addressApproximate",
+  "geocodeStatus" = v."geocodeStatus"::"GeocodeStatus", "postalCode" = v."postalCode",
+  "version" = d."version" + 1, "updatedAt" = timezone('utc', now())
+FROM jsonb_to_recordset($1::jsonb) AS v(id text, version int, "addressRaw" text, "addressNormalized" text, "addressLatitude" float8,
+  "addressLongitude" float8, "addressGeocoded" boolean, "addressApproximate" boolean, "geocodeStatus" text, "postalCode" text)
+WHERE d."id" = v.id AND d."version" = v.version
+"""
+_GEOCODE_COLUMNS = ("addressRaw", "addressNormalized", "addressLatitude", "addressLongitude", "addressGeocoded", "addressApproximate",
+                    "geocodeStatus", "postalCode")
 
+
+async def _refresh_delivery_geocodes(deliveries: list[Any], *, retry_approximate: bool = False, area: Optional[dict] = None) -> list[Any]:
+    """Looks up stops without coordinates. Returns the deliveries as saved (same order).
+    A stop whose lookup failed (provider error) keeps its state, so a later retry looks it up again."""
     out = list(deliveries)
+    changed: set[int] = set()
+
+    def update(i: int, data: dict) -> None:
+        out[i] = out[i].model_copy(update=data)
+        changed.add(i)
+
     for i, d in enumerate(out):
         clean = clean_delivery_address(d.addressRaw, d.payment)
         if clean != d.addressRaw:
-            out[i] = await save_delivery(d, {"addressRaw": clean, **_FRESH_ADDRESS})
+            update(i, {"addressRaw": clean, **_FRESH_ADDRESS})
 
     # On a retry, also redo "found" stops that sit outside the rider's city (e.g. matched abroad before areas existed).
     def outside_area(d: Any) -> bool:
@@ -127,13 +170,13 @@ async def _refresh_delivery_geocodes(deliveries: list[Any], *, retry_approximate
 
     todo = [i for i, d in enumerate(out)
             if outside_area(d) or (d.geocodeStatus != "found" and (retry_approximate or d.geocodeStatus != "approximate"))]
-    if not todo:
-        return out
-
-    results = await geocoding.geocode_many([out[i].addressRaw for i in todo],
-                                           retry_approximate=retry_approximate or any(outside_area(out[i]) for i in todo), area=area)
+    failed: set[str] = set()
+    results = await geocoding.geocode_many([out[i].addressRaw for i in todo], failed=failed,
+                                           retry_approximate=retry_approximate or any(outside_area(out[i]) for i in todo), area=area) if todo else {}
     for i in todo:
         d = out[i]
+        if d.addressRaw in failed:
+            continue
         hit = results.get(d.addressRaw)
         if hit:
             approx = bool(hit.get("approximate"))
@@ -146,8 +189,17 @@ async def _refresh_delivery_geocodes(deliveries: list[Any], *, retry_approximate
         else:
             data = {"addressLatitude": None, "addressLongitude": None, "addressNormalized": None, "addressGeocoded": False,
                     "addressApproximate": False, "geocodeStatus": "not_found"}
-        out[i] = await save_delivery(d, data)
-    return out
+        update(i, data)
+
+    if not changed:
+        return out
+    rows = [{"id": out[i].id, "version": out[i].version, **{c: getattr(out[i], c) for c in _GEOCODE_COLUMNS}} for i in sorted(changed)]
+    for row in rows:
+        row["geocodeStatus"] = str(row["geocodeStatus"])
+    if await db.execute_raw(_SAVE_GEOCODES_SQL, json.dumps(rows)) != len(rows):
+        raise conflict("This record was changed by someone else. Refresh and try again.")
+    saved = {d.id: d for d in await db.delivery.find_many(where={"id": {"in": [r["id"] for r in rows]}})}
+    return [saved.get(d.id, d) for d in out]
 
 
 async def _plan(deliveries: list[Any], origin: Optional[dict], preference: str, settings: dict, first_order: int = 1) -> tuple[list[dict], float, float, str]:
@@ -175,62 +227,108 @@ async def _plan(deliveries: list[Any], origin: Optional[dict], preference: str, 
 
 
 
-async def _assign_stops(route_id: str, rider_id: str, stops: list[dict]) -> None:
-    async with db.batch_() as batch:
-        for s in stops:
-            batch.delivery.update_many(where={"id": s["deliveryId"], "riderId": rider_id}, data={"routeId": route_id, "stopOrder": s["order"]})
+# One statement for the whole route, however many stops (it used to be one UPDATE per stop).
+_ASSIGN_SQL = """
+UPDATE "deliveries" AS d SET "routeId" = $1, "stopOrder" = v."order", "updatedAt" = timezone('utc', now())
+FROM jsonb_to_recordset($3::jsonb) AS v("deliveryId" text, "order" int)
+WHERE d."id" = v."deliveryId" AND d."riderId" = $2
+"""
+
+
+_LEGS_SQL = """
+UPDATE "route_stops" AS rs SET "legDistanceKm" = v.km, "legDurationMin" = v.min
+FROM jsonb_to_recordset($2::jsonb) AS v("deliveryId" text, km float8, min float8)
+WHERE rs."routeId" = $1 AND rs."deliveryId" = v."deliveryId"
+"""
+
+
+async def _assign_stops(client: Any, route_id: str, rider_id: str, stops: list[dict]) -> None:
+    if stops:
+        await client.execute_raw(_ASSIGN_SQL, route_id, rider_id, json.dumps([{"deliveryId": s["deliveryId"], "order": s["order"]} for s in stops]))
+
+
+async def _assert_no_active_route(client: Any, actor: dict, date: str) -> None:
+    active = await client.route.find_first(where={"riderId": actor["id"], "status": "active"})
+    # A route for a later day can be planned while today's is underway (e.g. tomorrow's, the night before).
+    if active and active.serviceDate >= date:
+        raise conflict("Finish or end your active route before planning a new one", "ROUTE_ACTIVE")
+
+
+def _stops_changed() -> AppError:
+    return conflict("Your stops changed while the route was being planned. Please try again.", "ROUTE_STALE")
 
 
 async def build(actor: dict, *, preference: Optional[str] = None, origin: Optional[dict] = None, delivery_ids: Optional[list[str]] = None,
                 date: Optional[str] = None, name: Optional[str] = None) -> dict:
     _require_rider(actor)
     date = date or today_key()
-    active = await db.route.find_first(where={"riderId": actor["id"], "status": "active"})
-    # A route for a later day can be planned while today's is underway (e.g. tomorrow's, the night before).
-    if active and active.serviceDate >= date:
-        raise conflict("Finish or end your active route before planning a new one", "ROUTE_ACTIVE")
+    await _assert_no_active_route(db, actor, date)
 
     where: dict[str, Any] = {"riderId": actor["id"], "status": "pending"}
     if delivery_ids:
         # A new route takes exactly the stops chosen for it. Every other route of the day stays as it is; a chosen stop
         # that is still on another unstarted route (planned again) moves over, and that route is tidied up afterwards.
-        planned = await db.route.find_many(where={"riderId": actor["id"], "status": "planned"})
-        where |= {"id": {"in": delivery_ids}, "OR": [{"routeId": None}, {"routeId": {"in": [r.id for r in planned]}}]}
+        released: list[str] = []
+        movable = [r.id for r in await db.route.find_many(where={"riderId": actor["id"], "status": "planned"})]
+        where |= {"id": {"in": delivery_ids}}
     else:
         # No stops chosen: (re)plan the whole day, replacing its unstarted route. The day's open stops (and older ones
         # still open), never stops already added for a later day.
-        await _release_planned(actor, date)
-        where |= {"routeId": None, "serviceDate": {"lte": date}}
+        released = [r.id for r in await db.route.find_many(where={"riderId": actor["id"], "status": "planned", "serviceDate": date})]
+        movable = released
+        where |= {"serviceDate": {"lte": date}}
+    where["OR"] = [{"routeId": None}, *([{"routeId": {"in": movable}}] if movable else [])]
     deliveries = await db.delivery.find_many(where=where, order=[{"createdAt": "asc"}, {"id": "asc"}])
-    previous_routes = {d.routeId for d in deliveries if d.routeId}
     if not deliveries:
         raise unprocessable("Add deliveries before building a route", "NO_DELIVERIES")
+    previous_routes = {d.routeId for d in deliveries if d.routeId} - set(released)
 
     settings, user = await asyncio.gather(get_settings(), db.user.find_unique(where={"id": actor["id"]}))
     pref = preference or (str(user.routePreference) if user else None) or settings["route"]["defaultPreference"]
 
-    # Geocode before ordering so stop numbers reflect destination order, not entry order.
+    # Geocode before ordering so stop numbers reflect destination order, not entry order. Lookups and ordering take a
+    # while, so they happen before the transaction; the writes below are all-or-nothing under the rider's lock.
     deliveries = await _refresh_delivery_geocodes(deliveries, area=await service_area_for(actor, origin))
     stops, distance_km, duration_min, optimization = await _plan(deliveries, origin, pref, settings)
+    ids = [s["deliveryId"] for s in stops]
 
-    route = await db.route.create(data={
-        "id": new_id(), "riderId": actor["id"], "serviceDate": date, "name": name or None, "preference": pref,
-        "status": "planned", "originLatitude": origin["latitude"] if origin else None, "originLongitude": origin["longitude"] if origin else None,
-        "distanceKm": distance_km, "durationMin": duration_min, "optimization": optimization,
-    })
-    await db.routestop.create_many(data=[{"routeId": route.id, **s} for s in stops])
-    await _assign_stops(route.id, actor["id"], stops)
-    if previous_routes:
-        await _drop_moved_stops(previous_routes, [s["deliveryId"] for s in stops])
+    async with transaction() as tx:
+        await lock_rider(tx, actor["id"])
+        await _assert_no_active_route(tx, actor, date)
+        if released:
+            await _release_planned(tx, released)
+        # The stops must still be free: a parallel build or a delete may have taken some while this one was planned.
+        free = [{"routeId": None}, *([{"routeId": {"in": list(previous_routes)}}] if previous_routes else [])]
+        if await tx.delivery.count(where={"id": {"in": ids}, "riderId": actor["id"], "status": "pending", "OR": free}) != len(ids):
+            raise _stops_changed()
+        route = await tx.route.create(data={
+            "id": new_id(), "riderId": actor["id"], "serviceDate": date, "name": name or None, "preference": pref,
+            "status": "planned", "originLatitude": origin["latitude"] if origin else None, "originLongitude": origin["longitude"] if origin else None,
+            "distanceKm": distance_km, "durationMin": duration_min, "optimization": optimization,
+        })
+        await tx.routestop.create_many(data=[{"routeId": route.id, **s} for s in stops])
+        await _assign_stops(tx, route.id, actor["id"], stops)
+        if previous_routes:
+            await _drop_moved_stops(tx, previous_routes, ids)
     return await serialize_route(route)
 
 
-async def _drop_moved_stops(route_ids: set[str], delivery_ids: list[str]) -> None:
+async def _drop_moved_stops(client: Any, route_ids: set[str], delivery_ids: list[str]) -> None:
     """Takes stops that moved to a new route off the unstarted routes they were on; a route left empty is deleted."""
-    await db.routestop.delete_many(where={"routeId": {"in": list(route_ids)}, "deliveryId": {"in": delivery_ids}})
-    for route_id in route_ids:
-        if not await db.routestop.count(where={"routeId": route_id}):
-            await db.route.delete_many(where={"id": route_id, "status": "planned"})
+    await client.routestop.delete_many(where={"routeId": {"in": list(route_ids)}, "deliveryId": {"in": delivery_ids}})
+    await client.execute_raw("""DELETE FROM "routes" AS r WHERE r."id" IN (SELECT jsonb_array_elements_text($1::jsonb)) AND r."status" = 'planned'
+                                AND NOT EXISTS (SELECT 1 FROM "route_stops" AS s WHERE s."routeId" = r."id")""", json.dumps(sorted(route_ids)))
+
+
+async def _lock_route(tx: Any, actor: dict, route_id: str, stop_ids: list[str], states: tuple[str, ...]) -> None:
+    """Under the rider's lock: the route is still in one of `states` and still has exactly the stops it was planned with."""
+    await lock_rider(tx, actor["id"])
+    route = await tx.route.find_first(where={"id": route_id, "riderId": actor["id"]})
+    if not route or str(route.status) not in states:
+        raise _stops_changed()
+    if await tx.delivery.count(where={"routeId": route_id}) != len(stop_ids) or (
+            stop_ids and await tx.delivery.count(where={"routeId": route_id, "id": {"in": stop_ids}}) != len(stop_ids)):
+        raise _stops_changed()
 
 
 async def retry_geocoding(actor: dict, route_id: str) -> dict:
@@ -251,31 +349,36 @@ async def retry_geocoding(actor: dict, route_id: str) -> dict:
     if route.status == "planned":
         pref = str(route.preference) or (str(user.routePreference) if user else None) or settings["route"]["defaultPreference"]
         stops, distance_km, duration_min, optimization = await _plan(deliveries, origin, pref, settings)
-        await db.routestop.delete_many(where={"routeId": route.id})
-        await db.routestop.create_many(data=[{"routeId": route.id, **s} for s in stops])
-        route = await db.route.update(where={"id": route.id}, data={"distanceKm": distance_km, "durationMin": duration_min, "optimization": optimization})
-        await _assign_stops(route.id, actor["id"], stops)
+        async with transaction() as tx:
+            await _lock_route(tx, actor, route.id, [d.id for d in deliveries], ("planned",))
+            await tx.routestop.delete_many(where={"routeId": route.id})
+            await tx.routestop.create_many(data=[{"routeId": route.id, **s} for s in stops])
+            route = await tx.route.update(where={"id": route.id}, data={"distanceKm": distance_km, "durationMin": duration_min, "optimization": optimization})
+            await _assign_stops(tx, route.id, actor["id"], stops)
     else:
         previous = origin
         distance_km = 0.0
         travel = 0
-        async with db.batch_() as batch:
-            for stop in sorted(stop_rows, key=lambda s: s.order):
-                d = by_id.get(stop.deliveryId)
-                if not d or not d.addressGeocoded:
-                    previous = None
-                    continue
-                point = {"latitude": d.addressLatitude, "longitude": d.addressLongitude}
-                distance = round2(haversine_km(previous, point) * ROUTE_ROAD_FACTOR) if previous else 0
-                minutes = js_round((distance / settings["route"]["avgSpeedKmh"]) * 60)
-                batch.routestop.update(where={"routeId_deliveryId": {"routeId": route.id, "deliveryId": stop.deliveryId}},
-                                       data={"legDistanceKm": distance, "legDurationMin": minutes})
-                distance_km += distance
-                travel += minutes
-                previous = point
-        route = await db.route.update(where={"id": route.id}, data={
-            "distanceKm": round2(distance_km), "durationMin": travel + len(stop_rows) * settings["route"]["stopServiceMinutes"],
-        })
+        legs = []
+        for stop in sorted(stop_rows, key=lambda s: s.order):
+            d = by_id.get(stop.deliveryId)
+            if not d or not d.addressGeocoded:
+                previous = None
+                continue
+            point = {"latitude": d.addressLatitude, "longitude": d.addressLongitude}
+            distance = round2(haversine_km(previous, point) * ROUTE_ROAD_FACTOR) if previous else 0
+            minutes = js_round((distance / settings["route"]["avgSpeedKmh"]) * 60)
+            legs.append({"deliveryId": stop.deliveryId, "km": distance, "min": minutes})
+            distance_km += distance
+            travel += minutes
+            previous = point
+        async with transaction() as tx:
+            await lock_rider(tx, actor["id"])
+            if legs:
+                await tx.execute_raw(_LEGS_SQL, route.id, json.dumps(legs))
+            route = await tx.route.update(where={"id": route.id}, data={
+                "distanceKm": round2(distance_km), "durationMin": travel + len(stop_rows) * settings["route"]["stopServiceMinutes"],
+            })
     return await serialize_route(route)
 
 
@@ -302,18 +405,20 @@ async def optimize(actor: dict, route_id: str, origin: Optional[dict] = None) ->
     keep = {s.deliveryId: s for s in stop_rows}
     finished_rows = [{"deliveryId": d.id, "order": i + 1, "legDistanceKm": keep[d.id].legDistanceKm, "legDurationMin": keep[d.id].legDurationMin}
                      for i, d in enumerate(finished)]
-    await db.routestop.delete_many(where={"routeId": route.id})
-    await db.routestop.create_many(data=[{"routeId": route.id, **s} for s in finished_rows + stops])
-    await _assign_stops(route.id, actor["id"], finished_rows + stops)
     data: dict[str, Any] = {"distanceKm": distance_km, "durationMin": duration_min, "optimization": optimization}
     if origin:
         data |= {"originLatitude": origin["latitude"], "originLongitude": origin["longitude"]}
-    route = await db.route.update(where={"id": route.id}, data=data)
+    async with transaction() as tx:
+        await _lock_route(tx, actor, route.id, list(by_id), ("planned", "active"))
+        await tx.routestop.delete_many(where={"routeId": route.id})
+        await tx.routestop.create_many(data=[{"routeId": route.id, **s} for s in finished_rows + stops])
+        await _assign_stops(tx, route.id, actor["id"], finished_rows + stops)
+        route = await tx.route.update(where={"id": route.id}, data=data)
     return await serialize_route(route)
 
 
-async def _find_mine(actor: dict, route_id: str) -> Any:
-    route = await db.route.find_first(where={"id": route_id, "riderId": actor["id"]})
+async def _find_mine(actor: dict, route_id: str, client: Any = db) -> Any:
+    route = await client.route.find_first(where={"id": route_id, "riderId": actor["id"]})
     if not route:
         raise not_found("Route")
     return route
@@ -338,7 +443,7 @@ async def list_upcoming(actor: dict, date: Optional[str] = None) -> list[dict]:
     _require_rider(actor)
     routes = await db.route.find_many(where={"riderId": actor["id"], "status": "planned", "serviceDate": {"gt": date or today_key()}},
                                       order=[{"serviceDate": "asc"}, {"createdAt": "asc"}])
-    return [await serialize_route(r) for r in routes]
+    return await serialize_routes(routes)
 
 
 async def list_by_date(actor: dict, date_from: str, date_to: Optional[str] = None, limit: int = 200) -> list[dict]:
@@ -346,36 +451,58 @@ async def list_by_date(actor: dict, date_from: str, date_to: Optional[str] = Non
     omitted), soonest first. Summaries only, without the stop list: two queries however many routes there are."""
     _require_rider(actor)
     service_date: dict[str, str] = {"gte": date_from} | ({"lte": date_to} if date_to else {})
-    routes = await db.route.find_many(where={"riderId": actor["id"], "serviceDate": service_date}, include={"stops": True},
+    routes = await db.route.find_many(where={"riderId": actor["id"], "serviceDate": service_date},
                                       order=[{"serviceDate": "asc"}, {"createdAt": "asc"}, {"id": "asc"}], take=limit)
-    ids = [s.deliveryId for r in routes for s in r.stops or []]
-    by_id = {d.id: d for d in await db.delivery.find_many(where={"id": {"in": ids}})} if ids else {}
+    counts = await _stop_counts([r.id for r in routes])
     items = []
     for route in routes:
-        on_route = [by_id[s.deliveryId] for s in route.stops or [] if s.deliveryId in by_id and by_id[s.deliveryId].routeId == route.id]
-        done = sum(1 for d in on_route if str(d.status) not in OPEN)
+        summary = summarize_counts(counts.get(route.id, {}), route)
+        done = summary["total"] - summary["pending"]
         items.append({
             "id": route.id, "name": route.name or None, "status": str(route.status), "preference": str(route.preference),
             "serviceDate": route.serviceDate, "distanceKm": route.distanceKm, "durationMin": route.durationMin,
             "startedAt": route.startedAt, "completedAt": route.completedAt,
-            "progress": {"total": len(on_route), "done": done, "remaining": len(on_route) - done},
-            "summary": summarize(on_route, route),
+            "progress": {"total": summary["total"], "done": done, "remaining": summary["total"] - done},
+            "summary": summary,
         })
     return items
 
 
+# Stops still on each route (a stop carried over to another day keeps its row on the old route but belongs to the new one).
+_STOP_COUNTS_SQL = """
+SELECT s."routeId" AS "routeId", d."status"::text AS "status", count(*)::int AS "n"
+FROM "route_stops" AS s JOIN "deliveries" AS d ON d."id" = s."deliveryId" AND d."routeId" = s."routeId"
+WHERE s."routeId" IN (SELECT jsonb_array_elements_text($1::jsonb))
+GROUP BY 1, 2
+"""
+
+
+async def _stop_counts(route_ids: list[str]) -> dict[str, dict[str, int]]:
+    """{route id: {status: stops}} in one query, without loading the stops."""
+    out: dict[str, dict[str, int]] = {}
+    if route_ids:
+        for row in await db.query_raw(_STOP_COUNTS_SQL, json.dumps(route_ids)):
+            out.setdefault(row["routeId"], {})[row["status"]] = int(row["n"])
+    return out
+
+
 async def start(actor: dict, route_id: str) -> dict:
     _require_rider(actor)
-    route = await _find_mine(actor, route_id)
-    if route.status == "active":
-        return await serialize_route(route)
-    if route.status != "planned":
-        raise conflict("This route is already completed", "INVALID_STATE")
-    if not await db.delivery.count(where={"routeId": route.id, "status": "pending"}):
-        raise conflict("This route has no pending deliveries. Build a new one.", "ROUTE_STALE")
-    if await db.route.find_first(where={"riderId": actor["id"], "status": "active"}):
-        raise conflict("You already have an active route", "ROUTE_ACTIVE")
-    route = await db.route.update(where={"id": route.id}, data={"status": "active", "startedAt": now()})
+    async with transaction() as tx:
+        # Under the rider's lock two devices cannot both start a route; the partial unique index backs this up.
+        await lock_rider(tx, actor["id"])
+        route = await _find_mine(actor, route_id, tx)
+        if route.status != "active":
+            if route.status != "planned":
+                raise conflict("This route is already completed", "INVALID_STATE")
+            if not await tx.delivery.count(where={"routeId": route.id, "status": "pending"}):
+                raise conflict("This route has no pending deliveries. Build a new one.", "ROUTE_STALE")
+            if await tx.route.find_first(where={"riderId": actor["id"], "status": "active"}):
+                raise conflict("You already have an active route", "ROUTE_ACTIVE")
+            try:
+                route = await tx.route.update(where={"id": route.id}, data={"status": "active", "startedAt": now()})
+            except UniqueViolationError:
+                raise conflict("You already have an active route", "ROUTE_ACTIVE") from None
     return await serialize_route(route)
 
 
@@ -388,7 +515,7 @@ async def on_stop_finished(route_id: str) -> None:
 async def list_completed(actor: dict, limit: int = 30) -> list[dict]:
     _require_rider(actor)
     routes = await db.route.find_many(where={"riderId": actor["id"], "status": "completed"}, order=[{"completedAt": "desc"}, {"id": "desc"}], take=limit)
-    return [await serialize_route(r) for r in routes]
+    return await serialize_routes(routes)
 
 
 # ---- Open stops left from earlier days ----
@@ -402,11 +529,9 @@ def _left_over_where(actor: dict, date: str) -> dict:
 async def left_over(actor: dict, date: str) -> dict:
     """How many open stops are left from days before `date` (the rider's today), per day, latest first."""
     _require_rider(actor)
-    rows = await db.delivery.find_many(where=_left_over_where(actor, date))
-    days: dict[str, int] = {}
-    for d in rows:
-        days[d.serviceDate] = days.get(d.serviceDate, 0) + 1
-    return {"total": len(rows), "days": [{"date": k, "count": days[k]} for k in sorted(days, reverse=True)]}
+    rows = await db.delivery.group_by(by=["serviceDate"], where=_left_over_where(actor, date), count=True)
+    days = {row["serviceDate"]: row["_count"]["_all"] for row in rows}
+    return {"total": sum(days.values()), "days": [{"date": k, "count": days[k]} for k in sorted(days, reverse=True)]}
 
 
 async def carry_over(actor: dict, date: str, origin: Optional[dict] = None) -> dict:
