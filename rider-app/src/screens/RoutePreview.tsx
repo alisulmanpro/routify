@@ -6,6 +6,7 @@ import { Screen } from '../components/Kit';
 import { type McName } from '../components/Premium';
 import { LightButton, LightError } from '../components/LightKit';
 import { get, post, ApiRequestError } from '../lib/api';
+import { fetchRoute } from '../lib/v2api';
 import { getRouteOrigin } from '../lib/location';
 import { dayLabel, formatMinutes, stopCardText } from '../lib/format';
 import { STATUS as STOP_STATUS } from './DeliveryDetail';
@@ -46,8 +47,8 @@ export default function RoutePreview({ name, date, ids, routeId }: { name?: stri
 
   useFocusEffect(useCallback(() => {
     if (!currentId) return;
-    get<Route>(`/routes/${currentId}`)
-      .then((res) => { showRoute(res.data); setError(''); })
+    fetchRoute(currentId)
+      .then((r) => { showRoute(r); setError(''); })
       .catch((err) => { setError(err instanceof ApiRequestError ? err.message : 'Could not load this route'); setStops((list) => list ?? []); });
   }, [currentId]));
 

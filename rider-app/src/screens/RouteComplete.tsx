@@ -4,7 +4,8 @@ import { Ionicons } from '@expo/vector-icons';
 import { StatusBar } from 'expo-status-bar';
 import { Screen } from '../components/Kit';
 import { LightButton, LightError } from '../components/LightKit';
-import { get, ApiRequestError } from '../lib/api';
+import { ApiRequestError } from '../lib/api';
+import { fetchRoute } from '../lib/v2api';
 import { useAuth } from '../lib/auth';
 import { FAILURE_LABELS, stopCardText } from '../lib/format';
 import type { Route } from '../lib/types';
@@ -20,8 +21,8 @@ export default function RouteComplete({ routeId }: { routeId: string }) {
   const [error, setError] = useState('');
 
   useFocusEffect(useCallback(() => {
-    get<Route>(`/routes/${routeId}`)
-      .then((res) => { setRoute(res.data); setError(''); })
+    fetchRoute(routeId)
+      .then((r) => { setRoute(r); setError(''); })
       .catch((err) => setError(err instanceof ApiRequestError ? err.message : 'Could not load this route'));
   }, [routeId]));
 

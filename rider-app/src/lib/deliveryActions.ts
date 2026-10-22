@@ -1,5 +1,6 @@
 import { Alert, Linking, Platform } from 'react-native';
-import { post, ApiRequestError } from './api';
+import { ApiRequestError } from './api';
+import { sendStopEvent } from './v2api';
 import type { Delivery } from './types';
 import { stopLabel } from './format';
 
@@ -21,19 +22,18 @@ const confirm = (title: string, message: string, action: string) => new Promise<
 });
 
 /**
- * Marks a delivery delivered from a list: asks first, records "arrived" if needed, and asks again
- * if earlier stops on the route are still open. Resolves true when it was marked delivered.
+ * Marks a delivery delivered from a list: asks first, then one request (the server records "arrived" itself), and asks
+ * again if earlier stops on the route are still open. Resolves true when it was marked delivered.
  */
 export async function markDelivered(delivery: Delivery): Promise<boolean> {
   const name = stopLabel(delivery);
   if (!(await confirm('Mark as delivered?', `Confirm the parcel was handed over to ${name}. A proof photo can be added from the delivery details.`, 'Delivered'))) return false;
-  if (delivery.status === 'pending') await post(`/deliveries/${delivery.id}/arrive`);
   try {
-    await post(`/deliveries/${delivery.id}/deliver`, {});
+    await sendStopEvent(delivery.id, { type: 'deliver' });
   } catch (err) {
     if (!(err instanceof ApiRequestError) || err.code !== 'EARLIER_STOPS_REMAIN') throw err;
     if (!(await confirm('Earlier stops still open', 'Some stops before this one on your route are not finished yet. Deliver this one anyway?', 'Continue anyway'))) return false;
-    await post(`/deliveries/${delivery.id}/deliver`, { allowSkip: true });
+    await sendStopEvent(delivery.id, { type: 'deliver', allowSkip: true });
   }
   return true;
 }

@@ -4,7 +4,9 @@ import { useFocusEffect } from './useFocusEffect';
 import { ApiRequestError, get } from './api';
 import { useAuth } from './auth';
 import { todayKey } from './format';
-import type { Dashboard, Delivery, LeftOver, Route, RouteListItem } from './types';
+import { queryClient } from './query';
+import { fetchHome as fetchHomeV2, fetchRoute as fetchRouteV2 } from './v2api';
+import type { Dashboard, LeftOver, Route, RouteListItem } from './types';
 
 /** Refetches when the screen comes back into view (not on the first focus: the query has just loaded then). */
 export function useRefetchOnFocus(refetch: () => unknown) {
@@ -28,18 +30,15 @@ export type HomeData = {
   leftOver: LeftOver;
 };
 
+/** GET /v2/rider/home: one request with counts only (it used to be four, one of them up to 100 whole stops). */
 async function fetchHome(date: string): Promise<HomeData> {
-  const [dash, byDate, left, later] = await Promise.all([
-    get<Dashboard>('/rider/dashboard', { date }),
-    get<RouteListItem[]>('/routes/by-date', { from: date }),
-    get<LeftOver>('/routes/leftover', { date }),
-    get<Delivery[]>('/deliveries', { status: 'pending', dateFrom: date, limit: 100, sort: 'recent' }),
-  ]);
-  const unplanned = new Map<string, number>();
-  for (const d of later.data) if (!d.routeId) unplanned.set(d.serviceDate, (unplanned.get(d.serviceDate) || 0) + 1);
+  const home = await fetchHomeV2(date);
   return {
-    dashboard: dash.data, routes: byDate.data, leftOver: left.data,
-    unplanned: [...unplanned].map(([day, count]) => ({ date: day, count })).sort((a, b) => a.date.localeCompare(b.date)),
+    dashboard: { rider: { id: '', fullName: home.rider.fullName }, date: home.date, ...home.today },
+    // Home reads a route's stop count (progress.total) and status; finished routes are not listed any more.
+    routes: home.routes.map((r) => ({ id: r.id, name: r.name, status: r.status, serviceDate: r.serviceDate, progress: { total: r.stops, done: 0, remaining: r.stops } })),
+    unplanned: home.unplanned,
+    leftOver: home.leftOver,
   };
 }
 
@@ -54,8 +53,10 @@ export function useHome() {
 
 // ---- Routes ----
 
-async function fetchRoute(routeId: string | undefined): Promise<Route | null> {
-  return (await get<Route | null>(routeId ? `/routes/${routeId}` : '/routes/current', routeId ? undefined : { date: todayKey() })).data;
+async function fetchRoute(userId: string | undefined, routeId: string | undefined): Promise<Route | null> {
+  // "Today's / the one underway" has no v2 endpoint; a known route comes from v2 (light, and 304 when unchanged).
+  if (!routeId) return (await get<Route | null>('/routes/current', { date: todayKey() })).data;
+  return fetchRouteV2(routeId, queryClient.getQueryData<Route & { etag?: string }>(routeKey(userId, routeId)));
 }
 
 export const routeKey = (userId: string | undefined, routeId: string | undefined) => ['route', userId, routeId ?? 'current'] as const;
@@ -68,7 +69,7 @@ export function useRouteData(routeId: string | undefined) {
   const { user } = useAuth();
   const client = useQueryClient();
   const key = useMemo(() => routeKey(user?.id, routeId), [user?.id, routeId]);
-  const query = useQuery({ queryKey: key, queryFn: () => fetchRoute(routeId), enabled: !!user });
+  const query = useQuery({ queryKey: key, queryFn: () => fetchRoute(user?.id, routeId), enabled: !!user });
   useRefetchOnFocus(query.refetch);
   const setRoute = useCallback((route: Route | null) => {
     client.setQueryData(key, route);

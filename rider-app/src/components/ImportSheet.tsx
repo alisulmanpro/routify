@@ -3,7 +3,8 @@ import { Modal, Platform, Pressable, StyleSheet, Text, View } from 'react-native
 import * as DocumentPicker from 'expo-document-picker';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { KeyboardAwareScrollView, RevealingTextInput } from './KeyboardAware';
-import { post, postFile, ApiRequestError } from '../lib/api';
+import { postFile, ApiRequestError } from '../lib/api';
+import { createStops } from '../lib/v2api';
 import { findDuplicate } from '../lib/duplicates';
 import { findEircode } from '../lib/format';
 import type { Delivery, ImportDraft, ImportDraftItem } from '../lib/types';
@@ -81,10 +82,8 @@ function ImportBody({ date, stops, onClose, onImported }: Omit<Props, 'visible'>
     setBusy(true);
     setError('');
     try {
-      const res = await post<Delivery[]>('/deliveries/bulk', {
-        items: chosen.map((row) => ({ trackingId: row.trackingId.trim(), address: { raw: row.address.trim() }, serviceDate: date })),
-      });
-      onImported(res.data);
+      // One request per 500 stops, each stop with the phone's own id, so a retry never imports a stop twice.
+      onImported(await createStops(chosen.map((row) => ({ trackingId: row.trackingId.trim(), address: { raw: row.address.trim() }, serviceDate: date }))));
     } catch (err) {
       setError(err instanceof ApiRequestError ? err.message : 'Could not add these stops');
     } finally {

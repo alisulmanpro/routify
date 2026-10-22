@@ -5,9 +5,11 @@ import { KeyboardAwareScrollView, useRevealOnFocus } from '../components/Keyboar
 import * as ImagePicker from 'expo-image-picker';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useFocusEffect } from '../lib/useFocusEffect';
-import { get, post, del, postFile, fileUrl, ApiRequestError } from '../lib/api';
-import type { Delivery, FailureReason, Route } from '../lib/types';
-import { FAILURE_LABELS, stopCardText, stopLabel, timeOnly, todayKey } from '../lib/format';
+import { get, del, postFile, fileUrl, ApiRequestError } from '../lib/api';
+import type { Delivery, FailureReason } from '../lib/types';
+import { applyStopEvent, earlierStopOf, type V2EventResult } from '../lib/v2';
+import { sendStopEvent } from '../lib/v2api';
+import { FAILURE_LABELS, stopCardText, timeOnly } from '../lib/format';
 import { Screen } from '../components/Kit';
 import { type PillTone } from '../components/Premium';
 import { LightButton, LightError } from '../components/LightKit';
@@ -59,10 +61,11 @@ export default function DeliveryDetail({ id, onDone, initialStep }: { id: string
     finally { setBusy(null); }
   };
 
-  // Delivered, Failed and a photo all need the stop marked arrived first.
+  // A photo needs the stop marked arrived first (Delivered and Failed record the arrival themselves).
   const ensureArrived = async () => {
     if (delivery?.status !== 'pending') return;
-    setDelivery((await post<Delivery>(`/deliveries/${id}/arrive`)).data);
+    const { stop } = await sendStopEvent(id, { type: 'arrive' });
+    setDelivery((d) => (d ? applyStopEvent(d, stop) : d));
   };
 
   const capturePhoto = async (fromCamera: boolean) => {
@@ -79,14 +82,9 @@ export default function DeliveryDetail({ id, onDone, initialStep }: { id: string
     });
   };
 
-  // After the last open stop the server completes the route: then Route complete, else back as before.
-  const finish = async () => {
-    const routeId = delivery?.routeId;
-    if (routeId) {
-      try {
-        if ((await get<Route>(`/routes/${routeId}`)).data.status === 'completed') { resetTo('RouteComplete', { routeId }); return; }
-      } catch { /* just go back */ }
-    }
+  // After the last open stop the server completes the route (the event's answer says so): then Route complete, else back.
+  const finish = (result: V2EventResult) => {
+    if (result.route?.status === 'completed') { resetTo('RouteComplete', { routeId: result.route.id }); return; }
     onDone();
   };
 
@@ -96,44 +94,34 @@ export default function DeliveryDetail({ id, onDone, initialStep }: { id: string
     { text: 'Cancel', style: 'cancel' },
   ]);
 
+  // One request: the server records the arrival if needed and refuses (409) while an earlier stop is still open.
   const confirmDelivery = (allowSkip = false) => run('deliver', async () => {
-    await ensureArrived();
     const note = deliverNote.trim();
-    setDelivery((await post<Delivery>(`/deliveries/${id}/deliver`, { ...(allowSkip ? { allowSkip: true } : {}), ...(note ? { note } : {}) })).data);
-    await finish();
+    try {
+      const result = await sendStopEvent(id, { type: 'deliver', ...(allowSkip ? { allowSkip: true } : {}), ...(note ? { note } : {}) });
+      setDelivery((d) => (d ? applyStopEvent({ ...d, note: note || d.note }, result.stop) : d));
+      finish(result);
+    } catch (err) {
+      const earlier = err instanceof ApiRequestError && err.code === 'EARLIER_STOPS_REMAIN' ? earlierStopOf(err.details) : null;
+      if (!earlier) throw err;
+      Alert.alert(
+        'Earlier delivery still open',
+        `Delivery no. ${earlier.stopOrder}${earlier.trackingId ? ` (${earlier.trackingId})` : ''} is not finished. Continue with delivery no. ${delivery?.stopOrder ?? ''}?`,
+        [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Continue anyway', style: 'destructive', onPress: () => confirmDelivery(true) },
+        ],
+      );
+    }
   });
 
-  const deliver = async () => {
-    if (!delivery?.routeId) { confirmDelivery(); return; }
-    try {
-      const route = (await get<Route | null>('/routes/current', { date: todayKey() })).data;
-      const current = route?.stops.find((stop) => stop.delivery.id === delivery.id);
-      const earlier = current && route
-        ? route.stops.find((stop) => stop.order < current.order && (stop.delivery.status === 'pending' || stop.delivery.status === 'in_progress'))
-        : null;
-      if (earlier && current) {
-        Alert.alert(
-          'Earlier delivery still open',
-          `Delivery no. ${earlier.order} (${stopLabel(earlier.delivery)}) is not finished. Continue with delivery no. ${current.order}?`,
-          [
-            { text: 'Cancel', style: 'cancel' },
-            { text: 'Continue anyway', style: 'destructive', onPress: () => confirmDelivery(true) },
-          ],
-        );
-        return;
-      }
-      confirmDelivery();
-    } catch (err) {
-      setError(err instanceof ApiRequestError ? err.message : 'Could not verify the route order');
-    }
-  };
+  const deliver = () => confirmDelivery();
 
   const submitFail = () => run('fail', async () => {
     if (!reason) { setError('Choose a reason'); return; }
-    await ensureArrived();
-    await post(`/deliveries/${id}/fail`, { reason, note: failNote.trim() || undefined });
+    const result = await sendStopEvent(id, { type: 'fail', reason, ...(failNote.trim() ? { note: failNote.trim() } : {}) });
     setShowFail(false);
-    await finish();
+    finish(result);
   });
 
   const removeDelivery = () => {

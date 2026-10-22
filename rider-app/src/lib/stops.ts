@@ -2,6 +2,7 @@ import { post } from './api';
 import { findDuplicate, type Duplicate } from './duplicates';
 import { findEircode } from './format';
 import type { Delivery, GeocodeCheck } from './types';
+import { createStops } from './v2api';
 
 type Point = { latitude: number; longitude: number };
 
@@ -32,11 +33,12 @@ export async function createStop({ raw, parcel, date, location, normalized, prec
     const duplicate = findDuplicate({ eircode: findEircode(raw) || findEircode(normalized), point: precise ? location : null }, existing);
     if (duplicate) throw new DuplicateStopError(duplicate);
   }
-  const res = await post<Delivery>('/deliveries/manual', {
+  // POST /v2/deliveries/batch with the phone's own id for the stop: a retry after a lost answer never adds it twice.
+  const [saved] = await createStops([{
     trackingId: parcel.trim().toUpperCase(),
     address: { raw, ...(normalized && normalized !== raw ? { normalized: normalized.slice(0, 400) } : {}) },
     serviceDate: date,
     ...(location ? { location } : {}),
-  });
-  return res.data;
+  }]);
+  return saved;
 }
