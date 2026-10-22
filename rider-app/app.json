@@ -3,6 +3,14 @@
     "name": "Routify",
     "slug": "delivery-planner",
     "version": "1.0.0",
+    "runtimeVersion": {
+      "policy": "fingerprint"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/01cf61eb-26c7-4e49-866d-ee8b7c291ae2",
+      "checkAutomatically": "ON_LOAD",
+      "fallbackToCacheTimeout": 0
+    },
     "orientation": "portrait",
     "androidStatusBar": {
       "barStyle": "light-content",
