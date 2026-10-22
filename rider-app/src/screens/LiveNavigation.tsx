@@ -180,7 +180,7 @@ export default function LiveNavigation() {
     <Screen style={{ backgroundColor: c.background }}>
       <StatusBar style="dark" />
       <View style={{ flex: 1 }}>
-        <GoogleRouteMap light stops={mapStops} position={position} path={live?.path ?? []} order={target ? [target] : []} follow={!!position} heading={heading} style={{ height: '100%' }} />
+        <GoogleRouteMap light stops={mapStops} maxStops={25} position={position} path={live?.path ?? []} order={target ? [target] : []} follow={!!position} heading={heading} style={{ height: '100%' }} />
 
         <View style={[s.topRow, { top: insets.top > 0 ? 12 : 16 }]}>
           <View style={s.pill}><Text style={s.pillText}>Stop {current.order} of {route.stops.length}</Text></View>

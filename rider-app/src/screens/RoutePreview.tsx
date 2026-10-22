@@ -1,5 +1,6 @@
-import { useCallback, useState, type ComponentProps } from 'react';
-import { ActivityIndicator, Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { memo, useCallback, useState, type ComponentProps } from 'react';
+import { ActivityIndicator, Modal, Pressable, StyleSheet, Text, View } from 'react-native';
+import { FlashList } from '@shopify/flash-list';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { StatusBar } from 'expo-status-bar';
 import { Screen } from '../components/Kit';
@@ -43,6 +44,7 @@ export default function RoutePreview({ name, date, ids, routeId }: { name?: stri
   const [reordering, setReordering] = useState(false);
   const existing = !!routeId;
 
+  const openStop = useCallback((d: Delivery) => navigate('DeliveryDetail', { id: d.id }), [navigate]);
   const showRoute = (r: Route) => { setRoute(r); setStops(r.stops.map((stop) => stop.delivery)); setPreference(r.preference); };
 
   useFocusEffect(useCallback(() => {
@@ -139,10 +141,19 @@ export default function RoutePreview({ name, date, ids, routeId }: { name?: stri
     if (existing) { if (key !== preference) void replan(key); } else setPreference(key);
   };
 
+  // Rows only change with these, so the list redraws a row only when it must.
+  const rowMode: RowMode = existing ? (finished ? 'open-finished' : 'open') : 'draft';
+
   return (
     <Screen style={{ backgroundColor: c.background }}>
       <StatusBar style="dark" />
-      <ScrollView contentContainerStyle={{ paddingHorizontal: 24, paddingTop: 24, paddingBottom: 120 }}>
+      <FlashList
+        data={stops}
+        keyExtractor={(d) => d.id}
+        extraData={rowMode}
+        contentContainerStyle={{ paddingHorizontal: 24, paddingTop: 24, paddingBottom: 120 }}
+        renderItem={({ item, index }) => <PreviewRow delivery={item} index={index} mode={rowMode} onOpen={openStop} />}
+        ListHeaderComponent={<>
         <View style={s.header}>
           <Pressable onPress={goBack} hitSlop={12} accessibilityLabel="Back to Add stops">
             <Ionicons name="arrow-back" size={26} color={c.text} />
@@ -167,31 +178,12 @@ export default function RoutePreview({ name, date, ids, routeId }: { name?: stri
           </View>
         )}
 
-        {stops.map((d, i) => {
-          const { title, address } = stopCardText(d);
-          const tag = d.status === 'pending' ? locationTag(d) : statusTag(d);
-          return (
-            <Pressable key={d.id} disabled={!existing} onPress={() => navigate('DeliveryDetail', { id: d.id })} style={({ pressed }) => [s.row, i > 0 && s.divider, pressed && { opacity: 0.7 }]}>
-              <View style={s.badge}><Text style={{ color: c.text, fontWeight: '600', fontSize: 16 }}>{i + 1}</Text></View>
-              <View style={{ flex: 1, marginLeft: 14, marginRight: 8 }}>
-                <Text style={s.code} numberOfLines={address ? 1 : 2}>{title}</Text>
-                {address ? <Text style={s.address} numberOfLines={3}>{address}</Text> : null}
-                {tag ? (
-                  <View style={[s.tag, { backgroundColor: tag.bg }]}>
-                    <Ionicons name={tag.icon} size={16} color={tag.fg} />
-                    <Text style={{ color: tag.fg, fontSize: 14, fontWeight: '500' }}>{tag.text}</Text>
-                  </View>
-                ) : null}
-              </View>
-              {existing && finished
-                ? <Ionicons name="chevron-forward" size={20} color={c.placeholder} style={{ marginTop: 2 }} />
-                : <MaterialCommunityIcons name="drag-vertical" size={24} color={c.placeholder} style={{ marginTop: 2 }} />}
-            </Pressable>
-          );
-        })}
+        </>}
+        ListFooterComponent={<>
         {existing && !stops.length ? <Text style={{ color: c.textSecondary, fontSize: 15, marginTop: 16 }}>{route ? 'No stops on this route.' : 'Route not found. It may have been planned again as a new route.'}</Text> : null}
         <LightError text={error} />
-      </ScrollView>
+        </>}
+      />
 
       <View style={s.footer}>
         {existing ? (
@@ -236,6 +228,33 @@ type Tag = { text: string; fg: string; bg: string; icon: ComponentProps<typeof I
 const ROUTE_STATE: Record<Route['status'], string> = { planned: 'Planned', active: 'In progress', completed: 'Completed' };
 
 /** "Location not verified" for a stop not pinned exactly yet (it is looked up when the route is planned). */
+// draft: stops being reviewed before planning; open: an existing route (rows open the stop); open-finished: also finished.
+type RowMode = 'draft' | 'open' | 'open-finished';
+
+/** One stop of the review list. Memoised: it redraws only when its stop, number or mode changes. */
+const PreviewRow = memo(function PreviewRow({ delivery: d, index: i, mode, onOpen }: { delivery: Delivery; index: number; mode: RowMode; onOpen: (d: Delivery) => void }) {
+  const { title, address } = stopCardText(d);
+  const tag = d.status === 'pending' ? locationTag(d) : statusTag(d);
+  return (
+    <Pressable disabled={mode === 'draft'} onPress={() => onOpen(d)} style={({ pressed }) => [s.row, i > 0 && s.divider, pressed && { opacity: 0.7 }]}>
+      <View style={s.badge}><Text style={{ color: c.text, fontWeight: '600', fontSize: 16 }}>{i + 1}</Text></View>
+      <View style={{ flex: 1, marginLeft: 14, marginRight: 8 }}>
+        <Text style={s.code} numberOfLines={address ? 1 : 2}>{title}</Text>
+        {address ? <Text style={s.address} numberOfLines={3}>{address}</Text> : null}
+        {tag ? (
+          <View style={[s.tag, { backgroundColor: tag.bg }]}>
+            <Ionicons name={tag.icon} size={16} color={tag.fg} />
+            <Text style={{ color: tag.fg, fontSize: 14, fontWeight: '500' }}>{tag.text}</Text>
+          </View>
+        ) : null}
+      </View>
+      {mode === 'open-finished'
+        ? <Ionicons name="chevron-forward" size={20} color={c.placeholder} style={{ marginTop: 2 }} />
+        : <MaterialCommunityIcons name="drag-vertical" size={24} color={c.placeholder} style={{ marginTop: 2 }} />}
+    </Pressable>
+  );
+});
+
 function locationTag(d: Delivery): Tag | null {
   const { geocodeStatus: status, approximate } = d.address;
   if (status === 'found' && !approximate) return null;

@@ -1,10 +1,11 @@
-import { useEffect, useRef, useState } from 'react';
+import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import { Platform, Pressable, StyleSheet, Text, View, type LayoutChangeEvent, type ViewStyle } from 'react-native';
 import MapView, { Marker, Polyline, PROVIDER_DEFAULT, PROVIDER_GOOGLE, UrlTile } from 'react-native-maps';
 import { isRunningInExpoGo } from 'expo';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { light as l, premium as c } from '../lib/theme';
 import { LIGHT_MAP_STYLE } from '../lib/mapStyles';
+import { visibleStops } from '../lib/mapPins';
 
 export type Coordinates = { latitude: number; longitude: number };
 // 'last' is the final open stop and 'current' the stop being driven to (both black on the light map, like the
@@ -31,6 +32,8 @@ export type GoogleRouteMapProps = {
   heading?: number | null;
   /** The light design_pref look: light map, blue numbered pins, blue route line. */
   light?: boolean;
+  /** Draw at most this many stop pins (see visibleStops in lib/mapPins); all when unset. */
+  maxStops?: number;
 };
 
 const EDGE = { top: 60, right: 50, bottom: 60, left: 50 };
@@ -59,24 +62,14 @@ const LIGHT_MARKER_COLORS: Record<MapStop['kind'], { bg: string; fg: string; bor
   failed: { bg: l.danger, fg: '#fff', border: '#fff' },
 };
 
-export default function GoogleRouteMap({ stops, position, path, order, focus, style, pinning, onCenterChange, initialCenter, reveal, follow, heading, light }: GoogleRouteMapProps) {
+export default function GoogleRouteMap({ stops: allStops, position, path, order, focus, style, pinning, onCenterChange, initialCenter, reveal, follow, heading, light, maxStops }: GoogleRouteMapProps) {
+  const stops = useMemo(() => visibleStops(allStops, maxStops), [allStops, maxStops]);
   const line = light ? l.link : c.primary;
   const map = useRef<MapView>(null);
   const [ready, setReady] = useState(false);
-  // Android draws custom marker views once; keep redrawing briefly so they appear, then stop for speed.
-  const [redraw, setRedraw] = useState(true);
   // Once the rider pans or zooms, automatic fitting stops until they tap the fit button.
   const userMoved = useRef(false);
   const layoutTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  useEffect(() => {
-    const timer = setTimeout(() => setRedraw(false), 800);
-    return () => clearTimeout(timer);
-  }, [stops, reveal]);
-  useEffect(() => {
-    const timer = setTimeout(() => setRedraw(true), 0);
-    return () => clearTimeout(timer);
-  }, [stops, reveal]);
 
   // Every marker (all stops and the rider) in view.
   const fit = (animated: boolean) => {
@@ -148,27 +141,11 @@ export default function GoogleRouteMap({ stops, position, path, order, focus, st
           <Polyline coordinates={position ? [position, ...order] : order} strokeColor={line} strokeWidth={3} lineDashPattern={[10, 8]} />
         ) : null}
 
-        {shown.map((s) => {
-          const col = (light ? LIGHT_MARKER_COLORS : MARKER_COLORS)[s.kind];
-          const big = s.kind === 'next' || s.kind === 'current';
-          return (
-            <Marker key={s.id} coordinate={s} title={s.title} anchor={{ x: 0.5, y: 0.5 }} tracksViewChanges={redraw} zIndex={big ? 10 : s.kind === 'upcoming' || s.kind === 'last' ? 5 : 1}>
-              <View style={{ width: big ? 36 : 28, height: big ? 36 : 28, borderRadius: 18, backgroundColor: col.bg, borderWidth: big ? 3 : 2, borderColor: col.border, alignItems: 'center', justifyContent: 'center' }}>
-                {s.kind === 'done' && !(light && s.label) ? <Ionicons name="checkmark" size={15} color={col.fg} />
-                  : s.kind === 'failed' ? <Ionicons name="close" size={15} color={col.fg} />
-                    : <Text style={{ color: col.fg, fontWeight: '800', fontSize: big ? 14 : 12 }}>{s.label}</Text>}
-              </View>
-            </Marker>
-          );
-        })}
+        {shown.map((st) => (
+          <StopMarker key={st.id} latitude={st.latitude} longitude={st.longitude} title={st.title} kind={st.kind} label={st.label} light={!!light} />
+        ))}
 
-        {position ? (
-          <Marker coordinate={position} anchor={{ x: 0.5, y: 0.5 }} tracksViewChanges={redraw} zIndex={20} title="You are here">
-            <View style={{ width: 22, height: 22, borderRadius: 11, backgroundColor: 'rgba(61,139,255,0.3)', alignItems: 'center', justifyContent: 'center' }}>
-              <View style={{ width: 14, height: 14, borderRadius: 7, backgroundColor: '#3D8BFF', borderWidth: 2, borderColor: '#fff' }} />
-            </View>
-          </Marker>
-        ) : null}
+        {position ? <PositionMarker latitude={position.latitude} longitude={position.longitude} /> : null}
       </MapView>
 
       {pinning ? (
@@ -186,6 +163,51 @@ export default function GoogleRouteMap({ stops, position, path, order, focus, st
     </View>
   );
 }
+
+/**
+ * Android draws a custom marker view into a bitmap; `tracksViewChanges` must be on until that is done, and every
+ * tracking marker costs a redraw per frame. So each pin tracks only for a moment after its own look changes.
+ */
+function useBriefTracking(look: string) {
+  // The look whose bitmap is drawn; while it differs from the current look, the marker keeps tracking.
+  const [settled, setSettled] = useState<string | null>(null);
+  useEffect(() => {
+    const timer = setTimeout(() => setSettled(look), 600);
+    return () => clearTimeout(timer);
+  }, [look]);
+  return settled !== look;
+}
+
+const StopMarker = memo(function StopMarker({ latitude, longitude, title, kind, label, light }: {
+  latitude: number; longitude: number; title: string; kind: MapStop['kind']; label: string; light: boolean;
+}) {
+  const col = (light ? LIGHT_MARKER_COLORS : MARKER_COLORS)[kind];
+  const big = kind === 'next' || kind === 'current';
+  const track = useBriefTracking(`${kind}|${label}|${light}`);
+  const coordinate = useMemo(() => ({ latitude, longitude }), [latitude, longitude]);
+  return (
+    <Marker coordinate={coordinate} title={title} anchor={{ x: 0.5, y: 0.5 }} tracksViewChanges={track} zIndex={big ? 10 : kind === 'upcoming' || kind === 'last' ? 5 : 1}>
+      <View style={{ width: big ? 36 : 28, height: big ? 36 : 28, borderRadius: 18, backgroundColor: col.bg, borderWidth: big ? 3 : 2, borderColor: col.border, alignItems: 'center', justifyContent: 'center' }}>
+        {kind === 'done' && !(light && label) ? <Ionicons name="checkmark" size={15} color={col.fg} />
+          : kind === 'failed' ? <Ionicons name="close" size={15} color={col.fg} />
+            : <Text style={{ color: col.fg, fontWeight: '800', fontSize: big ? 14 : 12 }}>{label}</Text>}
+      </View>
+    </Marker>
+  );
+});
+
+const PositionMarker = memo(function PositionMarker({ latitude, longitude }: Coordinates) {
+  // Its look never changes, so it only tracks once; moving it does not need tracking.
+  const track = useBriefTracking('position');
+  const coordinate = useMemo(() => ({ latitude, longitude }), [latitude, longitude]);
+  return (
+    <Marker coordinate={coordinate} anchor={{ x: 0.5, y: 0.5 }} tracksViewChanges={track} zIndex={20} title="You are here">
+      <View style={{ width: 22, height: 22, borderRadius: 11, backgroundColor: 'rgba(61,139,255,0.3)', alignItems: 'center', justifyContent: 'center' }}>
+        <View style={{ width: 14, height: 14, borderRadius: 7, backgroundColor: '#3D8BFF', borderWidth: 2, borderColor: '#fff' }} />
+      </View>
+    </Marker>
+  );
+});
 
 // Google's dark map theme, close to the app's colours.
 const DARK_STYLE = [

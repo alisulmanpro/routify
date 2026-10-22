@@ -1,5 +1,6 @@
-import { useCallback, useState } from 'react';
-import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { memo, useCallback, useState } from 'react';
+import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
+import { FlashList } from '@shopify/flash-list';
 import { Ionicons } from '@expo/vector-icons';
 import { StatusBar } from 'expo-status-bar';
 import { Screen } from '../components/Kit';
@@ -8,7 +9,7 @@ import { ApiRequestError } from '../lib/api';
 import { fetchRoute } from '../lib/v2api';
 import { useAuth } from '../lib/auth';
 import { FAILURE_LABELS, stopCardText } from '../lib/format';
-import type { Route } from '../lib/types';
+import type { Delivery, Route, RouteStop } from '../lib/types';
 import { useFocusEffect } from '../lib/useFocusEffect';
 import { useNav } from '../lib/nav';
 import { light as c } from '../lib/theme';
@@ -30,11 +31,17 @@ export default function RouteComplete({ routeId }: { routeId: string }) {
   const firstName = user?.fullName.split(' ')[0] || '';
   const failed = route ? route.stops.filter((stop) => stop.delivery.status === 'failed') : [];
   const minutes = route?.summary.routeMinutes ?? null;
+  const openStop = useCallback((d: Delivery) => navigate('DeliveryDetail', { id: d.id }), [navigate]);
 
   return (
     <Screen style={{ backgroundColor: c.background }}>
       <StatusBar style="dark" />
-      <ScrollView contentContainerStyle={{ paddingHorizontal: 24, paddingTop: 56, paddingBottom: 120 }}>
+      <FlashList
+        data={failed}
+        keyExtractor={(stop) => stop.delivery.id}
+        contentContainerStyle={{ paddingHorizontal: 24, paddingTop: 56, paddingBottom: 120 }}
+        renderItem={({ item }) => <FailedRow stop={item} onOpen={openStop} />}
+        ListHeaderComponent={<>
         <View style={s.badge}><Ionicons name="checkmark" size={56} color={c.success} /></View>
         <Text style={s.title}>Route complete!</Text>
         <Text style={s.sub}>Great work today{firstName ? `, ${firstName}` : ''}</Text>
@@ -56,31 +63,12 @@ export default function RouteComplete({ routeId }: { routeId: string }) {
               ) : <Stat value="—" label="Time" />}
             </View>
 
-            {failed.length ? (
-              <View style={s.section}>
-                <Text style={s.sectionTitle}>{failed.length === 1 ? 'Failed stop' : 'Failed stops'}</Text>
-                {failed.map((stop) => {
-                  const d = stop.delivery;
-                  const { title, address } = stopCardText(d);
-                  return (
-                    <Pressable key={d.id} onPress={() => navigate('DeliveryDetail', { id: d.id })} style={({ pressed }) => [s.row, pressed && { opacity: 0.7 }]}>
-                      <View style={s.num}><Text style={{ color: c.danger, fontSize: 16, fontWeight: '700' }}>{stop.order}</Text></View>
-                      <View style={{ flex: 1, marginLeft: 14, marginRight: 8 }}>
-                        <Text style={s.code} numberOfLines={1}>{title}</Text>
-                        {address ? <Text style={s.address} numberOfLines={2}>{address}</Text> : null}
-                        {d.failure ? (
-                          <View style={s.reason}><Text style={{ color: c.danger, fontSize: 14, fontWeight: '500' }}>{FAILURE_LABELS[d.failure.reason] ?? d.failure.reason}</Text></View>
-                        ) : null}
-                      </View>
-                      <Ionicons name="chevron-forward" size={20} color={c.placeholder} />
-                    </Pressable>
-                  );
-                })}
-              </View>
-            ) : null}
+            {/* The failed stops themselves are the list rows below. */}
+            {failed.length ? <Text style={[s.sectionTitle, s.section]}>{failed.length === 1 ? 'Failed stop' : 'Failed stops'}</Text> : null}
           </>
         ) : !error ? <ActivityIndicator color={c.ink} style={{ marginTop: 32 }} /> : null}
-      </ScrollView>
+        </>}
+      />
 
       <View style={s.footer}>
         <LightButton title="Back to home" onPress={home} />
@@ -88,6 +76,25 @@ export default function RouteComplete({ routeId }: { routeId: string }) {
     </Screen>
   );
 }
+
+/** A failed stop: tap to open it. Memoised so long routes scroll smoothly. */
+const FailedRow = memo(function FailedRow({ stop, onOpen }: { stop: RouteStop; onOpen: (d: Delivery) => void }) {
+  const d = stop.delivery;
+  const { title, address } = stopCardText(d);
+  return (
+    <Pressable onPress={() => onOpen(d)} style={({ pressed }) => [s.row, pressed && { opacity: 0.7 }]}>
+      <View style={s.num}><Text style={{ color: c.danger, fontSize: 16, fontWeight: '700' }}>{stop.order}</Text></View>
+      <View style={{ flex: 1, marginLeft: 14, marginRight: 8 }}>
+        <Text style={s.code} numberOfLines={1}>{title}</Text>
+        {address ? <Text style={s.address} numberOfLines={2}>{address}</Text> : null}
+        {d.failure ? (
+          <View style={s.reason}><Text style={{ color: c.danger, fontSize: 14, fontWeight: '500' }}>{FAILURE_LABELS[d.failure.reason] ?? d.failure.reason}</Text></View>
+        ) : null}
+      </View>
+      <Ionicons name="chevron-forward" size={20} color={c.placeholder} />
+    </Pressable>
+  );
+});
 
 function Stat({ value, unit, label, color = c.text }: { value: string; unit?: string; label: string; color?: string }) {
   return (

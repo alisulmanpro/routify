@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, Pressable, StyleSheet, Text, TextInput, Vibration, View, type ScrollView } from 'react-native';
+import { memo, useCallback, useEffect, useRef, useState } from 'react';
+import { ActivityIndicator, Alert, Pressable, StyleSheet, Text, TextInput, Vibration, View } from 'react-native';
+import { FlashList, type FlashListRef } from '@shopify/flash-list';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { KeyboardAwareScrollView, RevealingTextInput } from '../components/KeyboardAware';
 import { Screen } from '../components/Kit';
@@ -64,8 +65,7 @@ export default function AddStops({ name, date, routeId }: { name: string; date: 
   // The rider chose "Add anyway" for the address now in the field (a second parcel for the same door).
   const [allowDuplicate, setAllowDuplicate] = useState(false);
   const [highlight, setHighlight] = useState<string | null>(null);
-  const scrollRef = useRef<ScrollView>(null);
-  const stopY = useRef(new Map<string, number>());
+  const scrollRef = useRef<FlashListRef<Delivery>>(null);
 
   const area = user?.serviceArea ? { latitude: user.serviceArea.latitude, longitude: user.serviceArea.longitude } : null;
 
@@ -167,7 +167,7 @@ export default function AddStops({ name, date, routeId }: { name: string; date: 
     }
   };
 
-  const remove = (stop: Delivery) => {
+  const remove = useCallback((stop: Delivery) => {
     Alert.alert('Remove this stop?', stop.address.raw, [
       { text: 'Cancel', style: 'cancel' },
       { text: 'Remove', style: 'destructive', onPress: () => {
@@ -176,7 +176,7 @@ export default function AddStops({ name, date, routeId }: { name: string; date: 
           .catch((err) => setError(err instanceof ApiRequestError ? err.message : 'Could not remove this stop'));
       } },
     ]);
-  };
+  }, []);
 
   const onPin = (pin: PinResult) => {
     setSheet(null);
@@ -210,8 +210,8 @@ export default function AddStops({ name, date, routeId }: { name: string; date: 
 
   const viewStop = (stop: Delivery) => {
     setDuplicate(null);
-    const y = stopY.current.get(stop.id);
-    if (y != null) scrollRef.current?.scrollTo({ y: Math.max(0, y - 120), animated: true });
+    const index = stops.findIndex((d) => d.id === stop.id);
+    if (index >= 0) void scrollRef.current?.scrollToIndex({ index, animated: true, viewOffset: 120 });
     setHighlight(stop.id);
     setTimeout(() => setHighlight((id) => (id === stop.id ? null : id)), 2500);
   };
@@ -222,7 +222,17 @@ export default function AddStops({ name, date, routeId }: { name: string; date: 
 
   return (
     <Screen style={{ backgroundColor: c.background }}>
-      <KeyboardAwareScrollView ref={scrollRef} contentContainerStyle={{ paddingHorizontal: 24, paddingTop: 24, paddingBottom: 120 }} keyboardShouldPersistTaps="handled">
+      {/* Only the stops on screen are drawn; the form above them scrolls with the list and keeps clear of the keyboard. */}
+      <FlashList
+        ref={scrollRef}
+        data={stops}
+        keyExtractor={(stop) => stop.id}
+        extraData={highlight}
+        renderScrollComponent={KeyboardAwareScrollView}
+        keyboardShouldPersistTaps="handled"
+        contentContainerStyle={{ paddingHorizontal: 24, paddingTop: 24, paddingBottom: 120 }}
+        renderItem={({ item, index }) => <AddedStopRow stop={item} index={index} highlighted={highlight === item.id} onRemove={remove} />}
+        ListHeaderComponent={<>
         <View style={s.header}>
           <Pressable onPress={goBack} hitSlop={12} accessibilityLabel="Back">
             <Ionicons name="arrow-back" size={26} color={c.text} />
@@ -310,16 +320,8 @@ export default function AddStops({ name, date, routeId }: { name: string; date: 
           {loading ? <ActivityIndicator size="small" color={c.textSecondary} style={{ marginLeft: 10 }} /> : null}
         </View>
         {!loading && !stops.length ? <Text style={{ color: c.textSecondary, fontSize: 15, marginTop: 8 }}>No stops yet. Your first stop will appear here.</Text> : null}
-        {stops.map((stop, i) => (
-          <View key={stop.id} style={[s.stop, i > 0 && s.stopDivider, highlight === stop.id && s.stopHighlight]} onLayout={(e) => stopY.current.set(stop.id, e.nativeEvent.layout.y)}>
-            <View style={s.badge}><Text style={{ color: c.text, fontWeight: '600', fontSize: 16 }}>{i + 1}</Text></View>
-            <View style={{ flex: 1, marginLeft: 14, marginRight: 8 }}>
-              <StopLines stop={stop} light />
-            </View>
-            <Pressable onPress={() => remove(stop)} hitSlop={10} accessibilityLabel="Remove stop"><Ionicons name="trash-outline" size={22} color={c.textSecondary} /></Pressable>
-          </View>
-        ))}
-      </KeyboardAwareScrollView>
+        </>}
+      />
 
       <View style={s.footer}>
         <LightButton title={stops.length ? `Review ${stops.length} stop${stops.length === 1 ? '' : 's'}` : 'Add a stop to continue'} onPress={review} disabled={!stops.length} />
@@ -358,6 +360,21 @@ function SmallButton({ icon, label, onPress }: { icon: McName; label: string; on
     </Pressable>
   );
 }
+
+/** One added stop. Memoised: adding a stop or typing above does not redraw the rows already there. */
+const AddedStopRow = memo(function AddedStopRow({ stop, index, highlighted, onRemove }: {
+  stop: Delivery; index: number; highlighted: boolean; onRemove: (stop: Delivery) => void;
+}) {
+  return (
+    <View style={[s.stop, index > 0 && s.stopDivider, highlighted && s.stopHighlight]}>
+      <View style={s.badge}><Text style={{ color: c.text, fontWeight: '600', fontSize: 16 }}>{index + 1}</Text></View>
+      <View style={{ flex: 1, marginLeft: 14, marginRight: 8 }}>
+        <StopLines stop={stop} light />
+      </View>
+      <Pressable onPress={() => onRemove(stop)} hitSlop={10} accessibilityLabel="Remove stop"><Ionicons name="trash-outline" size={22} color={c.textSecondary} /></Pressable>
+    </View>
+  );
+});
 
 const s = StyleSheet.create({
   header: { flexDirection: 'row', alignItems: 'center', marginBottom: 24 },

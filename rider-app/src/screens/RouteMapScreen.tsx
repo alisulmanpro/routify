@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Platform, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { ActivityIndicator, Platform, Pressable, RefreshControl, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
+import { FlashList, type FlashListRef } from '@shopify/flash-list';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import * as Location from 'expo-location';
 import { post, ApiRequestError } from '../lib/api';
@@ -61,6 +62,10 @@ const isOpen = (stop: Stop) => stop.delivery.status === 'pending' || stop.delive
 const stopName = (stop: Stop) => stopLabel(stop.delivery);
 // After planning, pins drop onto the map one by one in route order.
 const REVEAL_EVERY_MS = 450;
+// Pins drop in one by one only on small routes; above this the map shows them all at once (and Start is never held up).
+const REVEAL_MAX_STOPS = 30;
+// The map draws pins for the next stops only; the list below has all of them.
+const MAP_PINS = 25;
 const openDirections = (stop: Stop) => directionsTo(stop.delivery);
 
 /**
@@ -133,7 +138,7 @@ export default function RouteMapScreen({ reveal = false, routeId }: { reveal?: b
 
   // The map never changes size (resizing it while scrolling made it jump): the whole page scrolls instead.
   const mapHeight = Math.round(height * MAP_FULL);
-  const page = useRef<ScrollView>(null);
+  const page = useRef<FlashListRef<Row>>(null);
   // While a finger is on the map, drags move the map, not the page.
   const [onMap, setOnMap] = useState(false);
 
@@ -210,7 +215,7 @@ export default function RouteMapScreen({ reveal = false, routeId }: { reveal?: b
   const orderLine = useMemo(() => ordered.map((p) => p.at), [ordered]);
 
   // Pins still dropping in; null once every pin is on the map.
-  const revealing = revealed != null && revealed < mapStops.length ? revealed : null;
+  const revealing = revealed != null && mapStops.length <= REVEAL_MAX_STOPS && revealed < mapStops.length ? revealed : null;
   useEffect(() => {
     if (revealing == null || loading) return;
     const timer = setTimeout(() => setRevealed((n) => (n == null ? n : n + 1)), revealing === 0 ? 700 : REVEAL_EVERY_MS);
@@ -231,14 +236,14 @@ export default function RouteMapScreen({ reveal = false, routeId }: { reveal?: b
     }
   };
 
-  const startPin = (stop: Stop) => {
+  const startPin = useCallback((stop: Stop) => {
     // Placing a pin needs the map in view.
-    page.current?.scrollTo({ y: 0, animated: true });
+    page.current?.scrollToOffset({ offset: 0, animated: true });
     setPinFor(stop);
     const at = coordsOf(stop) || position || route?.origin || ordered[0]?.at || null;
     setPinAt(at);
     if (at) setFocus({ ...at });
-  };
+  }, [position, route?.origin, ordered]);
 
   // Saves the pin, then re-orders the open stops so the pinned stop takes its nearest-next place.
   const savePin = async () => {
@@ -256,11 +261,39 @@ export default function RouteMapScreen({ reveal = false, routeId }: { reveal?: b
     }
   };
 
-  const select = (stop: Stop) => {
+  const select = useCallback((stop: Stop) => {
     setSelectedId((id) => (id === stop.delivery.id ? null : stop.delivery.id));
     const at = coordsOf(stop);
     if (at) setFocus({ ...at });
-  };
+  }, []);
+  const openStop = useCallback((stop: Stop) => navigate('DeliveryDetail', { id: stop.delivery.id }), [navigate]);
+
+  // The stepper below the map as list rows: only the rows on screen are drawn, and a row redraws only when it changes.
+  const legText = legs.map(formatLeg);
+  const legKey = legText.join('|');
+  const rows = useMemo<Row[]>(() => {
+    const unmappedRows: Row[] = unmapped.map((stop, i) => ({
+      type: 'stop', key: stop.delivery.id, stop, kind: 'upcoming', order: ordered.length + i + 1,
+      warning: stop.delivery.address.geocodeStatus === 'pending' ? 'Not looked up yet' : 'Location not found', pin: CAN_PIN, open: true, directions: true,
+    }));
+    const left = ordered.length + unmapped.length;
+    return [
+      { type: 'start', key: 'start' },
+      ...ordered.map((p, i): Row => ({
+        type: 'stop', key: p.stop.delivery.id, stop: p.stop, kind: i === 0 ? 'current' : 'upcoming', order: i + 1, last: i === ordered.length - 1 && !unmapped.length,
+        leg: legText[i], warning: !p.stop.delivery.address.geocoded ? 'Approximate location' : null,
+        selected: i === 0, pin: CAN_PIN && !p.stop.delivery.address.geocoded, open: true, directions: true,
+      })),
+      ...unmappedRows,
+      { type: 'finish', key: 'finish', left },
+      ...(finished.length ? [{ type: 'section', key: 'completed' } as Row] : []),
+      ...finished.map((stop, i): Row => ({
+        type: 'stop', key: stop.delivery.id, stop, kind: stop.delivery.status === 'delivered' ? 'done' : 'failed', isFirst: i === 0, isLast: i === finished.length - 1, open: true,
+      })),
+    ];
+    // legText is rebuilt every render; legKey says when its labels actually changed.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ordered, unmapped, finished, legKey]);
 
   if (loading) {
     return <Screen style={{ backgroundColor: c.background, alignItems: 'center', justifyContent: 'center' }}><StatusBar style="dark" /><ActivityIndicator color={c.ink} /></Screen>;
@@ -297,17 +330,30 @@ export default function RouteMapScreen({ reveal = false, routeId }: { reveal?: b
     <Screen style={{ backgroundColor: c.background }}>
       <StatusBar style="dark" />
       <View style={{ flex: 1 }}>
-      <ScrollView
+      <FlashList
         ref={page}
         style={{ flex: 1 }}
+        data={rows}
+        keyExtractor={(row) => row.key}
+        getItemType={(row) => row.type}
+        extraData={selectedId}
         scrollEnabled={!pinFor && !onMap}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={load} tintColor={c.ink} colors={[c.ink]} />}
-      >
+        renderItem={({ item: row }) => (
+          <View style={s.sheetRow}>
+            {row.type === 'start' ? <Step kind="start" title={position ? 'Your location' : 'Start point'} subtitle={position ? 'Live GPS' : 'Where the route was planned from'} isFirst />
+              : row.type === 'finish' ? <Step kind="finish" title="Route complete" subtitle={`${row.left} stop${row.left === 1 ? '' : 's'} to go`} done={row.left === 0} isLast />
+                : row.type === 'section' ? <Text style={s.section}>Completed</Text>
+                  : <StopRow row={row} selected={!!row.selected || selectedId === row.key} onSelect={select} onPin={startPin} onOpen={openStop} />}
+          </View>
+        )}
+        ListFooterComponent={<View style={s.sheetEnd} />}
+        ListHeaderComponent={<>
       {/* Top: the map, always the same height */}
       <View style={{ height: mapHeight }} onTouchStart={() => setOnMap(true)} onTouchEnd={() => setOnMap(false)} onTouchCancel={() => setOnMap(false)}>
         {mapStops.length || position || pinFor ? (
           <GoogleRouteMap
-            light stops={mapStops} position={position} path={roadNow?.path ?? []} order={orderLine} focus={focus} style={{ height: '100%' }}
+            light stops={mapStops} maxStops={MAP_PINS} position={position} path={roadNow?.path ?? []} order={orderLine} focus={focus} style={{ height: '100%' }}
             pinning={!!pinFor} onCenterChange={setPinAt} reveal={revealing ?? undefined}
           />
         ) : (
@@ -327,8 +373,8 @@ export default function RouteMapScreen({ reveal = false, routeId }: { reveal?: b
         ) : null}
       </View>
 
-      {/* Bottom sheet: totals and the main buttons (as designed), then the stops in route order */}
-      <View style={s.sheet}>
+      {/* Bottom sheet: totals and the main buttons (as designed), then the stops in route order (the list rows) */}
+      <View style={[s.sheet, { paddingBottom: 0 }]}>
         <View style={s.grabber} />
         <LightError text={error} />
 
@@ -345,7 +391,7 @@ export default function RouteMapScreen({ reveal = false, routeId }: { reveal?: b
           <LightButton
             title={route.serviceDate > todayKey() ? `Start now (planned for ${dayLabel(route.serviceDate).toLowerCase()})` : 'Start route'}
             icon={<Ionicons name="navigate-outline" size={22} color={c.onInk} />}
-            onPress={() => void startRoute()} loading={starting} disabled={revealing != null} style={{ marginTop: 24 }} />
+            onPress={() => void startRoute()} loading={starting} style={{ marginTop: 24 }} />
         ) : route.status === 'active' && total ? (
           <LightButton title="Start navigation" icon={<Ionicons name="navigate-outline" size={22} color={c.onInk} />} onPress={() => navigate('LiveNavigation')} style={{ marginTop: 24 }} />
         ) : null}
@@ -369,63 +415,9 @@ export default function RouteMapScreen({ reveal = false, routeId }: { reveal?: b
           {route.optimization === 'road' ? 'Ordered using road distances and times.' : route.optimization === 'straight_line' ? 'Ordered by straight-line distance (road distances were unavailable).' : 'Route order as planned.'}
         </Text>
 
-        <Step kind="start" title={position ? 'Your location' : 'Start point'} subtitle={position ? 'Live GPS' : 'Where the route was planned from'} isFirst />
-
-        {ordered.map((p, i) => (
-          <Step
-            key={p.stop.delivery.id}
-            kind={i === 0 ? 'current' : 'upcoming'}
-            order={i + 1}
-            last={i === ordered.length - 1 && !unmapped.length}
-            leg={formatLeg(legs[i])}
-            title={stopName(p.stop)}
-            subtitle={p.stop.delivery.address.raw}
-            warning={!p.stop.delivery.address.geocoded ? 'Approximate location' : null}
-            selected={i === 0 || selectedId === p.stop.delivery.id}
-            onPress={() => select(p.stop)}
-            onPin={CAN_PIN && !p.stop.delivery.address.geocoded ? () => startPin(p.stop) : undefined}
-            onOpen={() => navigate('DeliveryDetail', { id: p.stop.delivery.id })}
-            onNavigate={() => openDirections(p.stop)}
-          />
-        ))}
-        {unmapped.map((stop, i) => (
-          <Step
-            key={stop.delivery.id}
-            kind="upcoming"
-            order={ordered.length + i + 1}
-            title={stopName(stop)}
-            subtitle={stop.delivery.address.raw}
-            warning={stop.delivery.address.geocodeStatus === 'pending' ? 'Not looked up yet' : 'Location not found'}
-            selected={selectedId === stop.delivery.id}
-            onPress={() => select(stop)}
-            onPin={CAN_PIN ? () => startPin(stop) : undefined}
-            onOpen={() => navigate('DeliveryDetail', { id: stop.delivery.id })}
-            onNavigate={() => openDirections(stop)}
-          />
-        ))}
-
-        <Step kind="finish" title="Route complete" subtitle={`${total} stop${total === 1 ? '' : 's'} to go`} done={total === 0} isLast />
-
-        {finished.length ? (
-          <>
-            <Text style={s.section}>Completed</Text>
-            {finished.map((stop, i) => (
-              <Step
-                key={stop.delivery.id}
-                kind={stop.delivery.status === 'delivered' ? 'done' : 'failed'}
-                title={stopName(stop)}
-                subtitle={stop.delivery.address.raw}
-                selected={selectedId === stop.delivery.id}
-                isFirst={i === 0}
-                isLast={i === finished.length - 1}
-                onPress={() => select(stop)}
-                onOpen={() => navigate('DeliveryDetail', { id: stop.delivery.id })}
-              />
-            ))}
-          </>
-        ) : null}
       </View>
-      </ScrollView>
+      </>}
+      />
       {/* Fixed over the page, so it stays put while the sheet scrolls */}
       <Pressable onPress={goBack} hitSlop={10} style={[s.back, { top: insets.top > 0 ? 12 : 16 }]} accessibilityLabel="Back">
         <Ionicons name="arrow-back" size={24} color={c.text} />
@@ -453,6 +445,29 @@ type StepProps = {
   onNavigate?: () => void;
   onPin?: () => void;
 };
+
+type StopRowData = {
+  type: 'stop'; key: string; stop: Stop; kind: 'current' | 'upcoming' | 'done' | 'failed'; order?: number; last?: boolean; leg?: string | null;
+  warning?: string | null; selected?: boolean; isFirst?: boolean; isLast?: boolean; pin?: boolean; open?: boolean; directions?: boolean;
+};
+type Row = { type: 'start'; key: string } | { type: 'finish'; key: string; left: number } | { type: 'section'; key: string } | StopRowData;
+
+/** A stop's row in the stepper. Memoised: handlers are stable, so only a row whose own data changes redraws. */
+const StopRow = memo(function StopRow({ row, selected, onSelect, onPin, onOpen }: {
+  row: StopRowData; selected: boolean; onSelect: (stop: Stop) => void; onPin: (stop: Stop) => void; onOpen: (stop: Stop) => void;
+}) {
+  const { stop } = row;
+  return (
+    <Step
+      kind={row.kind} order={row.order} last={row.last} leg={row.leg} title={stopName(stop)} subtitle={stop.delivery.address.raw}
+      warning={row.warning} selected={selected} isFirst={row.isFirst} isLast={row.isLast}
+      onPress={() => onSelect(stop)}
+      onPin={row.pin ? () => onPin(stop) : undefined}
+      onOpen={row.open ? () => onOpen(stop) : undefined}
+      onNavigate={row.directions ? () => openDirections(stop) : undefined}
+    />
+  );
+});
 
 // One row of the stepper: a line coming in from above, the dot, and a line going out below.
 function Step({ kind, title, subtitle, order, last, leg, warning, selected, done, isFirst, isLast, onPress, onOpen, onNavigate, onPin }: StepProps) {
@@ -541,6 +556,9 @@ const s = StyleSheet.create({
   muted: { color: c.textSecondary, fontSize: 14 },
   back: { position: 'absolute', left: 20, width: 44, height: 44, borderRadius: 22, backgroundColor: '#fff', alignItems: 'center', justifyContent: 'center', shadowColor: '#000', shadowOpacity: 0.12, shadowRadius: 8, shadowOffset: { width: 0, height: 2 }, elevation: 4 },
   sheet: { marginTop: -24, backgroundColor: c.surface, borderTopLeftRadius: 28, borderTopRightRadius: 28, paddingHorizontal: 24, paddingTop: 10, paddingBottom: 28 },
+  // The sheet's rows and its bottom padding, now that the stops are list rows under the sheet's header.
+  sheetRow: { backgroundColor: c.surface, paddingHorizontal: 24 },
+  sheetEnd: { backgroundColor: c.surface, height: 28 },
   grabber: { alignSelf: 'center', width: 36, height: 4, borderRadius: 2, backgroundColor: c.track, marginBottom: 20 },
   stats: { flexDirection: 'row', gap: 12 },
   statValue: { color: c.text, fontSize: 28, fontWeight: '800', letterSpacing: -0.5 },
