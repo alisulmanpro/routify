@@ -14,6 +14,7 @@ cp .env.example .env                       # fill in the three secrets + DATABAS
 prisma migrate deploy                      # create the tables
 python -m scripts.seed_admin               # first platform admin (ADMIN_EMAIL / ADMIN_PASSWORD)
 python -m app                              # http://localhost:4000 (reloads on code changes)
+python -m app.worker                       # in a second terminal: route planning/optimisation jobs
 ```
 
 The database is hosted on [Neon](https://neon.tech) (serverless PostgreSQL); no local database or Docker

@@ -9,15 +9,17 @@ from pydantic import Field, model_validator
 from starlette.responses import Response
 
 from ..auth import authenticate
+from ..db import db
 from ..http import respond, today_key
 from ..middleware import geocode_daily_limiter, geocode_limiter, limit, limit_rider, suggest_daily_limiter, suggest_limiter, upload_limiter
 from ..services import geocoding_service as geocoding
 from ..services import idempotency_service as idempotency
+from ..services import jobs
 from ..services import v2_service as v2
 from ..services.route_service import service_area_for
 from ..uploads import PHOTO, receive
 from ..validation import DateKey, IdParams, ObjectId, Schema, validate
-from .deliveries import DeliveryInput, Text
+from .deliveries import Coordinates, DeliveryInput, Text
 
 router = APIRouter()
 
@@ -181,3 +183,34 @@ async def places_details(request: Request):
         return respond({"found": False, "latitude": None, "longitude": None, "normalized": None, "postalCode": None, "approximate": False})
     return respond({"found": True, "latitude": hit["latitude"], "longitude": hit["longitude"], "normalized": hit.get("normalized"),
                     "postalCode": hit.get("postalCode"), "approximate": bool(hit.get("approximate"))})
+
+
+# ---------- Route optimisation as a background job (P6b.2) ----------
+
+class OptimizeBody(Schema):
+    # Where the rider is now: the open stops are ordered from here (default: the route's start).
+    origin: Coordinates | None = None
+
+
+@router.post("/routes/{id}/optimize")
+async def optimize_route(request: Request):
+    """Queues a re-optimisation of the route's open stops (the worker does it, VROOM or the built-in planner) and answers
+    202 with the job at once; poll GET /v2/jobs/{id}. A second request while one is waiting returns that job."""
+    actor = await authenticate(request, "rider")
+    valid = await validate(request, params=IdParams, body=OptimizeBody)
+    route_id = valid["params"].id
+    await v2.route_etag(actor, route_id)  # 404 unless it is this rider's route
+    waiting = await db.job.find_first(where={"routeId": route_id, "type": "optimize_route", "status": {"in": ["queued", "running"]}})
+    if waiting:
+        return respond(jobs.serialize(waiting))
+    job = await jobs.enqueue("optimize_route", {"riderId": actor["id"], "routeId": route_id,
+                                                "origin": valid["body"].origin.model_dump() if valid["body"].origin else None},
+                             rider_id=actor["id"], route_id=route_id)
+    return respond(jobs.serialize(job), 202)
+
+
+@router.get("/jobs/{id}")
+async def get_job(request: Request):
+    """A background job of this rider: status queued | running | done | failed, and its result (or error)."""
+    actor = await authenticate(request, "rider")
+    return respond(await jobs.get_for(actor, (await validate(request, params=IdParams))["params"].id))

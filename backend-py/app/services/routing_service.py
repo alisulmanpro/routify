@@ -1,10 +1,9 @@
-"""Road travel-time / distance matrix for route optimisation.
+"""Road data: travel-time / distance matrices for route optimisation, and road paths (route lines, navigation).
 
-ROUTING_PROVIDER=google (the default when GOOGLE_MAPS_API_KEY is set) uses Google's Distance Matrix
-(Routes API computeRouteMatrix; enable "Routes API" for the key). ROUTING_PROVIDER=osrm uses an OSRM
-server's /table API (OpenStreetMap roads, no key; the public demo server is for light use only).
-If Google fails, OSRM is tried; if that fails too, planning falls back to straight-line distance.
-ROUTING_PROVIDER=none always plans on straight-line distance.
+ROUTING_PROVIDER=osrm uses our own OSRM (infra/routing, OSRM_URL): matrices of any size up to its max-table-size, road
+paths and turn-by-turn steps. ROUTING_PROVIDER=google uses Google's Routes API matrix (≤ 60 points; no paths) and our
+OSRM after it when one is configured. ROUTING_PROVIDER=none: straight lines. The public OSRM demo server is never used
+(P6b.6): it is not meant for production traffic.
 """
 from __future__ import annotations
 
@@ -19,8 +18,9 @@ from ..logger import log
 from . import google_usage
 
 TIMEOUT = 10.0
-# The demo server accepts up to 100 coordinates per table request; stay well below it.
-MAX_POINTS = 60
+# Google's matrix gets slow and costly fast (n² elements); our OSRM takes whole routes (P6b.3; its --max-table-size).
+GOOGLE_MAX_POINTS = 60
+OSRM_MAX_POINTS = 2500
 # Google allows 625 elements (origins x destinations) per request, i.e. blocks of 25 x 25.
 GOOGLE_BLOCK = 25
 GOOGLE_MATRIX_URL = "https://routes.googleapis.com/distanceMatrix/v2:computeRouteMatrix"
@@ -68,10 +68,15 @@ async def _google_matrix(points: list[dict]) -> Optional[dict]:
     return {"durations": durations, "distances": distances}
 
 
+def _coords(points: list[dict]) -> str:
+    return ";".join(f"{p['longitude']:.6f},{p['latitude']:.6f}" for p in points)
+
+
 async def _osrm_matrix(points: list[dict]) -> Optional[dict]:
-    coords = ";".join(f"{p['longitude']:.6f},{p['latitude']:.6f}" for p in points)
-    url = f"{env.OSRM_URL.rstrip('/')}/table/v1/driving/{coords}"
-    async with httpx.AsyncClient(timeout=TIMEOUT) as client:
+    if not env.OSRM_URL:
+        return None
+    url = f"{env.OSRM_URL}/table/v1/{env.OSRM_PROFILE}/{_coords(points)}"
+    async with httpx.AsyncClient(timeout=TIMEOUT * 3) as client:
         res = await client.get(url, params={"annotations": "duration,distance"}, headers={"User-Agent": "routify-api"})
     if res.status_code >= 400:
         raise RuntimeError(f"OSRM responded {res.status_code}")
@@ -86,10 +91,12 @@ async def _no_matrix(points: list[dict]) -> Optional[dict]:
 
 
 async def _google_then_osrm(points: list[dict]) -> Optional[dict]:
+    if len(points) > GOOGLE_MAX_POINTS:
+        return await _osrm_matrix(points)
     try:
         return await _google_matrix(points)
     except Exception:  # noqa: BLE001
-        log(logging.WARNING, "Google route matrix unavailable; trying OSRM", exc_info=True)
+        log(logging.WARNING, "Google route matrix unavailable; trying our OSRM", exc_info=True)
         return await _osrm_matrix(points)
 
 
@@ -106,7 +113,8 @@ def set_matrix_for_tests(fn=None) -> None:
 async def road_matrix(ids: list[str], points: list[dict]) -> Optional[dict]:
     """{"ids", "durations" (s), "distances" (m)} between every pair of points, or None to fall back
     to straight-line planning (provider off, too many points, or the router is unreachable)."""
-    if len(points) < 2 or len(points) > MAX_POINTS:
+    limit = GOOGLE_MAX_POINTS if env.ROUTING_PROVIDER == "google" and not env.OSRM_URL else OSRM_MAX_POINTS
+    if len(points) < 2 or len(points) > limit:
         return None
     try:
         result = await _lookup(points)
@@ -114,3 +122,49 @@ async def road_matrix(ids: list[str], points: list[dict]) -> Optional[dict]:
         log(logging.WARNING, "Road matrix unavailable; planning on straight-line distance", exc_info=True)
         return None
     return {"ids": ids, **result} if result else None
+
+
+# ---- Road paths: route lines (P6b.4) and navigation (P6b.5), from our OSRM only ----
+
+async def _osrm_route(points: list[dict], steps: bool) -> dict | None:
+    if not env.OSRM_URL or len(points) < 2:
+        return None
+    url = f"{env.OSRM_URL}/route/v1/{env.OSRM_PROFILE}/{_coords(points)}"
+    params = {"overview": "full", "geometries": "polyline", "steps": "true" if steps else "false"}
+    async with httpx.AsyncClient(timeout=TIMEOUT * 3) as client:
+        res = await client.get(url, params=params, headers={"User-Agent": "routify-api"})
+    if res.status_code >= 400:
+        raise RuntimeError(f"OSRM route responded {res.status_code}")
+    body = res.json()
+    if body.get("code") != "Ok" or not body.get("routes"):
+        return None
+    best = body["routes"][0]
+    out = {
+        # Google's encoded polyline format (precision 5): a few KB for a whole route.
+        "path": best["geometry"],
+        "legs": [{"distanceKm": round(leg["distance"] / 1000, 2), "durationMin": round(leg["duration"] / 60, 1)} for leg in best["legs"]],
+        "distanceKm": round(best["distance"] / 1000, 2), "durationMin": round(best["duration"] / 60, 1),
+    }
+    if steps:
+        out["steps"] = [{"distance": st["distance"], "duration": st["duration"], "name": st.get("name") or "",
+                         "maneuver": {k: v for k, v in (st.get("maneuver") or {}).items() if k in ("type", "modifier", "location")}}
+                        for leg in best["legs"] for st in leg.get("steps", [])]
+    return out
+
+
+_route = _osrm_route
+
+
+def set_route_for_tests(fn=None) -> None:
+    global _route
+    _route = fn or _osrm_route
+
+
+async def road_path(points: list[dict], *, steps: bool = False) -> dict | None:
+    """The road path through `points` in order: {path (encoded polyline), legs, distanceKm, durationMin[, steps]}, or None
+    when there is no road router (the app then draws straight lines). Never raises."""
+    try:
+        return await _route(points, steps)
+    except Exception:  # noqa: BLE001
+        log(logging.WARNING, "Road path unavailable", exc_info=True)
+        return None

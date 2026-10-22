@@ -536,6 +536,43 @@ model GoogleUsage {
   @@map("google_usage")
 }
 
+// Background work done by the worker process (python -m app.worker), never by the API process (P6b.2): route
+// optimisation and large plans. The API enqueues and either answers at once (v2: job id) or waits for it (v1).
+model Job {
+  id         String    @id @db.VarChar(24)
+  /// The rider it is for (their jobs only are visible to them).
+  riderId    String?   @db.VarChar(24)
+  /// optimize_route · plan
+  type       String    @db.VarChar(32)
+  /// queued · running · done · failed
+  status     String    @default("queued") @db.VarChar(16)
+  /// For optimize_route: the route, so a second request while one is queued returns the same job.
+  routeId    String?   @db.VarChar(24)
+  input      Json
+  result     Json?
+  error      String?
+  attempts   Int       @default(0)
+  createdAt  DateTime  @default(now())
+  startedAt  DateTime?
+  finishedAt DateTime?
+
+  @@index([status, createdAt])
+  @@index([riderId, createdAt])
+  @@index([routeId, status])
+  @@map("jobs")
+}
+
+// The road line of a route for one version of it (P6b.4): computed once by our OSRM, served until the route changes.
+model RouteGeometry {
+  routeId   String   @id @db.VarChar(24)
+  /// The route's ETag (v2_service.route_etag) the line was made for.
+  version   String   @db.VarChar(64)
+  data      Json
+  createdAt DateTime @default(now())
+
+  @@map("route_geometries")
+}
+
 // Shared counters for rate limits and unknown-email login lockouts, so every API worker sees the same numbers.
 model RateLimit {
   key         String    @id @db.VarChar(300)

@@ -103,6 +103,11 @@ class Settings:
     ROUTING_PROVIDER: str
     ROUTING_TRAVEL_MODE: str
     OSRM_URL: str
+    OSRM_PROFILE: str
+    VROOM_URL: str
+    VROOM_PROFILE: str
+    PLANNER_INLINE_MAX: int
+    PLAN_JOB_WAIT_SECONDS: int
     ADMIN_EMAIL: str | None
     ADMIN_PASSWORD: str | None
     ADMIN_NAME: str
@@ -182,9 +187,21 @@ def load_settings() -> Settings:
         GEOCODING_PROVIDER=_enum("GEOCODING_PROVIDER", ("nominatim", "google", "none"), "nominatim"),
         GEOCODING_USER_AGENT=_str("GEOCODING_USER_AGENT"),
         GOOGLE_MAPS_API_KEY=_str("GOOGLE_MAPS_API_KEY"),
-        ROUTING_PROVIDER=_enum("ROUTING_PROVIDER", ("google", "osrm", "none"), "google" if _str("GOOGLE_MAPS_API_KEY") else "osrm"),
+        # Road data (matrix, geometry, navigation): osrm = our own OSRM (infra/routing, OSRM_URL), never the public demo
+        # server; google = Routes API matrix (≤ 60 points); none = straight lines.
+        ROUTING_PROVIDER=_enum("ROUTING_PROVIDER", ("google", "osrm", "none"),
+                               "osrm" if _str("OSRM_URL") else "google" if _str("GOOGLE_MAPS_API_KEY") else "none"),
         ROUTING_TRAVEL_MODE=_enum("ROUTING_TRAVEL_MODE", ("BICYCLE", "DRIVE", "TWO_WHEELER"), "BICYCLE"),
-        OSRM_URL=_str("OSRM_URL", "https://router.project-osrm.org") or "https://router.project-osrm.org",
+        OSRM_URL=(_str("OSRM_URL") or "").rstrip("/"),
+        # The profile name in OSRM URLs (one OSRM data set answers any name; it is built for OSRM_PROFILE in infra/routing).
+        OSRM_PROFILE=_str("OSRM_PROFILE", "bike") or "bike",
+        # Route optimisation by our VROOM (infra/routing); empty = the built-in Python planner only.
+        VROOM_URL=(_str("VROOM_URL") or "").rstrip("/"),
+        VROOM_PROFILE=_str("VROOM_PROFILE", "bike") or "bike",
+        # Plans up to this many stops run inside the API (a few ms); larger ones always go to the worker process.
+        PLANNER_INLINE_MAX=_int("PLANNER_INLINE_MAX", 8, lo=0, hi=12),
+        # How long a v1 build/optimise request waits for the worker before answering 503.
+        PLAN_JOB_WAIT_SECONDS=_int("PLAN_JOB_WAIT_SECONDS", 90, lo=5, hi=600),
         ADMIN_EMAIL=admin_email,
         ADMIN_PASSWORD=admin_password,
         ADMIN_NAME=_str("ADMIN_NAME", "Platform Admin") or "Platform Admin",
@@ -227,6 +244,8 @@ def load_settings() -> Settings:
         raise ConfigError("GOOGLE_MAPS_API_KEY is required when GEOCODING_PROVIDER=google")
     if settings.ROUTING_PROVIDER == "google" and not settings.GOOGLE_MAPS_API_KEY:
         raise ConfigError("GOOGLE_MAPS_API_KEY is required when ROUTING_PROVIDER=google")
+    if settings.ROUTING_PROVIDER == "osrm" and not settings.OSRM_URL:
+        raise ConfigError("OSRM_URL (our own OSRM, see infra/routing) is required when ROUTING_PROVIDER=osrm")
     if is_production and settings.COOKIE_SAMESITE == "none" and cookie_secure is False:
         raise ConfigError("COOKIE_SAMESITE=none requires COOKIE_SECURE=true")
     _check_email(settings)

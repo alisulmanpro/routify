@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 import shutil
 import subprocess
@@ -54,7 +55,9 @@ os.environ["STORAGE_DIR"] = "./tests/tmp-uploads"
 os.environ["PAYMENT_STORES"] = "mock"
 # Same for maps: never make billed Google calls from tests.
 os.environ["GEOCODING_PROVIDER"] = "none"  # tests stub the geocoder they need; never call live OSM/Google
-os.environ["ROUTING_PROVIDER"] = "osrm"
+os.environ["ROUTING_PROVIDER"] = "none"
+os.environ["OSRM_URL"] = ""
+os.environ["VROOM_URL"] = ""
 os.environ["EMAIL_PROVIDER"] = "console"  # and never send real email
 for _name in ("REVENUECAT_SECRET_API_KEY", "REVENUECAT_WEBHOOK_AUTH", "GOOGLE_MAPS_API_KEY"):
     os.environ[_name] = ""
@@ -84,7 +87,14 @@ async def client():
     reset_settings_cache()
     await ensure_default_plans()
     application = create_app(run_jobs=False)
+    # The worker process (python -m app.worker), here as a task with a short poll: route planning jobs run in it.
+    from app import worker
+
+    stop = asyncio.Event()
+    worker_task = asyncio.create_task(worker.run(stop, poll=0.02))
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=application), base_url="http://test") as c:
         yield c
+    stop.set()
+    await worker_task
     await disconnect()
     shutil.rmtree(ROOT / "tests" / "tmp-uploads", ignore_errors=True)

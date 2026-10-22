@@ -42,6 +42,7 @@ async def run_maintenance() -> None:
         await db.passwordreset.delete_many(where={"expiresAt": {"lt": now() - timedelta(days=1)}})
         await db.ratelimit.delete_many(where={"resetAt": {"lt": now()}, "OR": [{"lockedUntil": None}, {"lockedUntil": {"lt": now()}}]})
         await db.idempotencykey.delete_many(where={"expiresAt": {"lt": now()}})
+        await db.job.delete_many(where={"finishedAt": {"lt": now() - timedelta(days=7)}})
     except Exception:  # noqa: BLE001
         log(logging.ERROR, "Maintenance job failed", exc_info=True)
 

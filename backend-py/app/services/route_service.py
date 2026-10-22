@@ -13,9 +13,8 @@ from ..http import js_round, now, round2, today_key
 from ..ids import new_id
 from ..logger import log
 from . import geocoding_service as geocoding
-from . import routing_service
+from . import jobs, optimizer
 from .geo import haversine_km, normalize_address
-from .route_planner import START, plan_route
 from .serializers import clean_delivery_address, serialize_delivery
 from .settings_service import get_settings
 
@@ -207,23 +206,18 @@ async def _plan(deliveries: list[Any], origin: Optional[dict], preference: str, 
     Returns (stops, distanceKm, durationMin, optimization) where optimization is "road" or "straight_line"."""
     located = [d for d in deliveries if d.addressGeocoded]
     unlocated = [d for d in deliveries if not d.addressGeocoded]
-    points = ([origin] if origin else []) + [{"latitude": d.addressLatitude, "longitude": d.addressLongitude} for d in located]
-    ids = ([START] if origin else []) + [d.id for d in located]
-    matrix = await routing_service.road_matrix(ids, points) if located else None
-    # Ordering is CPU work (up to an exact search), so it runs off the event loop.
-    plan = await asyncio.to_thread(
-        plan_route,
-        origin=origin, preference=preference, avg_speed_kmh=settings["route"]["avgSpeedKmh"], service_minutes=settings["route"]["stopServiceMinutes"],
-        stops=[{"id": d.id, "latitude": d.addressLatitude, "longitude": d.addressLongitude, "addressKey": normalize_address(d.addressRaw)} for d in located],
-        matrix=matrix,
+    # VROOM when available, else the built-in planner, which runs in the worker process for anything but tiny routes
+    # (P6b.1/P6b.2): the API process never does heavy ordering work itself.
+    plan = await optimizer.plan(
+        origin, [{"id": d.id, "latitude": d.addressLatitude, "longitude": d.addressLongitude, "addressKey": normalize_address(d.addressRaw)} for d in located],
+        preference, settings,
     )
     stops = [
         *({"deliveryId": did, "order": first_order + i, "legDistanceKm": plan["legs"][i]["distanceKm"], "legDurationMin": plan["legs"][i]["durationMin"]}
           for i, did in enumerate(plan["order"])),
         *({"deliveryId": d.id, "order": first_order + len(plan["order"]) + i, "legDistanceKm": 0, "legDurationMin": 0} for i, d in enumerate(unlocated)),
     ]
-    return (stops, plan["distanceKm"], plan["durationMin"] + len(unlocated) * settings["route"]["stopServiceMinutes"],
-            "road" if matrix else "straight_line")
+    return (stops, plan["distanceKm"], plan["durationMin"] + len(unlocated) * settings["route"]["stopServiceMinutes"], plan["optimization"])
 
 
 
@@ -415,6 +409,15 @@ async def optimize(actor: dict, route_id: str, origin: Optional[dict] = None) ->
         await _assign_stops(tx, route.id, actor["id"], finished_rows + stops)
         route = await tx.route.update(where={"id": route.id}, data=data)
     return await serialize_route(route)
+
+
+@jobs.handler("optimize_route")
+async def _optimize_route_job(payload: dict) -> dict:
+    """POST /v2/routes/{id}/optimize, run by the worker: the same as optimize(), then a short summary for the app."""
+    actor = {"id": payload["riderId"], "role": "rider", "email": "", "fullName": ""}
+    route = await optimize(actor, payload["routeId"], payload.get("origin"))
+    return {"routeId": route["id"], "distanceKm": route["distanceKm"], "durationMin": route["durationMin"], "optimization": route["optimization"],
+            "stops": len(route["stops"])}
 
 
 async def _find_mine(actor: dict, route_id: str, client: Any = db) -> Any:
