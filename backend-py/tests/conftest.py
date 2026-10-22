@@ -63,7 +63,8 @@ for _name in ("REVENUECAT_SECRET_API_KEY", "REVENUECAT_WEBHOOK_AUTH", "GOOGLE_MA
 def _reset_database() -> None:
     scripts = Path(sys.executable).parent
     env = {**os.environ, "PATH": f"{scripts}{os.pathsep}{os.environ.get('PATH', '')}"}
-    subprocess.run([str(scripts / "prisma"), "db", "push", "--force-reset", "--skip-generate", "--accept-data-loss"],
+    # The real migrations, not `db push`: they also hold what schema.prisma cannot (the one-active-route partial index).
+    subprocess.run([str(scripts / "prisma"), "migrate", "reset", "--force", "--skip-generate", "--skip-seed"],
                    cwd=ROOT, env=env, check=True, capture_output=True)
 
 
