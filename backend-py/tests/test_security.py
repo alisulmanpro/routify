@@ -756,6 +756,24 @@ async def test_rate_limits_are_shared_across_workers_and_atomic(client):
         await db.ratelimit.delete_many(where={"key": {"startswith": "shared-test:"}})
 
 
+async def test_general_limits_count_in_memory_without_db_writes(client):
+    from app.middleware import RateLimiter, api_limiter, auth_limiter, memory_windows, upload_limiter
+
+    assert api_limiter.store == "memory"
+    assert auth_limiter.store == "db" and upload_limiter.store == "db"
+    limiter = RateLimiter("memory-test", 60, 3, enforce=True, store="memory")
+    try:
+        for remaining in (2, 1, 0):
+            assert f"r={remaining};" in (await limiter.check("203.0.113.10"))["RateLimit"]
+        with pytest.raises(Exception) as blocked:
+            await limiter.check("203.0.113.10")
+        assert getattr(blocked.value, "code", None) == "RATE_LIMITED"
+        assert await limiter.exceeded("203.0.113.10") and not await limiter.exceeded("203.0.113.11")
+        assert not await db.ratelimit.find_first(where={"key": {"startswith": "memory-test:"}})
+    finally:
+        memory_windows.clear()
+
+
 async def test_registration_cannot_be_used_to_enumerate_accounts_at_scale(client):
     from app.middleware import email_taken_limiter
 

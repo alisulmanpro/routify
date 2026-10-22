@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import re
 import time
 import uuid
@@ -137,21 +138,57 @@ RETURNING "count", GREATEST(0, CEIL(EXTRACT(EPOCH FROM ("resetAt" - timezone('ut
 """
 
 
+# Process-local windows for the high-volume limiters: no DB round trip per request. Each worker counts on its own,
+# so with N workers a key can make up to N × limit requests per window — fine for abuse protection, not for security limits.
+_MEMORY_PRUNE_AT = 50_000
+
+
+class _MemoryWindows:
+    def __init__(self):
+        self._windows: dict[str, tuple[int, float]] = {}  # key -> (count, resets at, monotonic seconds)
+
+    def hit(self, key: str, window: int) -> tuple[int, int]:
+        at = time.monotonic()
+        if len(self._windows) >= _MEMORY_PRUNE_AT:
+            self._windows = {k: v for k, v in self._windows.items() if v[1] > at}
+        count, reset_at = self._windows.get(key, (0, 0.0))
+        if reset_at <= at:
+            count, reset_at = 0, at + window
+        self._windows[key] = (count + 1, reset_at)
+        return count + 1, max(0, math.ceil(reset_at - at))
+
+    def count(self, key: str) -> int:
+        count, reset_at = self._windows.get(key, (0, 0.0))
+        return count if reset_at > time.monotonic() else 0
+
+    def clear(self) -> None:
+        self._windows.clear()
+
+
+memory_windows = _MemoryWindows()
+
+
 class RateLimiter:
-    """Fixed-window limiter per key (normally the client IP), shared by every worker through the database."""
+    """Fixed-window limiter per key (normally the client IP).
+
+    store="db" shares the count with every worker through PostgreSQL (security limits: sign-in, password reset, uploads);
+    store="memory" keeps it in this process (the general API limit and other high-volume limits)."""
 
     def __init__(self, name: str, window_seconds: int, limit: int, message: str = "Too many requests. Please slow down and try again shortly.",
-                 *, enforce: bool | None = None):
+                 *, enforce: bool | None = None, store: str = "db"):
         self.name = name
         self.window = window_seconds
         self.limit = limit
         self.message = message
         self.enforce = enforce  # None: on everywhere except NODE_ENV=test
+        self.store = store
 
     async def hit(self, key: str) -> tuple[int, int]:
         """Counts one hit and returns (hits in this window, seconds until the window resets)."""
         from .db import db
 
+        if self.store == "memory":
+            return memory_windows.hit(f"{self.name}:{key}"[:300], self.window)
         rows = await db.query_raw(_HIT_SQL, f"{self.name}:{key}"[:300], self.window)
         return int(rows[0]["count"]), int(rows[0]["resetIn"])
 
@@ -164,6 +201,8 @@ class RateLimiter:
 
         if not self._enforced():
             return False
+        if self.store == "memory":
+            return memory_windows.count(f"{self.name}:{key}"[:300]) >= self.limit
         try:
             rows = await db.query_raw("""SELECT "count" FROM "rate_limits" WHERE "key" = $1 AND "resetAt" > timezone('utc', now())""",
                                       f"{self.name}:{key}"[:300])
@@ -189,13 +228,13 @@ class RateLimiter:
         return headers
 
 
-api_limiter = RateLimiter("api", 15 * 60, 1000)
+api_limiter = RateLimiter("api", 15 * 60, 1000, store="memory")
 auth_limiter = RateLimiter("auth", 15 * 60, 40)
 upload_limiter = RateLimiter("upload", 15 * 60, 120)
 # The camera checks each label it reads; this keeps a stuck scan loop from flooding the geocoder.
-geocode_limiter = RateLimiter("geocode", 15 * 60, 200, "Too many address checks. Wait a moment and try again.")
+geocode_limiter = RateLimiter("geocode", 15 * 60, 200, "Too many address checks. Wait a moment and try again.", store="memory")
 # Suggestions are requested while the rider types, so they get a bigger allowance than full lookups.
-suggest_limiter = RateLimiter("geocode-suggest", 15 * 60, 1500, "Too many address searches. Wait a moment and try again.")
+suggest_limiter = RateLimiter("geocode-suggest", 15 * 60, 1500, "Too many address searches. Wait a moment and try again.", store="memory")
 # Registration has to say when an email is taken (it signs the rider straight in), so cap how often one IP can learn that.
 email_taken_limiter = RateLimiter("email-taken", 60 * 60, 5, "Too many sign-up attempts. Please try again later or sign in instead.")
 # Keyed by the email address, not the IP: caps the codes one inbox can receive.
