@@ -139,3 +139,32 @@ Other changes:
 - **Per-rider daily caps (P5.5):** 600 lookups (check, pin, picked suggestion) and 4,000 searches. A stuck app loop or a misused account can cost at most ≈ $0.011 × 4,000 + $0.005 × 600 ≈ **$14/day**, instead of being unbounded.
 - **Metrics (P5.6):** every call is counted per day, rider and API in `google_usage`, at `GET /api/v1/admin/google-usage?from=&to=[&riderId=]`. Use this to replace the assumptions above with real numbers after a week of use.
 - **Cache policy (P5.4):** coordinates and addresses cached at most 30 days (found), 7 days (approximate) and 1 day (not found). Place IDs are only used inside a session, and Details results are cached by place ID for 30 days.
+
+## Phase 6a — Routing POC (OSRM + VROOM): benchmark and server size
+
+**Status: not measured yet (ISSUE-31).** The downloads were too slow in the environment where this was prepared. The
+setup and benchmark are ready: run them with the commands in `infra/routing/README.md`, then replace the estimates below
+with the numbers from `infra/routing/bench/results/*.json`.
+
+Results to fill in (one row per size, from the benchmark):
+
+| Stops | VROOM solve (s) | VROOM road km | Current planner road km (as in production) | Δ km | Current planner fed OSRM (km / s) | OSRM table (s) | Peak RAM osrm / vroom (MiB) |
+|---|---|---|---|---|---|---|---|
+| 200 |  |  |  |  |  |  |  |
+| 1,000 |  |  |  |  |  |  |  |
+| 2,000 |  |  |  |  |  |  |  |
+
+Already known without the map:
+- **Current planner, 200 synthetic Dublin stops:** about 1.8–1.9 s of Python CPU per optimisation on this laptop (offline self-test). Above 60 points it plans on straight lines (×1.3), so its km can only be checked against OSRM.
+- **Phase 1:** about 9–10 s for 1,000 stops (perf.md "Phase 1").
+
+### Server size (provisional estimate, to confirm with the benchmark)
+
+| Role | Size | Why |
+|---|---|---|
+| Building the map (`prepare-ireland.sh`, daily or weekly) | 2 vCPU, **8 GB RAM**, 10 GB disk, minutes per run; can be a CI job or the same box with swap | osrm-extract of a ~0.4 GB extract typically needs several GB of RAM; serving needs much less |
+| Serving OSRM + VROOM (Ireland, bicycle) | **2 vCPU / 4 GB RAM** to start (e.g. Hetzner CPX21 / DigitalOcean 2 vCPU-4 GB), 10 GB disk | osrm-routed (MLD) keeps the Ireland data set in memory (expected 1–2 GB). VROOM's memory is small (a 2,001² matrix is ~32 MB per annotation); it is CPU-bound |
+| Scaling | add vCPUs (VROOM `threads` in vroom-conf/config.yml) or a second VROOM container; OSRM is shared | one 2,000-stop optimisation keeps one vCPU busy for tens of seconds (estimate); queue optimisations (P7.3) instead of running many at once |
+
+These are estimates from the data size and the tools' design, not measurements. The benchmark's peak memory and solve
+times replace them.

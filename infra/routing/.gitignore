@@ -1,0 +1,5 @@
+# Map data and OSRM files (hundreds of MB): made by scripts/prepare-ireland.sh, never committed.
+data/
+.env
+bench/results/
+__pycache__/
