@@ -55,6 +55,10 @@ services:
       - key: S3_REGION
         value: auto
 
+      # Redis: rate limits and caches shared by all API processes/instances (Render Key Value or Upstash).
+      - key: REDIS_URL
+        sync: false
+
       # Rider app versions (GET /config): below MIN the app must update; below LATEST it suggests updating.
       - key: MIN_APP_VERSION
         value: "1.0.0"

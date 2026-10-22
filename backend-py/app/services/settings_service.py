@@ -4,6 +4,7 @@ import copy
 import time
 from typing import Any
 
+from .. import redis_client
 from ..config import env
 from ..db import as_json, db
 from ..ids import new_id
@@ -29,7 +30,19 @@ DEFAULT_SETTINGS: dict[str, Any] = {
 
 _cache: dict | None = None
 _cached_at = 0.0
+_cached_version: str | None = None
 TTL_SECONDS = 15
+
+
+async def _shared_version() -> str | None:
+    """The settings version every instance agrees on (Redis; bumped on each change), or None without Redis."""
+    if (redis := redis_client.client()) is None:
+        return None
+    try:
+        return await redis.get(redis_client.key("settings-version")) or "0"
+    except Exception:  # noqa: BLE001
+        redis_client.failed("settings version")
+        return None
 
 
 def merge(base: dict, patch: dict | None) -> dict:
@@ -43,17 +56,20 @@ def merge(base: dict, patch: dict | None) -> dict:
 
 
 async def get_settings() -> dict:
-    global _cache, _cached_at
-    if _cache is not None and time.monotonic() - _cached_at < TTL_SECONDS:
+    """Cached per process for TTL_SECONDS; with Redis an admin's change reaches every instance at once (P7.2)."""
+    global _cache, _cached_at, _cached_version
+    version = await _shared_version()
+    if _cache is not None and time.monotonic() - _cached_at < TTL_SECONDS and version == _cached_version:
         return _cache
     row = await db.setting.find_unique(where={"key": "platform"})
     _cache = merge(DEFAULT_SETTINGS, row.value if row and isinstance(row.value, dict) else None)
     _cached_at = time.monotonic()
+    _cached_version = version
     return _cache
 
 
 async def update_settings(patch: dict) -> dict:
-    global _cache, _cached_at
+    global _cache, _cached_at, _cached_version
     nxt = merge(await get_settings(), patch)
     await db.setting.upsert(
         where={"key": "platform"},
@@ -61,6 +77,12 @@ async def update_settings(patch: dict) -> dict:
     )
     _cache = nxt
     _cached_at = time.monotonic()
+    if (redis := redis_client.client()) is not None:
+        try:
+            await redis.incr(redis_client.key("settings-version"))
+        except Exception:  # noqa: BLE001
+            redis_client.failed("settings version")
+    _cached_version = await _shared_version()
     return nxt
 
 

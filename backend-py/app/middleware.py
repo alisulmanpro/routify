@@ -11,6 +11,7 @@ from starlette.datastructures import Headers, MutableHeaders
 from starlette.requests import Request
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from . import redis_client
 from .config import env
 from .errors import AppError, error_body
 from .http import dumps
@@ -168,6 +169,16 @@ class _MemoryWindows:
 memory_windows = _MemoryWindows()
 
 
+# One atomic round trip: count the hit, start the window on the first one, say when it resets.
+_REDIS_HIT = """
+local count = redis.call('INCR', KEYS[1])
+if count == 1 then redis.call('EXPIRE', KEYS[1], ARGV[1]) end
+local ttl = redis.call('TTL', KEYS[1])
+if ttl < 0 then redis.call('EXPIRE', KEYS[1], ARGV[1]); ttl = tonumber(ARGV[1]) end
+return {count, ttl}
+"""
+
+
 class RateLimiter:
     """Fixed-window limiter per key (normally the client IP).
 
@@ -187,6 +198,13 @@ class RateLimiter:
         """Counts one hit and returns (hits in this window, seconds until the window resets)."""
         from .db import db
 
+        # With Redis (P7.2) every limiter is shared by all processes and instances, without a database write per hit.
+        if (redis := redis_client.client()) is not None:
+            try:
+                count, ttl = await redis.eval(_REDIS_HIT, 1, redis_client.key("rl", self.name, key[:200]), self.window)
+                return int(count), max(0, int(ttl))
+            except Exception:  # noqa: BLE001 - fall back to this limiter's own store
+                redis_client.failed("rate limit")
         if self.store == "memory":
             return memory_windows.hit(f"{self.name}:{key}"[:300], self.window)
         rows = await db.query_raw(_HIT_SQL, f"{self.name}:{key}"[:300], self.window)
@@ -201,6 +219,11 @@ class RateLimiter:
 
         if not self._enforced():
             return False
+        if (redis := redis_client.client()) is not None:
+            try:
+                return int(await redis.get(redis_client.key("rl", self.name, key[:200])) or 0) >= self.limit
+            except Exception:  # noqa: BLE001
+                redis_client.failed("rate limit")
         if self.store == "memory":
             return memory_windows.count(f"{self.name}:{key}"[:300]) >= self.limit
         try:

@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import time
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from starlette.requests import Request
 
+from . import redis_client
 from .db import db
 from .errors import forbidden, unauthorized
 from .http import now
@@ -17,20 +19,50 @@ TOUCH_INTERVAL = timedelta(minutes=5)
 _background: set[asyncio.Task] = set()
 
 # The account fields every request checks, kept per process for a short time so most requests skip the users lookup.
-# Changes made through this process clear the entry at once (invalidate_user); other workers see them within USER_CACHE_SECONDS.
+# Changes clear it at once (invalidate_user): in every process with Redis (REDIS_URL), else in this one, and other
+# processes then see them within USER_CACHE_SECONDS.
 USER_CACHE_SECONDS = 30.0
 _USER_CACHE_MAX = 10_000
 _user_cache: dict[str, tuple[float, dict]] = {}  # user id -> (expires at, monotonic seconds; account snapshot)
 
 
-def invalidate_user(user_id: str) -> None:
+def _redis_key(user_id: str) -> str:
+    return redis_client.key("user", user_id)
+
+
+def _encode(account: dict) -> str:
+    return json.dumps({**account, "lastActiveAt": account["lastActiveAt"].isoformat() if account["lastActiveAt"] else None})
+
+
+def _decode(raw: str) -> dict:
+    account = json.loads(raw)
+    account["lastActiveAt"] = datetime.fromisoformat(account["lastActiveAt"]) if account["lastActiveAt"] else None
+    return account
+
+
+async def invalidate_user(user_id: str) -> None:
+    """Drops the cached account here and, with Redis, for every API process at once (P7.2)."""
     _user_cache.pop(user_id, None)
+    if (redis := redis_client.client()) is not None:
+        try:
+            await redis.delete(_redis_key(user_id))
+        except Exception:  # noqa: BLE001 - the 30 s expiry still bounds staleness
+            redis_client.failed("account cache")
 
 
 async def _load_account(user_id: str) -> dict | None:
     at = time.monotonic()
+    redis = redis_client.client()
+    if redis is not None:
+        # Shared by every process: an invalidation (suspension, password change) applies everywhere at once.
+        try:
+            if raw := await redis.get(_redis_key(user_id)):
+                return _decode(raw)
+        except Exception:  # noqa: BLE001
+            redis_client.failed("account cache")
+            redis = None
     cached = _user_cache.get(user_id)
-    if cached and cached[0] > at:
+    if redis is None and cached and cached[0] > at:
         return cached[1]
     user = await db.user.find_unique(where={"id": user_id})
     if not user:
@@ -42,6 +74,11 @@ async def _load_account(user_id: str) -> dict | None:
         for key in [k for k, (expires, _) in _user_cache.items() if expires <= at] or list(_user_cache)[: _USER_CACHE_MAX // 10]:
             del _user_cache[key]
     _user_cache[user_id] = (at + USER_CACHE_SECONDS, account)
+    if redis is not None:
+        try:
+            await redis.set(_redis_key(user_id), _encode(account), ex=int(USER_CACHE_SECONDS))
+        except Exception:  # noqa: BLE001
+            redis_client.failed("account cache")
     return account
 
 
@@ -75,6 +112,11 @@ async def authenticate(request: Request, *roles: str) -> dict:
 
     if not user["lastActiveAt"] or now() - user["lastActiveAt"] > TOUCH_INTERVAL:
         user["lastActiveAt"] = now()  # the cached copy too, so the next requests do not touch again
+        if (redis := redis_client.client()) is not None:
+            try:
+                await redis.set(_redis_key(user["id"]), _encode(user), keepttl=True, xx=True)
+            except Exception:  # noqa: BLE001
+                redis_client.failed("account cache")
         task = asyncio.create_task(_touch(user["id"]))
         _background.add(task)
         task.add_done_callback(_background.discard)
