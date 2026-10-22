@@ -13,11 +13,12 @@ import json
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from ..db import db, lock_rider, transaction
+from ..db import as_json, db, lock_rider, transaction
 from ..errors import AppError, conflict, forbidden, not_found, validation_error
 from ..http import iso, js_round, now, today_key
 from ..uploads import UploadedFile
 from . import delivery_service as deliveries
+from . import routing_service
 from .geocoding_service import find_eircode, normalize_eircodes
 from .route_service import OPEN, _left_over_where, _stop_counts, on_stop_finished, summarize_counts
 from .serializers import clean_delivery_address
@@ -349,3 +350,41 @@ async def upload_proof(actor: dict, stop_id: str, file: UploadedFile | None) -> 
     _require_rider(actor)
     saved = await deliveries.attach_proof(actor, stop_id, file, allow_delivered=True)
     return {"stopId": stop_id, "proof": saved["proof"]}
+
+
+# ---------- Road lines (P6b.4) and navigation (P6b.5), from our OSRM: the app never calls an OSRM server ----------
+
+async def route_geometry(actor: dict, route_id: str) -> tuple[str, dict]:
+    """(version, line) for the route: the road path from its start through the open located stops in route order, with
+    each stop's leg. Made once per route version (its ETag) and kept in route_geometries. path is None without a road
+    router (the app then draws straight lines)."""
+    version = await route_etag(actor, route_id)
+    cached = await db.routegeometry.find_unique(where={"routeId": route_id})
+    if cached and cached.version == version:
+        return version, cached.data
+    route, rows = await asyncio.gather(_mine(actor, route_id), db.query_raw(_STOPS_SQL, route_id, None))
+    stops = [r for r in rows if r["status"] in OPEN and r["addressGeocoded"] and r["addressLatitude"] is not None]
+    origin = [{"latitude": route.originLatitude, "longitude": route.originLongitude}] if route.originLatitude is not None else []
+    points = origin + [{"latitude": r["addressLatitude"], "longitude": r["addressLongitude"]} for r in stops]
+    road = await routing_service.road_path(points)
+    legs = (road or {}).get("legs") or []
+    if origin:
+        stop_legs = legs
+    else:  # without a start point the first stop has no leg
+        stop_legs = [{"distanceKm": 0, "durationMin": 0}, *legs]
+    data = {
+        "path": road["path"] if road else None,
+        "legs": [{"stopId": r["id"], **leg} for r, leg in zip(stops, stop_legs)] if road else [],
+        "distanceKm": road["distanceKm"] if road else None, "durationMin": road["durationMin"] if road else None,
+    }
+    if road:  # a missing router is not cached: the line appears once it is back
+        payload = as_json(data)
+        await db.routegeometry.upsert(where={"routeId": route_id}, data={"create": {"routeId": route_id, "version": version, "data": payload},
+                                                                         "update": {"version": version, "data": payload}})
+    return version, data
+
+
+async def navigation_route(start: dict, target: dict) -> dict:
+    """Turn-by-turn from the rider to the next stop: {path, distanceKm, durationMin, steps}; path None without a router."""
+    road = await routing_service.road_path([start, target], steps=True)
+    return road or {"path": None, "distanceKm": None, "durationMin": None, "steps": []}

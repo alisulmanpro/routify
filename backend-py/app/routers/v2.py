@@ -214,3 +214,29 @@ async def get_job(request: Request):
     """A background job of this rider: status queued | running | done | failed, and its result (or error)."""
     actor = await authenticate(request, "rider")
     return respond(await jobs.get_for(actor, (await validate(request, params=IdParams))["params"].id))
+
+
+@router.get("/routes/{id}/geometry")
+async def route_geometry(request: Request):
+    """The route's road line (encoded polyline, precision 5) and each open stop's leg, from our OSRM; cached per route
+    version. ETag/304 like the route itself. path is null when no road router is configured."""
+    actor = await authenticate(request, "rider")
+    route_id = (await validate(request, params=IdParams))["params"].id
+    version, data = await v2.route_geometry(actor, route_id)
+    headers = {"ETag": version, "Cache-Control": "private, no-cache"}
+    if _etag_matches(request, version):
+        return Response(status_code=304, headers=headers)
+    return respond(data, headers=headers)
+
+
+class NavigationBody(Schema):
+    start: Coordinates
+    target: Coordinates
+
+
+@router.post("/navigation/route")
+async def navigation_route(request: Request):
+    """Re-route for live navigation (P6b.5): our OSRM's road path and turn steps from the rider to the next stop."""
+    await authenticate(request, "rider")
+    body = (await validate(request, body=NavigationBody))["body"]
+    return respond(await v2.navigation_route(body.start.model_dump(), body.target.model_dump()))

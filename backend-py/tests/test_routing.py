@@ -25,7 +25,7 @@ async def plan_jobs_of(rider_id: str) -> int:
 
 
 async def test_optimise_is_a_background_job_the_app_polls(client):
-    body, auth = await rider(client, "p6-job@example.com")
+    _, auth = await rider(client, "p6-job@example.com")
     built = await route_with_stops(client, auth, 15)
     queued = await client.post(f"/api/v2/routes/{built['id']}/optimize", headers=auth, json={"origin": {"latitude": 53.32, "longitude": -6.28}})
     assert queued.status_code == 202, queued.text
@@ -122,3 +122,66 @@ async def test_our_osrm_has_no_60_point_cap(client, monkeypatch):
         assert calls == [201]
     finally:
         routing_service.set_matrix_for_tests()
+
+
+async def test_route_line_comes_from_our_osrm_once_per_route_version(client):
+    import uuid
+
+    _, auth = await rider(client, "p6-geometry@example.com")
+    built = await route_with_stops(client, auth, 4)
+    calls = []
+
+    async def road(points, steps):
+        calls.append(len(points))
+        return {"path": "_p~iF~ps|U_ulLnnqC", "legs": [{"distanceKm": 1.0, "durationMin": 4.0}] * (len(points) - 1),
+                "distanceKm": float(len(points) - 1), "durationMin": 4.0 * (len(points) - 1)}
+
+    routing_service.set_route_for_tests(road)
+    try:
+        first = await client.get(f"/api/v2/routes/{built['id']}/geometry", headers=auth)
+        assert first.status_code == 200, first.text
+        line = first.json()["data"]
+        assert line["path"] == "_p~iF~ps|U_ulLnnqC" and [leg["stopId"] for leg in line["legs"]] == [s["delivery"]["id"] for s in built["stops"]]
+        assert (await client.get(f"/api/v2/routes/{built['id']}/geometry", headers=auth)).json()["data"] == line
+        assert calls == [4], "the same route version is served from the cache"
+        assert (await client.get(f"/api/v2/routes/{built['id']}/geometry", headers={**auth, "If-None-Match": first.headers["etag"]})).status_code == 304
+
+        # A stop delivered: a new route version, a new line (without that stop).
+        stop = built["stops"][0]["delivery"]["id"]
+        await client.post(f"/api/v2/stops/{stop}/events", headers={**auth, "Idempotency-Key": str(uuid.uuid4())}, json={"type": "deliver"})
+        after = (await client.get(f"/api/v2/routes/{built['id']}/geometry", headers=auth)).json()["data"]
+        assert calls == [4, 3] and stop not in [leg["stopId"] for leg in after["legs"]]
+    finally:
+        routing_service.set_route_for_tests()
+
+    # No road router: no line (straight lines in the app), and nothing cached.
+    async def none(points, steps):
+        return None
+
+    _, auth2 = await rider(client, "p6-geometry-none@example.com")
+    routing_service.set_route_for_tests(none)
+    try:
+        other = await route_with_stops(client, auth2, 2, start=False)
+        assert (await client.get(f"/api/v2/routes/{other['id']}/geometry", headers=auth2)).json()["data"]["path"] is None
+        assert not await db.routegeometry.find_unique(where={"routeId": other["id"]})
+    finally:
+        routing_service.set_route_for_tests()
+
+
+async def test_navigation_reroutes_through_the_backend(client):
+    _, auth = await rider(client, "p6-navigation@example.com")
+
+    async def road(points, steps):
+        assert steps and len(points) == 2
+        return {"path": "abc", "legs": [], "distanceKm": 1.2, "durationMin": 5.0,
+                "steps": [{"distance": 300.0, "duration": 60.0, "name": "Grafton Street", "maneuver": {"type": "turn", "modifier": "left"}}]}
+
+    routing_service.set_route_for_tests(road)
+    try:
+        res = await client.post("/api/v2/navigation/route", headers=auth, json={"start": {"latitude": 53.34, "longitude": -6.26},
+                                                                                "target": {"latitude": 53.35, "longitude": -6.25}})
+        assert res.status_code == 200
+        assert res.json()["data"]["steps"][0]["maneuver"] == {"type": "turn", "modifier": "left"}
+    finally:
+        routing_service.set_route_for_tests()
+    assert (await client.post("/api/v2/navigation/route", headers=auth, json={"start": {"latitude": 99, "longitude": 0}, "target": {"latitude": 1, "longitude": 1}})).status_code == 400
