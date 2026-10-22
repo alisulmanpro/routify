@@ -10,6 +10,7 @@ import type { Delivery, FailureReason } from '../lib/types';
 import { applyStopEvent, earlierStopOf, type V2EventResult } from '../lib/v2';
 import { sendStopEvent } from '../lib/v2api';
 import { prepareProofPhoto } from '../lib/photo';
+import { rememberStopEvent } from '../lib/queries';
 import { FAILURE_LABELS, stopCardText, timeOnly } from '../lib/format';
 import { Screen } from '../components/Kit';
 import { type PillTone } from '../components/Premium';
@@ -65,8 +66,9 @@ export default function DeliveryDetail({ id, onDone, initialStep }: { id: string
   // A photo needs the stop marked arrived first (Delivered and Failed record the arrival themselves).
   const ensureArrived = async () => {
     if (delivery?.status !== 'pending') return;
-    const { stop } = await sendStopEvent(id, { type: 'arrive' });
-    setDelivery((d) => (d ? applyStopEvent(d, stop) : d));
+    const result = await sendStopEvent(id, { type: 'arrive' });
+    rememberStopEvent(result);
+    setDelivery((d) => (d ? applyStopEvent(d, result.stop) : d));
   };
 
   const capturePhoto = async (fromCamera: boolean) => {
@@ -102,6 +104,7 @@ export default function DeliveryDetail({ id, onDone, initialStep }: { id: string
     const note = deliverNote.trim();
     try {
       const result = await sendStopEvent(id, { type: 'deliver', ...(allowSkip ? { allowSkip: true } : {}), ...(note ? { note } : {}) });
+      rememberStopEvent(result);
       setDelivery((d) => (d ? applyStopEvent({ ...d, note: note || d.note }, result.stop) : d));
       finish(result);
     } catch (err) {
@@ -123,6 +126,7 @@ export default function DeliveryDetail({ id, onDone, initialStep }: { id: string
   const submitFail = () => run('fail', async () => {
     if (!reason) { setError('Choose a reason'); return; }
     const result = await sendStopEvent(id, { type: 'fail', reason, ...(failNote.trim() ? { note: failNote.trim() } : {}) });
+    rememberStopEvent(result);
     setShowFail(false);
     finish(result);
   });

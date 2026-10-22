@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { applyStopEvent, earlierStopOf, toDelivery, toRoute, type V2Route, type V2Stop } from '../src/lib/v2';
+import { applyEventToRoute, applyStopEvent, earlierStopOf, toDelivery, toRoute, type V2Route, type V2Stop } from '../src/lib/v2';
 
 const stop = (id: string, over: Partial<V2Stop> = {}): V2Stop => ({
   id, order: 1, status: 'pending', trackingId: 'P-1', customerName: 'Mary',
@@ -46,4 +46,19 @@ test('the earlier open stop is read from the error details', () => {
   assert.deepEqual(earlierStopOf([{ trackingId: 'P-7', stopOrder: 3 }]), { trackingId: 'P-7', stopOrder: 3 });
   assert.equal(earlierStopOf([]), null);
   assert.equal(earlierStopOf(undefined), null);
+});
+
+test('a stop event updates the saved route without reloading it', () => {
+  const r = toRoute(route([stop('a'), stop('b', { order: 2 })]), 'W/"old"');
+  const after = applyEventToRoute(r, {
+    stop: stop('a', { status: 'delivered', deliveredAt: '2026-10-23T10:00:00.000Z' }),
+    route: { id: 'r1', status: 'active', nextStopId: 'b', progress: { total: 2, done: 1, remaining: 1 },
+      summary: { total: 2, delivered: 1, failed: 0, pending: 1, distanceKm: 5, routeMinutes: null } },
+  });
+  assert.equal(after.stops[0].delivery.status, 'delivered');
+  assert.equal(after.currentStopId, 'b');
+  assert.deepEqual(after.progress, { total: 2, done: 1, remaining: 1 });
+  assert.equal((after as { etag?: string }).etag, undefined);
+  // Another route's stop leaves this route as it is.
+  assert.equal(applyEventToRoute(r, { stop: stop('zz'), route: null }), r);
 });

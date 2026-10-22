@@ -20,7 +20,7 @@ from ..uploads import UploadedFile
 from . import delivery_service as deliveries
 from .route_service import OPEN, _left_over_where, _stop_counts, summarize_counts
 from .serializers import clean_delivery_address
-from .subscription_service import assert_can_create_deliveries
+from .subscription_service import assert_can_create_deliveries, effective_status
 
 # Changes are compared with a few seconds of slack: rows are stamped by the app's clock (Prisma) or the database's.
 CHANGES_SLACK = timedelta(seconds=5)
@@ -181,17 +181,18 @@ async def route_summary(route_id: str | None) -> dict | None:
 
 async def home(actor: dict, date: str) -> dict:
     """Everything the Home screen shows, in one response: today's totals, open routes from today on (with stop counts),
-    stops added but not planned yet (per day), and open stops left from earlier days."""
+    stops added but not planned yet (per day), open stops left from earlier days, and the plan status."""
     _require_rider(actor)
     rider_id = actor["id"]
     today_where = {"riderId": rider_id, "OR": [{"serviceDate": date}, {"status": {"in": list(OPEN)}, "serviceDate": {"lte": date}}]}
-    status_rows, routes, unplanned_rows, left_rows = await asyncio.gather(
+    status_rows, routes, unplanned_rows, left_rows, subscription = await asyncio.gather(
         db.delivery.group_by(by=["status"], where=today_where, count=True),
         db.route.find_many(where={"riderId": rider_id, "status": {"in": ["planned", "active"]}, "serviceDate": {"gte": date}},
                            order=[{"serviceDate": "asc"}, {"createdAt": "asc"}, {"id": "asc"}], take=100),
         db.delivery.group_by(by=["serviceDate"], where={"riderId": rider_id, "status": "pending", "routeId": None, "serviceDate": {"gte": date}},
                              count=True),
         db.delivery.group_by(by=["serviceDate"], where=_left_over_where(actor, date), count=True),
+        db.subscription.find_unique(where={"userId": rider_id}),
     )
     today = summarize_counts({str(r["status"]): r["_count"]["_all"] for r in status_rows})
     finished = today["delivered"] + today["failed"]
@@ -206,6 +207,8 @@ async def home(actor: dict, date: str) -> dict:
                     "stops": sum(counts.get(r.id, {}).values())} for r in routes],
         "unplanned": sorted(({"date": r["serviceDate"], "count": r["_count"]["_all"]} for r in unplanned_rows), key=lambda d: d["date"]),
         "leftOver": {"total": sum(left.values()), "days": [{"date": k, "count": left[k]} for k in sorted(left, reverse=True)]},
+        # Home's "Free trial" / "Upgrade" chip shows for these statuses: no separate /subscriptions/me request on Home.
+        "plan": {"status": effective_status(subscription) if subscription else "inactive"},
     }
 
 

@@ -19,6 +19,8 @@ export type V2Home = {
   routes: { id: string; name: string | null; status: Route['status']; serviceDate: string; stops: number }[];
   unplanned: { date: string; count: number }[];
   leftOver: { total: number; days: { date: string; count: number }[] };
+  /** The subscription status, as /subscriptions/me reports it ("inactive" without one). */
+  plan: { status: string };
 };
 export type V2EventResult = { stop: V2Stop; route: V2RouteSummary | null };
 export type V2BatchStop = V2Stop & { clientId: string; serviceDate: string; routeId: string | null };
@@ -72,4 +74,21 @@ export function applyStopEvent(delivery: Delivery, stop: V2Stop): Delivery {
 export function earlierStopOf(details: unknown[] | undefined): { trackingId: string; stopOrder: number } | null {
   const first = details?.[0] as { trackingId?: unknown; stopOrder?: unknown } | undefined;
   return first && typeof first.stopOrder === 'number' ? { trackingId: typeof first.trackingId === 'string' ? first.trackingId : '', stopOrder: first.stopOrder } : null;
+}
+
+/**
+ * A stop event's result applied to a saved route: the stop's status, the route's progress and status, and what is next.
+ * So going back to the route after delivering needs no reload (the event's answer already says all that).
+ */
+export function applyEventToRoute<R extends Route>(route: R, result: V2EventResult): R {
+  if (!route.stops.some((s) => s.delivery.id === result.stop.id)) return route;
+  return {
+    ...route,
+    stops: route.stops.map((s) => (s.delivery.id === result.stop.id ? { ...s, delivery: applyStopEvent(s.delivery, result.stop) } : s)),
+    ...(result.route && result.route.id === route.id
+      ? { status: result.route.status, progress: result.route.progress, summary: result.route.summary, currentStopId: result.route.nextStopId }
+      : {}),
+    // The saved ETag described the route before this change.
+    etag: undefined,
+  };
 }

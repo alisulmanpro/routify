@@ -1,11 +1,10 @@
-import { useCallback, useState } from 'react';
+import { useState } from 'react';
 import { Modal, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { useFocusEffect } from '../lib/useFocusEffect';
+import { useQuery } from '@tanstack/react-query';
 import { useNav } from '../lib/nav';
-import { get } from '../lib/api';
+import { useHome } from '../lib/queries';
 import { loadStoreConfig, pickStore, trialAdjective } from '../lib/billing';
-import type { StoreConfig, SubscriptionInfo } from '../lib/types';
 import { LightButton } from './LightKit';
 import { light as c } from '../lib/theme';
 
@@ -15,17 +14,14 @@ import { light as c } from '../lib/theme';
  */
 export default function PlanNudge() {
   const { navigate } = useNav();
-  const [status, setStatus] = useState<string | null>(null);
-  const [config, setConfig] = useState<StoreConfig | null>(null);
   const [open, setOpen] = useState(false);
+  // The plan status comes with Home's own request (GET /v2/rider/home), so the chip costs no request of its own.
+  const status = useHome({ refreshOnFocus: false }).data?.planStatus ?? null;
+  const nudge = !!status && ['inactive', 'expired', 'cancelled'].includes(status);
+  // Which store and trial to offer: only needed while the chip shows, and it rarely changes.
+  const { data: config = null } = useQuery({ queryKey: ['store-config'], queryFn: () => loadStoreConfig().catch(() => null), enabled: nudge, staleTime: 24 * 60 * 60 * 1000 });
 
-  useFocusEffect(useCallback(() => {
-    Promise.all([get<SubscriptionInfo>('/subscriptions/me'), loadStoreConfig().catch(() => null)])
-      .then(([me, storeConfig]) => { setStatus(me.data.subscription?.status ?? 'inactive'); setConfig(storeConfig); })
-      .catch(() => {});
-  }, []));
-
-  if (!status || !['inactive', 'expired', 'cancelled'].includes(status)) return null;
+  if (!nudge) return null;
   const store = config ? pickStore(config) : null;
   const trial = Boolean(store && config?.trialEligible[store]);
   const isNew = status === 'inactive';

@@ -291,7 +291,8 @@ async def test_home_is_one_request_with_counts_only(client):
     res = await client.get("/api/v2/rider/home", headers=auth, params={"date": TODAY})
     assert res.status_code == 200, res.text
     home = res.json()["data"]
-    assert set(home) == {"rider", "date", "today", "routes", "unplanned", "leftOver"}
+    assert set(home) == {"rider", "date", "today", "routes", "unplanned", "leftOver", "plan"}
+    assert home["plan"] == {"status": "trialing"}  # the same status /subscriptions/me reports
     assert home["today"] == {"total": 4, "delivered": 1, "failed": 0, "progressPercent": 25}
     assert home["routes"] == [{"id": built["id"], "name": None, "status": "active", "serviceDate": TODAY, "stops": 3}]
     assert home["unplanned"] == [{"date": TODAY, "count": 1}, {"date": tomorrow, "count": 1}]

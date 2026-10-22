@@ -24,7 +24,7 @@ export const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
       // Screens draw the saved copy at once and refresh it in the background.
-      staleTime: 30_000,
+      staleTime: 30_000, // keep in step with STALE_MS in queries.ts
       gcTime: DAY_MS,
       // The API client already retries network errors and 502-504 with backoff.
       retry: false,
