@@ -8,7 +8,8 @@ import { Screen } from '../components/Kit';
 import { type McName } from '../components/Premium';
 import { LightButton, LightError } from '../components/LightKit';
 import GoogleRouteMap, { type Coordinates, type MapStop } from '../components/GoogleRouteMap';
-import { get, ApiRequestError } from '../lib/api';
+import { get, post, ApiRequestError } from '../lib/api';
+import { decodePolyline } from '../lib/polyline';
 import { openDirections } from '../lib/deliveryActions';
 import { formatMinutes, stopCardText, stopLabel, todayKey } from '../lib/format';
 import { TEST_LOCATION } from '../lib/location';
@@ -121,12 +122,11 @@ export default function LiveNavigation() {
   useEffect(() => {
     if (!anchor || !target) return;
     const id = ++request.current;
-    fetch(`https://router.project-osrm.org/route/v1/driving/${anchor.longitude},${anchor.latitude};${target.longitude},${target.latitude}?overview=full&geometries=geojson&steps=true`)
-      .then((res) => { if (!res.ok) throw new Error('route'); return res.json(); })
-      .then((data: { code: string; routes?: { distance: number; duration: number; geometry: { coordinates: [number, number][] }; legs: { steps: Step[] }[] }[] }) => {
-        const best = data.routes?.[0];
-        if (data.code !== 'Ok' || !best || id !== request.current) return;
-        setGuidance({ key, path: best.geometry.coordinates.map(([longitude, latitude]) => ({ latitude, longitude })), km: best.distance / 1000, min: best.duration / 60, steps: best.legs[0]?.steps || [] });
+    // Re-routed by our API on our own OSRM (P6b.5): the app never calls an OSRM server itself.
+    post<{ path: string | null; distanceKm: number | null; durationMin: number | null; steps: Step[] }>('/v2/navigation/route', { start: anchor, target })
+      .then(({ data }) => {
+        if (!data.path || id !== request.current) return;
+        setGuidance({ key, path: decodePolyline(data.path), km: data.distanceKm ?? 0, min: data.durationMin ?? 0, steps: data.steps });
       })
       .catch(() => { /* a straight dashed line and the straight-line distance stay on screen */ });
     // key captures everything this request depends on.

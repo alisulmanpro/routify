@@ -3,7 +3,8 @@ import { ActivityIndicator, Platform, Pressable, RefreshControl, StyleSheet, Tex
 import { FlashList, type FlashListRef } from '@shopify/flash-list';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import * as Location from 'expo-location';
-import { post, ApiRequestError } from '../lib/api';
+import { get, post, ApiRequestError } from '../lib/api';
+import { decodePolyline } from '../lib/polyline';
 import { openDirections as directionsTo } from '../lib/deliveryActions';
 import { dayLabel, formatMinutes, stopLabel, todayKey } from '../lib/format';
 import type { Route } from '../lib/types';
@@ -23,8 +24,8 @@ type Stop = Route['stops'][number];
 type StepKind = 'done' | 'failed' | 'current' | 'upcoming';
 type Leg = { km: number; min: number; road: boolean };
 
-// The public OSRM demo server rejects very long requests, so only the next stops are drawn as a road path.
-const MAX_ROUTED_STOPS = 20;
+/** GET /v2/routes/{id}/geometry: the route's road line (encoded polyline) and each open stop's leg; path null without a router. */
+type RouteGeometry = { path: string | null; legs: { stopId: string; distanceKm: number; durationMin: number }[]; distanceKm: number | null; durationMin: number | null };
 // Re-request the road path only after the rider has moved this far from where it was last drawn.
 const REROUTE_METERS = 300;
 // The map keeps half the screen; the sheet below scrolls up over the page, carrying the map with it.
@@ -124,7 +125,7 @@ export default function RouteMapScreen({ reveal = false, routeId }: { reveal?: b
   const loadError = routeQuery.error instanceof ApiRequestError ? routeQuery.error.message
     : routeQuery.error && !(routeQuery.error instanceof TypeError && route) ? 'Could not load the active route' : '';
   const error = actionError || loadError;
-  const [road, setRoad] = useState<{ key: string; path: Coordinates[]; legs: Leg[]; km: number; min: number } | null>(null);
+  const [road, setRoad] = useState<{ key: string; path: Coordinates[]; legs: (Leg | undefined)[]; km: number; min: number } | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [focus, setFocus] = useState<Coordinates | null>(null);
   const routeRequest = useRef(0);
@@ -175,25 +176,22 @@ export default function RouteMapScreen({ reveal = false, routeId }: { reveal?: b
     };
   }, [route]);
 
-  const routeKey = start ? `${start.latitude},${start.longitude}|${ordered.slice(0, MAX_ROUTED_STOPS).map((p) => p.stop.delivery.id).join(',')}` : '';
-
-  // Road path and per-stop road distances through the stops in this order (OSRM, free, no API key).
+  // The road line and each stop's road distance come from our API (our own OSRM, one line per route version, P6b.4):
+  // the app never calls an OSRM server itself. Without a road router the API answers no line: dashed straight lines stay.
+  const routeKey = route ? `${route.id}|${ordered.map((p) => p.stop.delivery.id).join(',')}` : '';
   useEffect(() => {
-    const targets = ordered.slice(0, MAX_ROUTED_STOPS);
-    if (!start || !targets.length) return;
+    if (!route || !ordered.length) return;
     const request = ++routeRequest.current;
-    const coords = [start, ...targets.map((t) => t.at)].map((p) => `${p.longitude},${p.latitude}`).join(';');
-    fetch(`https://router.project-osrm.org/route/v1/driving/${coords}?overview=full&geometries=geojson`)
-      .then((res) => { if (!res.ok) throw new Error('route'); return res.json(); })
-      .then((data: { code: string; routes?: { distance: number; duration: number; geometry: { coordinates: [number, number][] }; legs: { distance: number; duration: number }[] }[] }) => {
-        const best = data.routes?.[0];
-        if (data.code !== 'Ok' || !best || request !== routeRequest.current) return;
+    get<RouteGeometry>(`/v2/routes/${route.id}/geometry`)
+      .then(({ data }) => {
+        if (!data.path || request !== routeRequest.current) return;
+        const byStop = new Map(data.legs.map((l) => [l.stopId, l]));
         setRoad({
           key: routeKey,
-          path: best.geometry.coordinates.map(([longitude, latitude]) => ({ latitude, longitude })),
-          legs: best.legs.map((l) => ({ km: l.distance / 1000, min: l.duration / 60, road: true })),
-          km: best.distance / 1000,
-          min: best.duration / 60,
+          path: decodePolyline(data.path),
+          legs: ordered.map((p) => { const l = byStop.get(p.stop.delivery.id); return l ? { km: l.distanceKm, min: l.durationMin, road: true } : undefined; }),
+          km: data.distanceKm ?? 0,
+          min: data.durationMin ?? 0,
         });
       })
       .catch(() => { /* straight-line estimates and a dashed line stay on screen */ });
