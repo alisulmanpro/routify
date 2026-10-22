@@ -97,3 +97,45 @@ only). For 4G, use Developer options → "Network speed" if available, or a real
 | 11 | Proof photo upload | Take a photo → until it shows on the stop | note the upload size in the API log |  |  |
 | 12 | Start route (200 stops) | Tap Start route as soon as the map shows | never disabled; no pin animation above 30 stops |  |  |
 | 13 | Battery over a 1 h route session | Battery % before/after with the route map and navigation in use | note it |  |  |
+
+## Phase 5 — Google calls per stop (before → after)
+
+Sources (fetched 2026-10-24):
+- Prices / free tiers: https://developers.google.com/maps/billing-and-pricing/pricing
+- Session billing: https://developers.google.com/maps/documentation/places/web-service/session-pricing
+- Autocomplete (New): https://developers.google.com/maps/documentation/places/web-service/place-autocomplete
+- Place Details (New) and its field → SKU tiers: https://developers.google.com/maps/documentation/places/web-service/place-details
+- Session tokens (UUID v4 recommended, one per session, not reusable): https://developers.google.com/maps/documentation/places/web-service/place-session-tokens
+- Caching (place IDs may be stored indefinitely; other content only as the terms allow): https://developers.google.com/maps/documentation/places/web-service/policies
+- Service Specific Terms (the exact coordinate-caching limit): https://cloud.google.com/maps-platform/terms/maps-service-terms. The page could not be read in full, so the limit is unverified (ISSUE-26).
+
+Prices used (per 1,000, first paid tier):
+
+| SKU | Price | Free / month |
+|---|---|---|
+| Geocoding | $5.00 | 10,000 |
+| Places Text Search Pro | $32.00 | 5,000 |
+| Autocomplete Requests | $2.83 | 10,000 |
+| Autocomplete Session Usage | free | unlimited |
+| Place Details Essentials | $5.00 | 10,000 |
+
+Billing rule used for a session that ends with Place Details Essentials: the first 12 Autocomplete requests are billed as
+Autocomplete Requests, the rest are free, and the Details call is billed as Essentials (session-pricing page). Place
+Details asks only for `id,location,formattedAddress,addressComponents`, which are Essentials fields; `displayName` would
+make it Pro.
+
+Typing assumption: a rider types an address of about 20 characters and pauses about 5 times. Before: searches from 3
+characters with a 350 ms pause. After: 4 characters with a 500 ms pause (P3.8), so about 4 searches.
+
+| Stop added by | Before (per stop) | After (per stop) | Cost before → after (paid tier) |
+|---|---|---|---|
+| **Typed, picking a suggestion** | ~5 searches × (1 Geocoding + 1 Text Search Pro) = **~10 calls** | ~4 Autocomplete + **1** Place Details Essentials (0 if that place was picked in the last 30 days) = **~5 calls**, Geocoding/Text Search **0** | ≈ $0.185 → **≈ $0.016** (~11× less) |
+| **Scanned / typed Eircode only** | 1 Geocoding + 1 reverse Geocoding = **2** (then cached 180 days) | **1** Geocoding (then cached 30 days) | $0.010 → **$0.005** |
+| **Imported (address text, no point)**, planned into a route | 1 Geocoding, +1 Text Search Pro when no exact match; a "not found" was looked up again at every build, optimise and retry | 1 Geocoding (+1 Text Search Pro when no exact match); "not found" cached 1 day (P1.13) | $0.005–$0.037 per build → the same once, then **$0 for repeats** that day |
+| Dropped pin (reverse) | 1 Geocoding | 1 Geocoding | unchanged |
+| Town search (service area) | ~3 × (1 Geocoding + 1 Text Search Pro) | ~3 Autocomplete + 1 Details on pick | ≈ $0.111 → ≈ $0.013 |
+
+Other changes:
+- **Per-rider daily caps (P5.5):** 600 lookups (check, pin, picked suggestion) and 4,000 searches. A stuck app loop or a misused account can cost at most ≈ $0.011 × 4,000 + $0.005 × 600 ≈ **$14/day**, instead of being unbounded.
+- **Metrics (P5.6):** every call is counted per day, rider and API in `google_usage`, at `GET /api/v1/admin/google-usage?from=&to=[&riderId=]`. Use this to replace the assumptions above with real numbers after a week of use.
+- **Cache policy (P5.4):** coordinates and addresses cached at most 30 days (found), 7 days (approximate) and 1 day (not found). Place IDs are only used inside a session, and Details results are cached by place ID for 30 days.
