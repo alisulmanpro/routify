@@ -1,11 +1,5 @@
-import { useEffect } from 'react';
-
 /**
- * Our navigator keeps each tab's screens mounted only while active, so a plain
- * mount-effect already behaves like "on focus" — this just gives screens a
- * familiar name to call it by.
+ * Runs when the screen comes into view (and its cleanup when it leaves). Screens now stay mounted under the screens
+ * opened on top of them, so this is what reloads their data on the way back. Pass a useCallback-wrapped effect.
  */
-export function useFocusEffect(effect: () => void | (() => void)) {
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(effect, []);
-}
+export { useFocusEffect } from '@react-navigation/native';

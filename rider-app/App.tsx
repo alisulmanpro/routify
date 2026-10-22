@@ -1,10 +1,13 @@
-import { StatusBar } from 'expo-status-bar';
-import { SafeAreaView, SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
-import { BackHandler, Platform, Pressable, StatusBar as NativeStatusBar, Text, View } from 'react-native';
+import { setStatusBarStyle, StatusBar } from 'expo-status-bar';
+import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
+import { Platform, Pressable, StatusBar as NativeStatusBar, Text, View } from 'react-native';
 import { useCallback, useEffect, useState } from 'react';
 import * as SplashScreen from 'expo-splash-screen';
+import { NavigationContainer, DefaultTheme, useFocusEffect } from '@react-navigation/native';
+import { createNativeStackNavigator } from '@react-navigation/native-stack';
+import { createBottomTabNavigator, type BottomTabBarProps } from '@react-navigation/bottom-tabs';
 import { AuthProvider, useAuth } from './src/lib/auth';
-import { NavProvider, useNav, type TabName } from './src/lib/nav';
+import { popTabToTop, TAB_ROOTS, TabContext, useNav, type TabName } from './src/lib/nav';
 import { ServiceAreaProvider } from './src/lib/serviceArea';
 import { Ionicons } from '@expo/vector-icons';
 import { colors, light, spacing } from './src/lib/theme';
@@ -46,9 +49,12 @@ const TABS: { key: TabName; label: string; icon: IconName }[] = [
 // own back arrow, so the Back bar is hidden (the Android back button still works).
 const LIGHT_SCREENS = new Set(['Dashboard', 'AddStops', 'NewRoute', 'RoutePreview', 'RouteMapScreen', 'DeliveryDetail', 'RouteComplete', 'LiveNavigation']);
 
+// Every screen can be opened in any tab's stack (navigate() pushes onto the current tab), as with the old navigator.
+const SCREENS = ['Dashboard', 'RouteMapScreen', 'NewRoute', 'RouteDetail', 'AddStops', 'RoutePreview', 'LiveNavigation', 'DeliveryDetail',
+  'RouteComplete', 'History', 'Reports', 'SubscriptionScreen', 'Paywall', 'Account'] as const;
+
 function ScreenRouter() {
   const { current, goBack } = useNav();
-  const refresh = () => { /* screens reload their own data via useFocusEffect on remount */ };
 
   switch (current.name) {
     case 'Dashboard': return <Dashboard />;
@@ -59,7 +65,8 @@ function ScreenRouter() {
     case 'AddStops': return <AddStops name={current.params!.name as string} date={current.params!.date as string} routeId={current.params?.routeId as string | undefined} />;
     case 'RoutePreview': return <RoutePreview name={current.params?.name as string | undefined} date={current.params?.date as string | undefined} ids={current.params?.ids as string[] | undefined} routeId={current.params?.routeId as string | undefined} />;
     case 'LiveNavigation': return <LiveNavigation />;
-    case 'DeliveryDetail': return <DeliveryDetail id={current.params!.id as string} initialStep={current.params?.step as 'proof' | 'fail' | undefined} onDone={() => { goBack(); refresh(); }} />;
+    // The screens below stay mounted and reload on focus, so going back is enough.
+    case 'DeliveryDetail': return <DeliveryDetail id={current.params!.id as string} initialStep={current.params?.step as 'proof' | 'fail' | undefined} onDone={goBack} />;
     case 'RouteComplete': return <RouteComplete routeId={current.params!.routeId as string} />;
     case 'History': return <History />;
     case 'Reports': return <Reports />;
@@ -72,11 +79,7 @@ function ScreenRouter() {
 
 function BackBar() {
   const { canGoBack, goBack: back, current } = useNav();
-  // Android's back button/gesture does the same as the Back bar.
-  useEffect(() => {
-    const sub = BackHandler.addEventListener('hardwareBackPress', () => { if (!canGoBack) return false; back(); return true; });
-    return () => sub.remove();
-  }, [canGoBack, back]);
+  // Android's back button/gesture is handled by the stack navigator itself.
   if (!canGoBack || LIGHT_SCREENS.has(current.name)) return null;
   return (
     <View style={{ paddingHorizontal: spacing(5), paddingTop: spacing(3), backgroundColor: colors.bg }}>
@@ -85,17 +88,55 @@ function BackBar() {
   );
 }
 
-function TabBar() {
-  const { tab, switchTab, resetTab } = useNav();
+/** One screen of a stack: the safe area behind the status bar follows the screen (light for redesigned screens, dark navy for the rest). */
+function ScreenHost() {
+  const insets = useSafeAreaInsets();
+  const { current } = useNav();
+  const isLight = LIGHT_SCREENS.has(current.name);
+  // Several screens stay mounted now, so the status bar follows whichever one is in view.
+  useFocusEffect(useCallback(() => { setStatusBarStyle(isLight ? 'dark' : 'light'); }, [isLight]));
   return (
-    <View style={{ flexDirection: 'row', borderTopWidth: 1, borderTopColor: light.border, backgroundColor: light.background, paddingHorizontal: 8, paddingTop: 8, paddingBottom: 6 }}>
+    <View style={{ flex: 1, backgroundColor: isLight ? light.background : colors.bg, paddingTop: insets.top }}>
+      <BackBar />
+      <View style={{ flex: 1 }}>
+        <ScreenRouter />
+      </View>
+    </View>
+  );
+}
+
+const Stack = createNativeStackNavigator();
+const Tabs = createBottomTabNavigator();
+
+function TabStack({ tab }: { tab: TabName }) {
+  return (
+    <TabContext.Provider value={tab}>
+      <Stack.Navigator initialRouteName={TAB_ROOTS[tab]} screenOptions={{ headerShown: false, animation: 'slide_from_right' }}>
+        {SCREENS.map((name) => <Stack.Screen key={name} name={name} component={ScreenHost} />)}
+      </Stack.Navigator>
+    </TabContext.Provider>
+  );
+}
+
+const HomeStack = () => <TabStack tab="home" />;
+const HistoryStack = () => <TabStack tab="history" />;
+const ReportsStack = () => <TabStack tab="reports" />;
+const AccountStack = () => <TabStack tab="account" />;
+const TAB_STACKS: Record<TabName, () => React.JSX.Element> = { home: HomeStack, history: HistoryStack, reports: ReportsStack, account: AccountStack };
+
+function TabBar({ state, navigation }: BottomTabBarProps) {
+  const insets = useSafeAreaInsets();
+  const activeTab = state.routes[state.index].name;
+  return (
+    <View style={{ flexDirection: 'row', borderTopWidth: 1, borderTopColor: light.border, backgroundColor: light.background, paddingHorizontal: 8, paddingTop: 8, paddingBottom: 6 + insets.bottom }}>
       {TABS.map((t) => {
-        const active = tab === t.key;
+        const active = activeTab === t.key;
         const color = active ? light.link : light.textSecondary;
         return (
           <Pressable
             key={t.key}
-            onPress={() => { if (active) resetTab(t.key); else switchTab(t.key); }}
+            // Tapping the open tab takes it back to its first screen; another tab opens where it was left.
+            onPress={() => { if (active) popTabToTop(navigation.dispatch, state, t.key); else navigation.navigate(t.key); }}
             style={{ flex: 1, alignItems: 'center', paddingVertical: 6 }}
             accessibilityRole="tab"
             accessibilityState={{ selected: active }}
@@ -109,22 +150,7 @@ function TabBar() {
   );
 }
 
-/** The safe area behind the status bar follows the screen: light for redesigned screens, dark navy for the rest. */
-function Shell() {
-  const insets = useSafeAreaInsets();
-  const { current } = useNav();
-  const isLight = LIGHT_SCREENS.has(current.name);
-  return (
-    <SafeAreaView style={{ flex: 1, backgroundColor: isLight ? light.background : colors.bg, paddingTop: insets.top }}>
-      <StatusBar style={isLight ? 'dark' : 'light'} />
-      <BackBar />
-      <View style={{ flex: 1 }}>
-        <ScreenRouter />
-      </View>
-      <TabBar />
-    </SafeAreaView>
-  );
-}
+const THEME = { ...DefaultTheme, colors: { ...DefaultTheme.colors, background: light.background } };
 
 function AuthedApp() {
   const { user } = useAuth();
@@ -132,11 +158,14 @@ function AuthedApp() {
   useEffect(() => { if (user?.id) void identifyRider(user.id); }, [user?.id]);
 
   return (
-    <NavProvider>
+    <NavigationContainer theme={THEME}>
       <ServiceAreaProvider>
-        <Shell />
+        {/* Tabs stay mounted once opened; Back never switches tabs (as before). */}
+        <Tabs.Navigator backBehavior="none" screenOptions={{ headerShown: false }} tabBar={(props) => <TabBar {...props} />}>
+          {TABS.map((t) => <Tabs.Screen key={t.key} name={t.key} component={TAB_STACKS[t.key]} />)}
+        </Tabs.Navigator>
       </ServiceAreaProvider>
-    </NavProvider>
+    </NavigationContainer>
   );
 }
 
