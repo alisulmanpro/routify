@@ -19,7 +19,7 @@ from .http import ApiJSONResponse, respond
 from .logger import log
 from .middleware import ApiRateLimitMiddleware, BodyLimitMiddleware, EdgeMiddleware
 from .openapi import install_openapi
-from .routers import admin, auth, billing_webhooks, deliveries, rider_side
+from .routers import admin, auth, billing_webhooks, deliveries, rider_side, v2
 from .services.subscription_service import ensure_default_plans
 
 HOUR = 3600
@@ -104,6 +104,7 @@ def create_app(*, run_jobs: bool = True) -> FastAPI:
                    rider_side.rider_router, rider_side.reports_router, rider_side.subscriptions_router, billing_webhooks.router, admin.router):
         api.include_router(router)
     app.include_router(api)
+    app.include_router(v2.router, prefix="/api/v2")
     if not env.is_production:
         install_openapi(app)
 

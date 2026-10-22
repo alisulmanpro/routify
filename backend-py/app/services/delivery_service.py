@@ -220,10 +220,11 @@ async def arrive(actor: dict, delivery_id: str) -> dict:
     return serialize_delivery(await save_delivery(delivery, {"status": "in_progress", "arrivedAt": now()}))
 
 
-async def attach_proof(actor: dict, delivery_id: str, file: Optional[UploadedFile]) -> dict:
+async def attach_proof(actor: dict, delivery_id: str, file: Optional[UploadedFile], *, allow_delivered: bool = False) -> dict:
+    """`allow_delivered` (v2): the photo may also arrive after the stop was marked delivered, e.g. uploaded once back online."""
     _require_rider(actor)
     delivery = await find_visible(actor, delivery_id)
-    if delivery.status != "in_progress":
+    if delivery.status != "in_progress" and not (allow_delivered and delivery.status == "delivered"):
         raise conflict("Mark the delivery as Arrived before adding a photo", "INVALID_STATE")
     ext = detect_file_type(file.data if file else None, ["jpg", "png"])
     key = await storage.save(file.data, "proofs", ext)

@@ -246,13 +246,13 @@ async def limit(request: Request, limiter: RateLimiter) -> None:
 
 
 class ApiRateLimitMiddleware:
-    """Applies the general /api/v1 limit (inside CORS, so preflight requests are never counted)."""
+    """Applies the general /api/v1 and /api/v2 limit (inside CORS, so preflight requests are never counted)."""
 
     def __init__(self, app: ASGIApp):
         self.app = app
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] != "http" or not scope.get("path", "").startswith("/api/v1"):
+        if scope["type"] != "http" or not scope.get("path", "").startswith(("/api/v1", "/api/v2")):
             return await self.app(scope, receive, send)
         try:
             headers = await api_limiter.check(scope.get("state", {}).get("ip", ""))
@@ -273,7 +273,7 @@ class ApiRateLimitMiddleware:
 
 JSON_BODY_LIMIT = 1024 * 1024
 UPLOAD_BODY_LIMIT = 11 * 1024 * 1024  # largest upload (10 MB document) plus multipart overhead
-_UPLOAD_PATH = re.compile(r"^/api/v1/deliveries/(import/(pdf|file)|[0-9a-fA-F]{24}/proof)$")
+_UPLOAD_PATH = re.compile(r"^/api/(v1/deliveries/(import/(pdf|file)|[0-9a-fA-F]{24}/proof)|v2/uploads/proof)$")
 
 
 class BodyTooLarge(AppError):
