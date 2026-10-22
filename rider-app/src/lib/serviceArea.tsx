@@ -3,10 +3,11 @@ import { ActivityIndicator, Alert, AppState, Modal, Pressable, StyleSheet, Text,
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Location from 'expo-location';
 import { Ionicons } from '@expo/vector-icons';
-import { get, post, put, ApiRequestError } from './api';
+import { get, put, ApiRequestError } from './api';
 import { TEST_LOCATION } from './location';
 import { useAuth } from './auth';
-import type { AddressSuggestion, ServiceArea } from './types';
+import type { ServiceArea } from './types';
+import { newPlaceSession, pickPlace, searchPlaces, type PlaceSuggestion } from './places';
 import { light as c, lightRadius as lr } from './theme';
 import { LightButton } from '../components/LightKit';
 import ConfirmMap from '../components/scan/ConfirmMap';
@@ -177,10 +178,12 @@ function AreaPicker({ detected, point, current, saving, onConfirm }: {
   detected: Detected; point: Point; current: ServiceArea | null; saving: boolean; onConfirm: (point: Point) => void;
 }) {
   const [query, setQuery] = useState('');
-  const [results, setResults] = useState<AddressSuggestion[]>([]);
+  const [results, setResults] = useState<PlaceSuggestion[]>([]);
   const [searching, setSearching] = useState(false);
   const [picked, setPicked] = useState<Choice>({ key: 'here', point });
   const searchId = useRef(0);
+  // One Google billing session per search, ended by the pick (P5.1).
+  const placeSession = useRef(newPlaceSession());
 
   const q = query.trim();
   useEffect(() => {
@@ -189,8 +192,8 @@ function AreaPicker({ detected, point, current, saving, onConfirm }: {
     const cancel = new AbortController();
     const timer = setTimeout(() => {
       setSearching(true);
-      post<AddressSuggestion[]>('/deliveries/geocode-suggest', { query: q, ...point }, cancel.signal)
-        .then((res) => { if (id === searchId.current) setResults(res.data); })
+      searchPlaces(q, placeSession.current, point, cancel.signal)
+        .then((found) => { if (id === searchId.current) setResults(found); })
         .catch(() => { if (id === searchId.current) setResults([]); })
         .finally(() => { if (id === searchId.current) setSearching(false); });
     }, SEARCH_DELAY_MS);
@@ -198,10 +201,23 @@ function AreaPicker({ detected, point, current, saving, onConfirm }: {
   }, [q, point]);
   const shown = q.length >= 2 ? results : [];
 
-  const row = (key: string, icon: ComponentProps<typeof Ionicons>['name'], title: string, sub: string | null, at: Point, first = false) => {
+  // A search result's point is looked up when it is chosen (Place Details), not for every result shown.
+  const choose = async (key: string, at: Point | PlaceSuggestion) => {
+    if (!('placeId' in at)) { setPicked({ key, point: at }); return; }
+    setSearching(true);
+    try {
+      const found = await pickPlace(at, placeSession.current);
+      if (found) setPicked({ key, point: { latitude: found.latitude, longitude: found.longitude } });
+    } catch { /* the choice stays as it was; the rider can pick again */ } finally {
+      setSearching(false);
+      placeSession.current = newPlaceSession();
+    }
+  };
+
+  const row = (key: string, icon: ComponentProps<typeof Ionicons>['name'], title: string, sub: string | null, at: Point | PlaceSuggestion, first = false) => {
     const on = picked.key === key;
     return (
-      <Pressable key={key} onPress={() => setPicked({ key, point: at })} style={({ pressed }) => [s.row, !first && s.rowDivider, pressed && { opacity: 0.7 }]} accessibilityRole="radio" accessibilityState={{ selected: on }}>
+      <Pressable key={key} onPress={() => void choose(key, at)} style={({ pressed }) => [s.row, !first && s.rowDivider, pressed && { opacity: 0.7 }]} accessibilityRole="radio" accessibilityState={{ selected: on }}>
         <View style={[s.rowIcon, key === 'here' && { backgroundColor: c.linkBg }]}>
           <Ionicons name={icon} size={20} color={key === 'here' ? c.link : c.textLabel} />
         </View>
@@ -233,7 +249,7 @@ function AreaPicker({ detected, point, current, saving, onConfirm }: {
         {current && current.city.toLowerCase() !== detected.city.toLowerCase()
           ? row('saved', 'time-outline', current.city, 'Current area', { latitude: current.latitude, longitude: current.longitude })
           : null}
-        {shown.map((sug, i) => row(`s${i}`, 'location-outline', sug.label, null, { latitude: sug.latitude, longitude: sug.longitude }))}
+        {shown.map((sug, i) => row(`s${i}`, 'location-outline', sug.label, null, sug))}
         {q.length >= 2 && !searching && !shown.length ? <Text style={[s.rowSub, { paddingVertical: 14 }]}>No places found for “{q}”.</Text> : null}
       </View>
 

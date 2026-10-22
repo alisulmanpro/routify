@@ -13,14 +13,15 @@ import ConfirmStop from '../components/scan/ConfirmStop';
 import PinSheet, { type PinResult } from '../components/PinSheet';
 import ImportSheet from '../components/ImportSheet';
 import StopLines from '../components/StopLines';
-import { get, post, del, ApiRequestError } from '../lib/api';
+import { get, del, ApiRequestError } from '../lib/api';
 import { getRouteOrigin } from '../lib/location';
 import { checkAddress, createStop, DuplicateStopError } from '../lib/stops';
 import { forgetPendingStop, outboxFor, pendingStops } from '../lib/outbox';
 import { findDuplicate, type Duplicate } from '../lib/duplicates';
 import { NATIVE_BUILD_HINT, loadVoicePanel } from '../lib/optionalNative';
 import { dayLabel, isOnlyEircode, normalizeEircodes } from '../lib/format';
-import type { AddressSuggestion, Delivery } from '../lib/types';
+import type { Delivery } from '../lib/types';
+import { newPlaceSession, pickPlace, searchPlaces, type PlaceSuggestion } from '../lib/places';
 import { useAuth } from '../lib/auth';
 import { useFocusEffect } from '../lib/useFocusEffect';
 import { useNav } from '../lib/nav';
@@ -47,8 +48,10 @@ export default function AddStops({ name, date, routeId }: { name: string; date: 
   const [address, setAddress] = useState('');
   const [parcel, setParcel] = useState('');
   // The exact location the rider chose (a suggestion or a pin) for the current address text.
-  const [picked, setPicked] = useState<{ label: string; approximate?: boolean } & Point | null>(null);
-  const [suggestions, setSuggestions] = useState<AddressSuggestion[]>([]);
+  const [picked, setPicked] = useState<{ label: string; approximate?: boolean; normalized?: string | null } & Point | null>(null);
+  const [suggestions, setSuggestions] = useState<PlaceSuggestion[]>([]);
+  // One Google billing session per address typed (P5.1): renewed after a pick or when the field is cleared.
+  const placeSession = useRef(newPlaceSession());
   const [searching, setSearching] = useState(false);
   // Set when Add found no exact match: the rider picks a suggestion, pins it, or adds it anyway.
   const [unsure, setUnsure] = useState(false);
@@ -123,8 +126,9 @@ export default function AddStops({ name, date, routeId }: { name: string; date: 
     const timer = setTimeout(() => {
       setSearching(true);
       const near = origin || area;
-      post<AddressSuggestion[]>('/deliveries/geocode-suggest', { query, ...(near || {}) }, cancel.signal)
-        .then((res) => { if (id === searchId.current) setSuggestions(res.data); })
+      // Places Autocomplete only (no Geocoding per keystroke, P5.2); the point is asked for once, on pick.
+      searchPlaces(query, placeSession.current, near, cancel.signal)
+        .then((found) => { if (id === searchId.current) setSuggestions(found); })
         .catch(() => { if (id === searchId.current) setSuggestions([]); })
         .finally(() => { if (id === searchId.current) setSearching(false); });
     }, SUGGEST_DELAY_MS);
@@ -142,15 +146,26 @@ export default function AddStops({ name, date, routeId }: { name: string; date: 
     if (picked && text !== picked.label) setPicked(null);
   };
 
-  const choose = (sug: AddressSuggestion) => {
+  const choose = async (sug: PlaceSuggestion) => {
     setAddress(sug.label);
-    setPicked({ label: sug.label, latitude: sug.latitude, longitude: sug.longitude, approximate: sug.approximate });
     setSuggestions([]);
     setUnsure(false);
+    try {
+      setSearching(true);
+      const point = await pickPlace(sug, placeSession.current);
+      if (!point) { setError('Could not find that address on the map. Try another suggestion or drop a pin.'); return; }
+      setPicked({ label: sug.label, latitude: point.latitude, longitude: point.longitude, approximate: point.approximate, normalized: point.normalized });
+    } catch (err) {
+      setError(err instanceof ApiRequestError ? err.message : 'Could not look that address up. Check your connection and try again.');
+    } finally {
+      setSearching(false);
+      placeSession.current = newPlaceSession();
+    }
   };
 
   const reset = (focus = true) => {
     setAddress(''); setParcel(''); setPicked(null); setSuggestions([]); setUnsure(false); setError(''); setAllowDuplicate(false);
+    placeSession.current = newPlaceSession();
     if (focus) setTimeout(() => addressRef.current?.focus(), 50);
   };
 
@@ -172,7 +187,7 @@ export default function AddStops({ name, date, routeId }: { name: string; date: 
     setAdding(true);
     setError('');
     try {
-      if (picked && picked.label === address) { await save(raw, picked, { precise: !picked.approximate, duplicateOk }); return; }
+      if (picked && picked.label === address) { await save(raw, picked, { normalized: picked.normalized, precise: !picked.approximate, duplicateOk }); return; }
       if (anyway) { await save(raw, null, { duplicateOk }); return; }
       const near = origin || area;
       const check = await checkAddress(raw, near);
@@ -294,7 +309,7 @@ export default function AddStops({ name, date, routeId }: { name: string; date: 
         {shownSuggestions.length ? (
           <View style={s.suggestions}>
             {shownSuggestions.map((sug, i) => (
-              <Pressable key={`${sug.latitude},${sug.longitude}`} onPress={() => choose(sug)} style={({ pressed }) => [s.suggestion, i > 0 && s.divider, pressed && { backgroundColor: c.soft }]}>
+              <Pressable key={sug.placeId ?? `${sug.latitude},${sug.longitude}`} onPress={() => void choose(sug)} style={({ pressed }) => [s.suggestion, i > 0 && s.divider, pressed && { backgroundColor: c.soft }]}>
                 <MaterialCommunityIcons name={sug.approximate ? 'map-marker-question-outline' : 'map-marker-check-outline'} size={20} color={sug.approximate ? c.warning : c.success} />
                 <Text style={{ flex: 1, color: c.text, fontSize: 15 }} numberOfLines={2}>{sug.label}</Text>
               </Pressable>
