@@ -195,7 +195,10 @@ model Delivery {
   @@index([riderId, status])
   @@index([riderId, serviceDate])
   @@index([serviceDate, status])
-  @@index([routeId])
+  // Monthly plan usage counts a rider's deliveries by createdAt.
+  @@index([riderId, createdAt])
+  // A route's stops by status in stop order (deliver's earlier-stop check, auto-complete, start); also serves routeId alone.
+  @@index([routeId, status, stopOrder])
   @@index([createdAt(sort: Desc)])
   @@map("deliveries")
 }
@@ -223,6 +226,9 @@ model Route {
   stops      RouteStop[]
   deliveries Delivery[]
 
+  // Also in the database, not expressible here (Prisma 5 has no partial indexes): "routes_one_active_per_rider", unique
+  // on (riderId) WHERE status = 'active' (migration 20261022130000). If `prisma migrate dev` ever proposes dropping it,
+  // delete that line from the generated migration.
   @@index([riderId, status])
   @@index([riderId, serviceDate])
   @@index([status])
