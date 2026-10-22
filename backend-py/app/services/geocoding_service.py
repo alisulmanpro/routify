@@ -359,14 +359,25 @@ def cache_key(raw: str, area: Any) -> str:
     return hashlib.sha1(f"v2|{_area_key(area)}|{normalize_address(raw)}".encode()).hexdigest()
 
 
+NOT_FOUND_CACHE_DAYS = 1
+
+
+def _caches_misses() -> bool:
+    """Misses are cached only when a real provider answered (with "none" nothing was looked up)."""
+    return env.GEOCODING_PROVIDER != "none"
+
+
 async def geocode_address(raw: str, *, retry_approximate: bool = False, area: Any = None) -> Optional[dict]:
-    """Returns {latitude, longitude, normalized, approximate} or None. Provider errors are not cached.
+    """Returns {latitude, longitude, normalized, approximate} or None. Provider errors are not cached; "nothing found" is,
+    for NOT_FOUND_CACHE_DAYS (a retry asks the provider again anyway).
     An Eircode in the address is looked up first; the full address only when that finds nothing."""
     code = find_eircode(raw)
     if code and (hit := await geocode_eircode(code, street=is_only_eircode(raw))):
         return hit
     key = cache_key(raw, area)
     cached = await db.geocodecache.find_unique(where={"key": key})
+    if cached and cached.expiresAt > now() and not cached.found and not retry_approximate:
+        return None
     if cached and cached.expiresAt > now() and cached.found and (not retry_approximate or not cached.approximate):
         # The cache keeps no postcode column; an Eircode inside the stored address is recovered from the text.
         return {"latitude": cached.latitude, "longitude": cached.longitude, "normalized": cached.normalized, "approximate": bool(cached.approximate),
@@ -383,20 +394,36 @@ async def geocode_address(raw: str, *, retry_approximate: bool = False, area: An
             "approximate": bool(result.get("approximate")), "provider": env.GEOCODING_PROVIDER,
             "expiresAt": now() + timedelta(days=7 if result.get("approximate") else 180),
         }
-        try:
-            await db.geocodecache.upsert(where={"key": key}, data={"create": {"key": key, **data}, "update": data})
-        except Exception:  # noqa: BLE001
-            pass
+    elif _caches_misses():
+        data = {"found": False, "latitude": None, "longitude": None, "normalized": None, "approximate": False, "provider": env.GEOCODING_PROVIDER,
+                "expiresAt": now() + timedelta(days=NOT_FOUND_CACHE_DAYS)}
+    else:
+        return result
+    try:
+        await db.geocodecache.upsert(where={"key": key}, data={"create": {"key": key, **data}, "update": data})
+    except Exception:  # noqa: BLE001
+        pass
     return result
 
 
-async def geocode_many(addresses: list[str], **options) -> dict[str, Optional[dict]]:
-    """Geocodes distinct addresses respecting provider limits. Returns {raw: result|None}."""
+async def geocode_many(addresses: list[str], *, failed: set[str] | None = None, **options) -> dict[str, Optional[dict]]:
+    """Geocodes distinct addresses respecting provider limits. Returns {raw: result|None}.
+
+    One address whose lookup errors does not stop the others: it is left out of the result and added to `failed`.
+    Only when every lookup errored (the provider is down) is GEOCODING_UNAVAILABLE raised, as before."""
     unique = list(dict.fromkeys(addresses))
     out: dict[str, Optional[dict]] = {}
+    errors: list[AppError] = []
+    failed = failed if failed is not None else set()
 
     async def one(raw: str) -> None:
-        out[raw] = await geocode_address(raw, **options)
+        try:
+            out[raw] = await geocode_address(raw, **options)
+        except AppError as error:
+            if error.code != "GEOCODING_UNAVAILABLE":
+                raise
+            errors.append(error)
+            failed.add(raw)
 
     if env.GEOCODING_PROVIDER == "nominatim":
         for raw in unique:
@@ -409,6 +436,8 @@ async def geocode_many(addresses: list[str], **options) -> dict[str, Optional[di
                 await one(queue.pop(0))
 
         await asyncio.gather(*(worker() for _ in range(min(5, len(queue)))))
+    if errors and not out:
+        raise errors[0]
     return out
 
 
