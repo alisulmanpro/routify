@@ -9,6 +9,7 @@ import { get, del, postFile, fileUrl, ApiRequestError } from '../lib/api';
 import type { Delivery, FailureReason } from '../lib/types';
 import { applyStopEvent, earlierStopOf, type V2EventResult } from '../lib/v2';
 import { sendStopEvent } from '../lib/v2api';
+import { prepareProofPhoto } from '../lib/photo';
 import { FAILURE_LABELS, stopCardText, timeOnly } from '../lib/format';
 import { Screen } from '../components/Kit';
 import { type PillTone } from '../components/Premium';
@@ -78,7 +79,9 @@ export default function DeliveryDetail({ id, onDone, initialStep }: { id: string
     const asset = result.assets[0];
     await run('photo', async () => {
       await ensureArrived();
-      setDelivery((await postFile<Delivery>(`/deliveries/${id}/proof`, asset.uri, 'photo', asset.mimeType || 'image/jpeg')).data);
+      // Scaled down first (P3.10): a full-size camera photo is several MB on a mobile connection.
+      const photo = await prepareProofPhoto(asset.uri, asset.width, asset.height);
+      setDelivery((await postFile<Delivery>(`/deliveries/${id}/proof`, photo.uri, 'photo', photo.mimeType)).data);
     });
   };
 
