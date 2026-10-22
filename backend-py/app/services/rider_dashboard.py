@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import asyncio
 
-from ..db import db
+from ..db import db, transaction
 from ..http import js_round, round2
 from . import storage_service as storage
+from .delivery_service import archive_deleted
 from .route_service import OPEN, summarize_counts
 
 # The map needs five columns of the located stops only, not whole rows. Same filter as the counts in dashboard().
@@ -77,14 +78,16 @@ async def history(actor: dict, limit: int = 60) -> list[dict]:
 async def clear_history(actor: dict) -> dict:
     """Permanently removes completed rider work and its downloadable reports."""
     finished = {"riderId": actor["id"], "status": {"in": ["delivered", "failed"]}}
-    reports, photos = await asyncio.gather(
+    reports, done = await asyncio.gather(
         db.report.find_many(where={"riderId": actor["id"]}),
-        db.delivery.find_many(where={**finished, "NOT": [{"proofPhotoKey": None}]}),
+        db.delivery.find_many(where=finished),
     )
-    deliveries, routes = await asyncio.gather(
-        db.delivery.delete_many(where=finished),
-        db.route.delete_many(where={"riderId": actor["id"], "status": "completed"}),
-    )
+    photos = [d for d in done if d.proofPhotoKey]
+    # The finished stops are kept in deleted_deliveries (P4.6); their photo files go, as before.
+    async with transaction() as tx:
+        await archive_deleted(tx, done, "clear_history")
+        deliveries = await tx.delivery.delete_many(where={"id": {"in": [d.id for d in done]}}) if done else 0
+        routes = await tx.route.delete_many(where={"riderId": actor["id"], "status": "completed"})
     await db.report.delete_many(where={"riderId": actor["id"]})
     # Customer doorstep photos go with the deliveries they prove.
     await asyncio.gather(*(storage.remove(r.fileKey) for r in reports), *(storage.remove(d.proofPhotoKey) for d in photos))

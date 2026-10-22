@@ -1,6 +1,7 @@
 """/api/v2: the lean rider API (one request per screen or action, idempotent writes). /api/v1 is unchanged."""
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Request
@@ -66,6 +67,8 @@ class EventBody(Schema):
     note: Text(1000) | None = None
     # deliver: also when earlier stops are still open (the rider confirmed).
     allowSkip: bool | None = None
+    # When it happened on the phone (ISO 8601). Offline phones send events late; the newest event per stop wins.
+    at: datetime | None = None
 
     @model_validator(mode="after")
     def fail_needs_reason(self):
@@ -85,7 +88,8 @@ async def stop_event(request: Request):
 
     async def action():
         return 200, {"success": True, "data": await v2.stop_event(actor, stop_id, body.type, reason=body.reason, note=body.note,
-                                                                   allow_skip=bool(body.allowSkip))}
+                                                                   allow_skip=bool(body.allowSkip), at=body.at,
+                                                                   idempotency_key=request.headers.get(idempotency.KEY_HEADER))}
 
     return await idempotency.run(request, actor, "POST /v2/stops/{id}/events",
                                  idempotency.request_hash(stop_id, body.model_dump(exclude_none=True)), action)
@@ -94,6 +98,8 @@ async def stop_event(request: Request):
 class BatchItem(DeliveryInput):
     # A UUID the app made for this stop: sending the same one again returns the stop instead of adding another.
     clientId: Annotated[str, Field(pattern=r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")]
+    # The rider confirmed another parcel for an Eircode already on that day (else 409 SAME_EIRCODE_SAME_DAY).
+    secondParcel: bool | None = None
 
 
 class BatchBody(Schema):

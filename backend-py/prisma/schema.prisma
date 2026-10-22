@@ -139,6 +139,8 @@ model User {
   passwordResets PasswordReset[]
   storePurchases StorePurchase[]
   idempotencyKeys IdempotencyKey[]
+  stopEvents      StopEvent[]
+  deletedDeliveries DeletedDelivery[]
 
   @@index([role])
   @@index([status])
@@ -185,6 +187,11 @@ model Delivery {
   arrivedAt       DateTime?
   deliveredAt     DateTime?
   failedAt        DateTime?
+  /// When the newest arrive/deliver/fail applied to this stop happened, by the phone's clock: an older event that
+  /// arrives later (another device, an offline phone) does not undo a newer one.
+  lastEventAt     DateTime?
+  /// The rider confirmed this is another parcel for an address already on that day (same Eircode).
+  secondParcel    Boolean   @default(false)
 
   // Optimistic concurrency: every save bumps this and fails with 409 if someone else saved first.
   version   Int      @default(0)
@@ -468,6 +475,51 @@ model IdempotencyKey {
   @@id([riderId, key])
   @@index([expiresAt])
   @@map("idempotency_keys")
+}
+
+// Every arrive / deliver / fail a rider sent, applied or not, in the order received. Who did what to which stop, when
+// (by the phone's clock and the server's), from which path; deliveries keep only their latest state.
+model StopEvent {
+  id             String   @id @db.VarChar(24)
+  riderId        String   @db.VarChar(24)
+  rider          User     @relation(fields: [riderId], references: [id], onDelete: Cascade)
+  /// No foreign key: the history outlives a deleted stop.
+  deliveryId     String   @db.VarChar(24)
+  routeId        String?  @db.VarChar(24)
+  type           String   @db.VarChar(16)
+  /// applied · no_change (already in that state) · superseded (older than the stop's latest event) · rejected
+  outcome        String   @db.VarChar(16)
+  fromStatus     String   @db.VarChar(16)
+  toStatus       String   @db.VarChar(16)
+  reason         String?  @db.VarChar(40)
+  note           String?  @db.VarChar(1000)
+  /// When it happened on the phone, and when the server got it (offline phones send hours later).
+  at             DateTime
+  receivedAt     DateTime @default(now())
+  /// v1 (/deliveries/{id}/...) or v2 (/v2/stops/{id}/events).
+  source         String   @db.VarChar(8)
+  idempotencyKey String?  @db.VarChar(128)
+
+  @@index([deliveryId, at])
+  @@index([riderId, receivedAt])
+  @@map("stop_events")
+}
+
+// Deleted stops are kept here (the full row as it was), so a delete can be looked into or undone and the route change
+// feed can report it. The live deliveries table stays free of deleted rows, so no query has to filter them out.
+model DeletedDelivery {
+  id        String   @id @db.VarChar(24)
+  riderId   String   @db.VarChar(24)
+  rider     User     @relation(fields: [riderId], references: [id], onDelete: Cascade)
+  routeId   String?  @db.VarChar(24)
+  /// delete (one stop) · clear_open (the unstarted queue) · clear_history (finished work)
+  reason    String   @db.VarChar(20)
+  snapshot  Json
+  deletedAt DateTime @default(now())
+
+  @@index([riderId, deletedAt])
+  @@index([routeId, deletedAt])
+  @@map("deleted_deliveries")
 }
 
 // Shared counters for rate limits and unknown-email login lockouts, so every API worker sees the same numbers.

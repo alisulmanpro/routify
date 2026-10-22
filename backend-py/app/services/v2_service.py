@@ -14,12 +14,15 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from ..db import db, lock_rider, transaction
-from ..errors import conflict, forbidden, not_found, validation_error
-from ..http import iso, js_round, now
+from ..errors import AppError, conflict, forbidden, not_found, validation_error
+from ..http import iso, js_round, now, today_key
 from ..uploads import UploadedFile
 from . import delivery_service as deliveries
-from .route_service import OPEN, _left_over_where, _stop_counts, summarize_counts
+from .geocoding_service import find_eircode, normalize_eircodes
+from .route_service import OPEN, _left_over_where, _stop_counts, on_stop_finished, summarize_counts
 from .serializers import clean_delivery_address
+from .stop_event_service import event_time
+from .stop_event_service import record as record_event
 from .subscription_service import assert_can_create_deliveries, effective_status
 
 # Changes are compared with a few seconds of slack: rows are stamped by the app's clock (Prisma) or the database's.
@@ -143,16 +146,19 @@ def parse_cursor(value: str) -> datetime:
 
 
 async def route_changes(actor: dict, route_id: str, since: datetime) -> dict:
-    """What changed on the route since `since` (a previous `cursor`). The client applies `stops` by id, drops `removed`, and
-    reloads the full route when its stop count then differs from `stopCount` (a deleted stop leaves no trace to report)."""
+    """What changed on the route since `since` (a previous `cursor`). The client applies `stops` by id and drops `removed`
+    (moved to another route or deleted); `stopCount` lets it check it is in step."""
     _require_rider(actor)
     cursor = now()
     after = (since - CHANGES_SLACK).astimezone(UTC).replace(tzinfo=None).isoformat()
     route, changed, removed, counts, next_rows = await asyncio.gather(
         _mine(actor, route_id),
         db.query_raw(_STOPS_SQL, route_id, after),
+        # Stops moved to another route, and stops deleted from this one (kept in deleted_deliveries since P4.6).
         db.query_raw("""SELECT s."deliveryId" AS "id" FROM "route_stops" AS s JOIN "deliveries" AS d ON d."id" = s."deliveryId"
-                        WHERE s."routeId" = $1 AND d."routeId" IS DISTINCT FROM s."routeId" AND d."updatedAt" > $2::timestamp""", route_id, after),
+                        WHERE s."routeId" = $1 AND d."routeId" IS DISTINCT FROM s."routeId" AND d."updatedAt" > $2::timestamp
+                        UNION
+                        SELECT x."id" FROM "deleted_deliveries" AS x WHERE x."routeId" = $1 AND x."deletedAt" > $2::timestamp""", route_id, after),
         _stop_counts([route_id]),
         db.delivery.find_many(where={"routeId": route_id, "status": {"in": list(OPEN)}}, order=[{"stopOrder": "asc"}, {"id": "asc"}], take=1),
     )
@@ -214,24 +220,61 @@ async def home(actor: dict, date: str) -> dict:
 
 # ---------- Stop events ----------
 
-async def stop_event(actor: dict, stop_id: str, kind: str, *, reason: str | None = None, note: str | None = None, allow_skip: bool = False) -> dict:
-    """arrive / deliver / fail in one call. Deliver and fail on a stop not yet arrived at record the arrival first.
-    Repeating an event the stop already went through answers with the stop as it is (no second change)."""
+async def stop_event(actor: dict, stop_id: str, kind: str, *, reason: str | None = None, note: str | None = None, allow_skip: bool = False,
+                     at: datetime | None = None, idempotency_key: str | None = None) -> dict:
+    """arrive / deliver / fail in one call; every one is recorded in stop_events.
+
+    - Deliver and fail on a stop not yet arrived at record the arrival first.
+    - Repeating an event the stop already went through changes nothing (outcome no_change).
+    - Two devices / phones syncing late: `at` is when it happened on the phone. An event older than the stop's latest one
+      changes nothing (superseded); a newer deliver/fail replaces an earlier fail/deliver. (Team default: last event wins.)
+    """
     _require_rider(actor)
+    at = event_time(at)
     stop = await deliveries.find_visible(actor, stop_id)
     status = str(stop.status)
-    done = {"arrive": ("in_progress", "delivered", "failed"), "deliver": ("delivered",), "fail": ("failed",)}[kind]
-    if status not in done:
-        if kind != "arrive" and status == "pending":
-            await deliveries.arrive(actor, stop_id)
-        if kind == "arrive":
-            await deliveries.arrive(actor, stop_id)
-        elif kind == "deliver":
-            await deliveries.deliver(actor, stop_id, note=note, allow_skip=allow_skip)
+    target = {"arrive": "in_progress", "deliver": "delivered", "fail": "failed"}[kind]
+
+    async def log(outcome: str, to_status: str, event: str = kind) -> None:
+        await record_event(stop, event, outcome, to_status, at=at, source="v2", reason=reason if event == "fail" else None, note=note,
+                           idempotency_key=idempotency_key)
+
+    try:
+        if stop.lastEventAt and at < stop.lastEventAt:
+            await log("superseded", status)
+        elif status == target or (kind == "arrive" and status in ("delivered", "failed")):
+            await log("no_change", status)
+        elif status in ("delivered", "failed"):
+            await _switch_outcome(stop, kind, at, reason, note)
+            await log("applied", target)
         else:
-            await deliveries.fail(actor, stop_id, reason=reason or "other", note=note)
-        stop = await deliveries.find_visible(actor, stop_id)
+            if status == "pending":
+                await deliveries.arrive(actor, stop_id, at=at, audit=False)
+                await log("applied", "in_progress", "arrive")
+            if kind == "deliver":
+                await deliveries.deliver(actor, stop_id, note=note, allow_skip=allow_skip, at=at, audit=False)
+            elif kind == "fail":
+                await deliveries.fail(actor, stop_id, reason=reason or "other", note=note, at=at, audit=False)
+            if kind != "arrive":  # an arrival on its own was logged above
+                await log("applied", target)
+    except AppError:
+        await log("rejected", status)
+        raise
+    stop = await deliveries.find_visible(actor, stop_id)
     return {"stop": light_stop_of(stop), "route": await route_summary(stop.routeId)}
+
+
+async def _switch_outcome(stop: Any, kind: str, at: datetime, reason: str | None, note: str | None) -> None:
+    """A newer deliver/fail for a finished stop (e.g. the rider's other phone): delivered becomes failed or the reverse."""
+    if kind == "deliver":
+        data = {"status": "delivered", "deliveredAt": at, "failedAt": None, "failureReason": None, "failureNote": None, "lastEventAt": at}
+        if note:
+            data["note"] = note
+    else:
+        data = {"status": "failed", "failedAt": at, "deliveredAt": None, "failureReason": reason or "other", "failureNote": note, "lastEventAt": at}
+    await deliveries.save_delivery(stop, data)
+    if stop.routeId:
+        await on_stop_finished(stop.routeId)
 
 
 # ---------- Batch create ----------
@@ -263,13 +306,40 @@ async def create_batch(actor: dict, items: list[dict]) -> tuple[int, dict]:
                 seen.add(tid)
             if details:
                 raise conflict("Some deliveries are duplicates", "DUPLICATE_TRACKING_ID", details)
-            rows = [{**await deliveries._to_row(actor, item), "clientId": item["clientId"]} for item in new_items]
+            await _check_second_parcels(tx, actor, items, known)
+            rows = [{**await deliveries._to_row(actor, item), "clientId": item["clientId"], "secondParcel": bool(item.get("secondParcel"))}
+                    for item in new_items]
             await tx.delivery.create_many(data=rows)
 
     saved = {d.clientId: d for d in await db.delivery.find_many(where={"riderId": actor["id"], "clientId": {"in": client_ids}})}
     stops = [{**light_stop_of(saved[c]), "clientId": c, "serviceDate": saved[c].serviceDate, "routeId": saved[c].routeId} for c in client_ids]
     status = 201 if new_items else 200
     return status, {"stops": stops, "created": len(new_items), "existing": len(items) - len(new_items)}
+
+
+def _eircode_of(item: dict) -> str | None:
+    address = item.get("address") or {}
+    return find_eircode(normalize_eircodes(address.get("raw") or "")) or find_eircode(address.get("normalized") or "")
+
+
+async def _check_second_parcels(tx: Any, actor: dict, items: list[dict], known: set) -> None:
+    """Same Eircode on the same day as a stop already added (or earlier in this batch): refused unless the rider confirmed
+    it is a second parcel for that address (`secondParcel`). Team default: warn + "second parcel" confirmation."""
+    wanted = [(i, item, _eircode_of(item), item.get("serviceDate") or today_key()) for i, item in enumerate(items) if item["clientId"] not in known]
+    wanted = [w for w in wanted if w[2]]
+    if not wanted:
+        return
+    existing = await tx.delivery.find_many(where={"riderId": actor["id"], "postalCode": {"in": list({w[2] for w in wanted})},
+                                                  "serviceDate": {"in": list({w[3] for w in wanted})}})
+    seen = {(d.postalCode, d.serviceDate): d.id for d in existing}
+    details = []
+    for index, item, code, day in wanted:
+        if (code, day) in seen and not item.get("secondParcel"):
+            details.append({"index": index, "path": "address", "code": "SAME_EIRCODE_SAME_DAY", "postalCode": code, "serviceDate": day,
+                            "existingId": seen[(code, day)], "message": f"{code} is already on {day}. Add it as a second parcel?"})
+        seen.setdefault((code, day), item["clientId"])
+    if details:
+        raise conflict("A stop with this Eircode is already on that day", "SAME_EIRCODE_SAME_DAY", details)
 
 
 # ---------- Proof photo ----------
