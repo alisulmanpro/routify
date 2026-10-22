@@ -1,5 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import NetInfo from '@react-native-community/netinfo';
+import { secureDelete, secureGet, secureSet } from './secureStorage';
 import { cacheDirectory, copyAsync, deleteAsync, FileSystemUploadType, uploadAsync } from 'expo-file-system/legacy';
 
 export const API_URL = (process.env.EXPO_PUBLIC_API_URL || 'http://localhost:4000').replace(/\/$/, '');
@@ -91,20 +92,31 @@ let onAuthChange: ((tokens: Tokens) => void) | null = null;
 
 export const setAuthChangeHandler = (fn: ((tokens: Tokens) => void) | null) => { onAuthChange = fn; };
 
-async function loadTokens() {
-  if (!ready) {
-    ready = AsyncStorage.getItem(TOKENS_KEY).then((raw) => {
-      tokens = raw ? JSON.parse(raw) : null;
-    }).catch(() => { tokens = null; });
+// The session lives in the secure store (P3.11). Riders signed in before that had it in AsyncStorage: it is moved over
+// once, so nobody is signed out by the update.
+async function readTokens(): Promise<Tokens> {
+  let raw = await secureGet(TOKENS_KEY);
+  if (!raw) {
+    const legacy = await AsyncStorage.getItem(TOKENS_KEY);
+    if (legacy) {
+      await secureSet(TOKENS_KEY, legacy);
+      await AsyncStorage.removeItem(TOKENS_KEY);
+      raw = legacy;
+    }
   }
+  return raw ? JSON.parse(raw) : null;
+}
+
+async function loadTokens() {
+  if (!ready) ready = readTokens().then((t) => { tokens = t; }).catch(() => { tokens = null; });
   return ready;
 }
 
 export async function setTokens(next: Tokens) {
   tokens = next;
   onAuthChange?.(next);
-  if (next) await AsyncStorage.setItem(TOKENS_KEY, JSON.stringify(next));
-  else await AsyncStorage.removeItem(TOKENS_KEY);
+  if (next) await secureSet(TOKENS_KEY, JSON.stringify(next));
+  else await Promise.all([secureDelete(TOKENS_KEY), AsyncStorage.removeItem(TOKENS_KEY)]);
 }
 
 export async function getTokens() {
@@ -112,23 +124,27 @@ export async function getTokens() {
   return tokens;
 }
 
-let refreshing: Promise<boolean> | null = null;
-async function tryRefresh(): Promise<boolean> {
+/** ok: new tokens · rejected: the session is over (sign out) · unreachable: no answer, try again later (stay signed in). */
+type Refresh = 'ok' | 'rejected' | 'unreachable';
+let refreshing: Promise<Refresh> | null = null;
+async function tryRefresh(): Promise<Refresh> {
   await loadTokens();
-  if (!tokens?.refreshToken) return false;
+  if (!tokens?.refreshToken) return 'rejected';
   if (!refreshing) {
     refreshing = fetchWithTimeout(`${API_URL}/api/v1/auth/refresh`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ refreshToken: tokens.refreshToken, client: 'mobile' }),
     }, READ_TIMEOUT_MS)
-      .then(async (res) => {
-        if (!res.ok) return false;
+      .then(async (res): Promise<Refresh> => {
+        if (res.status >= 500) return 'unreachable';
+        if (!res.ok) return 'rejected';
         const payload = await res.json();
         await setTokens({ accessToken: payload.data.accessToken, refreshToken: payload.data.refreshToken });
-        return true;
+        return 'ok';
       })
-      .catch(() => false)
+      // No connection while renewing must not sign the rider out (P3.11).
+      .catch((): Refresh => 'unreachable')
       .finally(() => { refreshing = null; });
   }
   return refreshing;
@@ -186,7 +202,9 @@ async function parse<T>(res: Response): Promise<Payload<T>> {
 export async function api<T = unknown>(path: string, opts: Options = {}): Promise<Payload<T>> {
   const res = await send(path, opts);
   if (res.status === 401 && opts.retry !== false) {
-    if (await tryRefresh()) return api<T>(path, { ...opts, retry: false });
+    const refresh = await tryRefresh();
+    if (refresh === 'ok') return api<T>(path, { ...opts, retry: false });
+    if (refresh === 'unreachable') throw new NetworkError('Could not renew your session');
     await setTokens(null);
   }
   return parse<T>(res);
@@ -196,7 +214,9 @@ export async function api<T = unknown>(path: string, opts: Options = {}): Promis
 export async function getWithEtag<T>(path: string, etag?: string | null, retried = false): Promise<{ data?: T; etag: string | null; notModified: boolean }> {
   const res = await send(path, { headers: etag ? { 'If-None-Match': etag } : undefined });
   if (res.status === 401 && !retried) {
-    if (await tryRefresh()) return getWithEtag<T>(path, etag, true);
+    const refresh = await tryRefresh();
+    if (refresh === 'ok') return getWithEtag<T>(path, etag, true);
+    if (refresh === 'unreachable') throw new NetworkError('Could not renew your session');
     await setTokens(null);
   }
   if (res.status === 304) return { etag: res.headers.get('etag') || etag || null, notModified: true };
@@ -234,7 +254,9 @@ export async function postFile<T>(path: string, fileUri: string, fieldName: stri
 
     let response = await send();
     if (response.status === 401) {
-      if (await tryRefresh()) response = await send();
+      const refresh = await tryRefresh();
+      if (refresh === 'ok') response = await send();
+      else if (refresh === 'unreachable') throw new NetworkError('Could not renew your session');
       else await setTokens(null);
     }
 

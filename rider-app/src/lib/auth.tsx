@@ -1,5 +1,6 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
-import { get, post, setAuthChangeHandler, setTokens, getTokens, ApiRequestError } from './api';
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { get, post, setAuthChangeHandler, setTokens, getTokens, onOnlineChange, ApiRequestError } from './api';
+import { secureDelete, secureGet, secureSet } from './secureStorage';
 import { forgetRider } from './revenuecat';
 import type { User } from './types';
 
@@ -14,20 +15,46 @@ type AuthContextValue = AuthState & {
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 
+// The last profile the API returned, so an offline start keeps the rider signed in (P3.11). Cleared on sign-out.
+const PROFILE_KEY = 'dp_rider_profile_v1';
+const saveProfile = (user: User) => secureSet(PROFILE_KEY, JSON.stringify(user)).catch(() => {});
+const forgetProfile = () => secureDelete(PROFILE_KEY).catch(() => {});
+/** No answer (offline, timeout) or a server error: says nothing about the session, unlike 401/403. */
+const unreachable = (err: unknown) => err instanceof TypeError || (err instanceof ApiRequestError && err.status >= 500);
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<AuthState>({ user: null, loading: true });
+  // True while the profile on screen is the saved copy (the API could not be reached): it is reloaded once online.
+  const fromSavedCopy = useRef(false);
 
   const loadProfile = useCallback(async () => {
     try {
       const me = await get<User>('/auth/me');
+      fromSavedCopy.current = false;
       setState({ user: me.data, loading: false });
-    } catch {
+      void saveProfile(me.data);
+    } catch (err) {
+      // Offline or the server is down: keep the rider signed in with the saved profile. A rejected session (401, which
+      // also clears the tokens, or 403) still signs out.
+      const saved = unreachable(err) && (await getTokens()) ? await secureGet(PROFILE_KEY).catch(() => null) : null;
+      if (saved) {
+        fromSavedCopy.current = true;
+        setState({ user: JSON.parse(saved) as User, loading: false });
+        return;
+      }
       setState({ user: null, loading: false });
     }
   }, []);
 
+  // Back online after starting from the saved profile: load the real one.
+  useEffect(() => onOnlineChange((online) => { if (online && fromSavedCopy.current) void loadProfile(); }), [loadProfile]);
+
   useEffect(() => {
-    setAuthChangeHandler((tokens) => { if (!tokens) setState({ user: null, loading: false }); });
+    setAuthChangeHandler((tokens) => {
+      if (tokens) return;
+      void forgetProfile();
+      setState({ user: null, loading: false });
+    });
     (async () => {
       const tokens = await getTokens();
       if (!tokens) { setState({ user: null, loading: false }); return; }
@@ -39,12 +66,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const login = useCallback(async (email: string, password: string) => {
     const result = await post<{ user: User; accessToken: string; refreshToken: string }>('/auth/login', { email, password, client: 'mobile' });
     await setTokens({ accessToken: result.data.accessToken, refreshToken: result.data.refreshToken });
+    void saveProfile(result.data.user);
     setState({ user: result.data.user, loading: false });
   }, []);
 
   const register = useCallback(async (input: RegisterInput) => {
     const result = await post<{ user: User; accessToken: string; refreshToken: string }>('/auth/register', input);
     await setTokens({ accessToken: result.data.accessToken, refreshToken: result.data.refreshToken });
+    void saveProfile(result.data.user);
     setState({ user: result.data.user, loading: false });
   }, []);
 
