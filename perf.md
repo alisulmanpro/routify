@@ -53,3 +53,47 @@ PERF_DATABASE_URL=postgresql://postgres:test@127.0.0.1:55432/perf python -m scri
 - **Responses:** route-sized JSON is 20–25× smaller on the wire with gzip (P1.4). The JSON itself is unchanged: about 0.6 KB per stop, so 1,000 stops are 618 KB before compression.
 - **Still slow: building and optimizing large routes.** About 10 s at 1,000 stops, and that time is in the Python optimiser (`route_planner.py`), not the database. This is Phase 6 (OSRM + VROOM in a worker). Until then a large build blocks the single API process.
 - **Open Route / Deliver** still re-download the whole route (≈ 125 KB of JSON at 200 stops). Phase 2 (`/v2` lean routes + deltas) and Phase 3 (app cache) fix this.
+
+## Phase 3 — Requests per rider action (app)
+
+Counted from the app's code paths: every request the screens and components on the way make. "Before" is
+`origin/main`; "after" is branch `phase-3-app-speed`. Route sizes are for the 200-stop route.
+
+| Action | Before (v1 app) | After (Phase 3) |
+|---|---|---|
+| **Open Home** | **6**: `/rider/dashboard`, `/routes/by-date`, `/routes/leftover`, `/deliveries?status=pending&limit=100` (up to 100 whole stops, only to count them), `/subscriptions/me` and `/subscriptions/store` (Free-trial chip). Every time Home was shown. | **1**: `GET /api/v2/rider/home` (counts only, includes the plan status). Back on Home within 30 s with nothing changed: **0**. Riders without a plan also fetch `/subscriptions/store` at most once a day for the chip. The saved copy is drawn first, also after a restart or offline. |
+| **Deliver Stop** (stop screen → Delivered) | **5**: `GET /routes/current` (whole route, to check the order), `POST …/arrive`, `POST …/deliver`, `GET /routes/{id}` (whole route, "is it complete?"), then the route map reloaded the whole route on return. That is 3 full route downloads (≈ 125 KB of JSON each at 200 stops). | **1**: `POST /api/v2/stops/{id}/events` (arrival recorded by the server; the answer carries the route's progress, next stop and "completed"). Going back to the route: **0** (the saved route is updated from that answer). |
+| Deliver from a list ("Mark as delivered?") | 2 (`arrive` + `deliver`) | 1 (`POST /api/v2/stops/{id}/events`) |
+| Open a route (by id) | 1 whole route (≈ 125 KB JSON) | 1 `GET /api/v2/routes/{id}`: light stops, gzip ≈ 5 KB. Unchanged since last time: **304, no body** |
+| Add a typed stop | 1 `POST /deliveries/manual` (a retry could duplicate it) | 1 `POST /api/v2/deliveries/batch` (client id: a retry never duplicates) |
+| Proof photo | full camera photo (often 3–5 MB) | resized to ≤ 1600 px JPEG 0.7 (a few hundred KB) |
+| While the app is open | service-area check every 15 min (GPS + API) | none; only at launch / return to the foreground, at most every 6 h |
+
+Opening a stop's details is still 1 v1 request (`GET /deliveries/{id}`, which has the phone, notes and photo). App launch
+costs `GET /auth/me` and `GET /config` (version check), as before.
+
+### Timings to measure on a real phone
+
+I could not measure these: I have no physical device. The only run was on an Android emulator on a laptop, and its
+timings are not representative. Please measure on a mid-range Android phone (and an iPhone if possible) with the
+200-stop route, release-like build (`eas build --profile preview`), and fill in the table.
+
+How: a screen recording at 60 fps (count frames from tap to change) or a stopwatch averaged over 3 tries. For smoothness,
+use Settings → Developer options → "Profile HWUI rendering" (bars) or the React Native perf monitor (dev menu, dev build
+only). For 4G, use Developer options → "Network speed" if available, or a real 4G connection away from Wi-Fi.
+
+| # | What | How to do it | Target (task.md P8) | Wi-Fi | 4G |
+|---|---|---|---|---|---|
+| 1 | Cold start → Home with numbers | Force-stop the app, tap the icon, stop when Home's counts show | — |  |  |
+| 2 | Cold start **offline** → Home | Airplane mode, force-stop, open: Home must show the saved counts (no Login screen) | instant, no Login |  |  |
+| 3 | Home first paint when returning | From the route screen, tap Home | < 300 ms |  |  |
+| 4 | Open the 200-stop route | Home → route card → map with pins and list | < 800 ms on 4G |  |  |
+| 5 | Scroll the 200-stop list | Fling from top to bottom and back | no visible stutter (bars under the line) |  |  |
+| 6 | Pan / zoom the map | Drag and pinch for 5 s on the route map | smooth, ≥ 50 fps |  |  |
+| 7 | Tap a stop in the list | Row expands and the map moves to it | < 100 ms to expand |  |  |
+| 8 | Deliver a stop | Stop screen → Delivered → back on the route with the stop ticked | 1 request, < 1 s total |  |  |
+| 9 | Back to the route after delivering | Time from back tap to the route shown | instant (no spinner) |  |  |
+| 10 | Add a typed stop | Type an address, pick a suggestion, Add | suggestions after ≥ 4 chars and 0.5 s pause |  |  |
+| 11 | Proof photo upload | Take a photo → until it shows on the stop | note the upload size in the API log |  |  |
+| 12 | Start route (200 stops) | Tap Start route as soon as the map shows | never disabled; no pin animation above 30 stops |  |  |
+| 13 | Battery over a 1 h route session | Battery % before/after with the route map and navigation in use | note it |  |  |
