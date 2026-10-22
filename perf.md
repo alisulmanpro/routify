@@ -168,3 +168,17 @@ Already known without the map:
 
 These are estimates from the data size and the tools' design, not measurements. The benchmark's peak memory and solve
 times replace them.
+
+## Phase 6b — Optimising a 200-stop route (async job)
+
+Measured locally (laptop, local Postgres, in-process API + worker). VROOM/OSRM were not available here (ISSUE-31), so
+this is the **fallback path**: the built-in planner in the worker, on straight-line distances.
+
+| Step | Time |
+|---|---|
+| `POST /api/v2/routes/{id}/optimize` answers (job queued) | **21 ms** (the API does no planning) |
+| Job done (worker: built-in planner, 200 stops) | **2.5 s** after the request (poll `GET /api/v2/jobs/{id}`) |
+| `POST /api/v1/routes/build`, 200 stops (v1 waits for the worker's plan) | 2.8 s |
+
+With VROOM + our OSRM configured (`VROOM_URL`, `OSRM_URL`), the order comes from VROOM on road times. Its solve time is
+the "VROOM solve" column of the Phase 6a table, still to be measured (ISSUE-31).
