@@ -138,6 +138,7 @@ model User {
   refreshTokens RefreshToken[]
   passwordResets PasswordReset[]
   storePurchases StorePurchase[]
+  idempotencyKeys IdempotencyKey[]
 
   @@index([role])
   @@index([status])
@@ -440,6 +441,30 @@ model GeocodeCache {
 
   @@index([expiresAt])
   @@map("geocode_cache")
+}
+
+// One row per Idempotency-Key a rider sent to a /v2 write: a retry with the same key and the same request gets the
+// stored answer back instead of running again. Rows expire after a day (hourly cleanup in app/main.py).
+model IdempotencyKey {
+  riderId        String   @db.VarChar(24)
+  rider          User     @relation(fields: [riderId], references: [id], onDelete: Cascade)
+  key            String   @db.VarChar(128)
+  /// The endpoint it was used on, e.g. "POST /v2/stops/{id}/events".
+  scope          String   @db.VarChar(120)
+  /// sha256 of the request's meaningful content: the same key with a different request is refused.
+  requestHash    String   @db.VarChar(64)
+  /// in_progress while the first request runs, then done.
+  state          String   @default("in_progress") @db.VarChar(16)
+  responseStatus Int?
+  /// The JSON body sent back, replayed as-is.
+  responseBody   String?
+  lockedAt       DateTime @default(now())
+  createdAt      DateTime @default(now())
+  expiresAt      DateTime
+
+  @@id([riderId, key])
+  @@index([expiresAt])
+  @@map("idempotency_keys")
 }
 
 // Shared counters for rate limits and unknown-email login lockouts, so every API worker sees the same numbers.
