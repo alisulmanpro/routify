@@ -29,7 +29,9 @@ type Point = { latitude: number; longitude: number };
 type Sheet = 'scan' | 'barcode' | 'pin' | 'import' | null;
 
 const VoicePanel = loadVoicePanel();
-const SUGGEST_DELAY_MS = 350;
+// Suggestions wait for a pause in typing and a few characters: every request is a billed lookup (P3.8).
+const SUGGEST_DELAY_MS = 500;
+const SUGGEST_MIN_CHARS = 4;
 
 // Step 2 of Add route: add stops as fast as possible. Each stop is saved straight away (for the route's day), so nothing is lost.
 // With `routeId` (Edit stops on a planned route), that route's stops are on the list too, and Review plans it again.
@@ -89,19 +91,21 @@ export default function AddStops({ name, date, routeId }: { name: string; date: 
 
   // Suggestions follow the typing, a moment after the rider pauses. They are hidden once a location is chosen.
   const query = address.trim();
-  const wantSuggestions = query.length >= 3 && !(picked && picked.label === address);
+  const wantSuggestions = query.length >= SUGGEST_MIN_CHARS && !(picked && picked.label === address);
   useEffect(() => {
     if (!wantSuggestions) return;
     const id = ++searchId.current;
+    // A newer search cancels this one, also when it is already on its way.
+    const cancel = new AbortController();
     const timer = setTimeout(() => {
       setSearching(true);
       const near = origin || area;
-      post<AddressSuggestion[]>('/deliveries/geocode-suggest', { query, ...(near || {}) })
+      post<AddressSuggestion[]>('/deliveries/geocode-suggest', { query, ...(near || {}) }, cancel.signal)
         .then((res) => { if (id === searchId.current) setSuggestions(res.data); })
         .catch(() => { if (id === searchId.current) setSuggestions([]); })
         .finally(() => { if (id === searchId.current) setSearching(false); });
     }, SUGGEST_DELAY_MS);
-    return () => clearTimeout(timer);
+    return () => { clearTimeout(timer); cancel.abort(); };
     // area is derived from the user; origin changes at most once.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [query, wantSuggestions, origin]);

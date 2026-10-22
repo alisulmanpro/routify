@@ -30,6 +30,14 @@ export class NetworkError extends TypeError {
   }
 }
 
+/** The caller cancelled the request (e.g. a newer search replaced it). Not an error to show, never retried. */
+export class RequestCancelled extends Error {
+  constructor() {
+    super('Request cancelled');
+    this.name = 'RequestCancelled';
+  }
+}
+
 // ---- Connection state (NetInfo) ----
 
 let online = true;
@@ -56,17 +64,22 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 /** 0.5 s, then 1 s (± 25 %), so many phones coming back online do not retry in step. */
 const backoff = (attempt: number) => 500 * 2 ** attempt * (0.75 + Math.random() * 0.5);
 
-async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number): Promise<Response> {
+async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number, cancel?: AbortSignal): Promise<Response> {
+  if (cancel?.aborted) throw new RequestCancelled();
   if (!online) throw new NetworkError('No internet connection');
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const onCancel = () => controller.abort();
+  cancel?.addEventListener('abort', onCancel);
   try {
     return await fetch(url, { ...init, signal: controller.signal });
   } catch (err) {
+    if (cancel?.aborted) throw new RequestCancelled();
     if (controller.signal.aborted) throw new NetworkError('The server took too long to answer', true);
     throw new NetworkError(err instanceof Error ? err.message : 'Network request failed');
   } finally {
     clearTimeout(timer);
+    cancel?.removeEventListener('abort', onCancel);
   }
 }
 
@@ -127,6 +140,8 @@ type Options = {
   /** Safe to send twice (e.g. it carries an Idempotency-Key or client ids): retried after a network error or 502-504. GETs always are. */
   idempotent?: boolean;
   timeoutMs?: number;
+  /** Aborting it cancels the request (it then rejects with RequestCancelled). */
+  signal?: AbortSignal;
 };
 type Payload<T> = { data: T; meta?: { page: number; limit: number; total: number; pages: number } };
 
@@ -148,7 +163,7 @@ async function send(path: string, opts: Options): Promise<Response> {
     if (opts.isForm) body = opts.body as FormData;
     else if (opts.body !== undefined) { headers['Content-Type'] = 'application/json'; body = JSON.stringify(opts.body); }
     try {
-      const res = await fetchWithTimeout(url.toString(), { method, headers, body }, timeoutMs);
+      const res = await fetchWithTimeout(url.toString(), { method, headers, body }, timeoutMs, opts.signal);
       if (repeatable && RETRY_STATUSES.has(res.status) && attempt < RETRIES) { await sleep(backoff(attempt)); continue; }
       return res;
     } catch (err) {
@@ -193,7 +208,7 @@ export async function getWithEtag<T>(path: string, etag?: string | null, retried
 export { randomUUID as newId } from 'expo-crypto';
 
 export const get = <T,>(path: string, query?: Options['query']) => api<T>(path, { query });
-export const post = <T,>(path: string, body?: unknown) => api<T>(path, { method: 'POST', body });
+export const post = <T,>(path: string, body?: unknown, signal?: AbortSignal) => api<T>(path, { method: 'POST', body, signal });
 export const patch = <T,>(path: string, body?: unknown) => api<T>(path, { method: 'PATCH', body });
 export const put = <T,>(path: string, body?: unknown) => api<T>(path, { method: 'PUT', body });
 export const del = <T,>(path: string) => api<T>(path, { method: 'DELETE' });

@@ -24,7 +24,9 @@ const ServiceAreaContext = createContext<ServiceAreaContextValue>({ checkNow: as
 export const useServiceArea = () => useContext(ServiceAreaContext);
 
 type Point = { latitude: number; longitude: number };
-const SEARCH_DELAY_MS = 350;
+// Like Add stops' suggestions (P3.8): wait for a pause, and cancel a search a newer one replaces. Town and county names
+// can be short, so this search starts at 2 characters.
+const SEARCH_DELAY_MS = 500;
 
 function distanceKm(a: { latitude: number; longitude: number }, b: { latitude: number; longitude: number }) {
   const rad = (d: number) => (d * Math.PI) / 180;
@@ -185,14 +187,15 @@ function AreaPicker({ detected, point, current, saving, onConfirm }: {
   useEffect(() => {
     if (q.length < 2) return;
     const id = ++searchId.current;
+    const cancel = new AbortController();
     const timer = setTimeout(() => {
       setSearching(true);
-      post<AddressSuggestion[]>('/deliveries/geocode-suggest', { query: q, ...point })
+      post<AddressSuggestion[]>('/deliveries/geocode-suggest', { query: q, ...point }, cancel.signal)
         .then((res) => { if (id === searchId.current) setResults(res.data); })
         .catch(() => { if (id === searchId.current) setResults([]); })
         .finally(() => { if (id === searchId.current) setSearching(false); });
     }, SEARCH_DELAY_MS);
-    return () => clearTimeout(timer);
+    return () => { clearTimeout(timer); cancel.abort(); };
   }, [q, point]);
   const shown = q.length >= 2 ? results : [];
 
