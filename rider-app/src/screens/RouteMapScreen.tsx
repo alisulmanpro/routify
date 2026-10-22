@@ -15,6 +15,7 @@ import GoogleRouteMap, { type MapStop } from '../components/GoogleRouteMap';
 import { light as c, lightRadius as lr } from '../lib/theme';
 import { useNav } from '../lib/nav';
 import { useRouteData } from '../lib/queries';
+import SyncStatus from '../components/SyncStatus';
 import { TEST_LOCATION } from '../lib/location';
 
 type Coordinates = { latitude: number; longitude: number };
@@ -377,6 +378,7 @@ export default function RouteMapScreen({ reveal = false, routeId }: { reveal?: b
       <View style={[s.sheet, { paddingBottom: 0 }]}>
         <View style={s.grabber} />
         <LightError text={error} />
+        <SyncStatus />
 
         <View style={s.stats}>
           {stats.map((st) => (

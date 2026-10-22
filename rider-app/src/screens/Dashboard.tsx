@@ -10,6 +10,8 @@ import { getRouteOrigin } from '../lib/location';
 import { Screen } from '../components/Kit';
 import { LightButton, LightError, LightProgress } from '../components/LightKit';
 import PlanNudge from '../components/PlanNudge';
+import SyncStatus from '../components/SyncStatus';
+import { useSyncLoop } from '../lib/outbox';
 import { useAuth } from '../lib/auth';
 import { light as c } from '../lib/theme';
 import { useNav } from '../lib/nav';
@@ -24,6 +26,8 @@ function greeting() {
 export default function Dashboard() {
   const { navigate, switchTab } = useNav();
   const { user } = useAuth();
+  // Sends what the phone saved offline (stop updates, new stops, photos) while the rider is signed in (P4.2).
+  useSyncLoop(user?.id);
   // Home is drawn from the saved copy at once (also after a restart or offline) and refreshed in the background.
   const home = useHome();
   const data = home.data?.dashboard ?? null;
@@ -151,6 +155,7 @@ export default function Dashboard() {
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={c.ink} colors={[c.ink]} />}
       >
         {header(data.rider.fullName, !offline)}
+        <SyncStatus />
 
         <LightError text={error} />
 
