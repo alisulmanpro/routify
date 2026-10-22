@@ -92,3 +92,41 @@ export function applyEventToRoute<R extends Route>(route: R, result: V2EventResu
     etag: undefined,
   };
 }
+
+const OPEN_STATUSES: Delivery['status'][] = ['pending', 'in_progress'];
+
+/**
+ * An event saved on the phone but not sent yet (offline), applied to the saved route so the screens show it at once:
+ * the stop's status, the counts, what is next, and "completed" once nothing is open. Replaced by the server's answer
+ * when the event goes out.
+ */
+export function applyLocalEvent<R extends Route>(route: R, stopId: string, event: { type: 'arrive' | 'deliver' | 'fail'; reason?: FailureReason; at: string }): R {
+  if (!route.stops.some((s) => s.delivery.id === stopId)) return route;
+  const status: Delivery['status'] = event.type === 'arrive' ? 'in_progress' : event.type === 'deliver' ? 'delivered' : 'failed';
+  const stops = route.stops.map((s) => {
+    if (s.delivery.id !== stopId) return s;
+    const d = s.delivery;
+    if (event.type === 'arrive' && d.status !== 'pending') return s;
+    return {
+      ...s,
+      delivery: {
+        ...d, status,
+        arrivedAt: d.arrivedAt ?? event.at,
+        deliveredAt: status === 'delivered' ? event.at : null,
+        failedAt: status === 'failed' ? event.at : null,
+        failure: status === 'failed' ? { reason: event.reason ?? 'other', note: null } : null,
+      },
+    };
+  });
+  const count = (st: Delivery['status']) => stops.filter((s) => s.delivery.status === st).length;
+  const open = stops.filter((s) => OPEN_STATUSES.includes(s.delivery.status));
+  const done = stops.length - open.length;
+  return {
+    ...route,
+    stops,
+    status: route.status === 'active' && !open.length ? 'completed' : route.status,
+    progress: { total: stops.length, done, remaining: stops.length - done },
+    summary: { ...route.summary, total: stops.length, delivered: count('delivered'), failed: count('failed'), pending: open.length },
+    currentStopId: open[0]?.delivery.id ?? null,
+  };
+}

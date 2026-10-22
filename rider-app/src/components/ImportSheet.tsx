@@ -4,7 +4,7 @@ import * as DocumentPicker from 'expo-document-picker';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { KeyboardAwareScrollView, RevealingTextInput } from './KeyboardAware';
 import { postFile, ApiRequestError } from '../lib/api';
-import { createStops } from '../lib/v2api';
+import { submitStops } from '../lib/outbox';
 import { findDuplicate } from '../lib/duplicates';
 import { findEircode } from '../lib/format';
 import type { Delivery, ImportDraft, ImportDraftItem } from '../lib/types';
@@ -82,8 +82,9 @@ function ImportBody({ date, stops, onClose, onImported }: Omit<Props, 'visible'>
     setBusy(true);
     setError('');
     try {
-      // One request per 500 stops, each stop with the phone's own id, so a retry never imports a stop twice.
-      onImported(await createStops(chosen.map((row) => ({ trackingId: row.trackingId.trim(), address: { raw: row.address.trim() }, serviceDate: date }))));
+      // Through the outbox: one request per 500 stops, each with the phone's own id (a retry never imports a stop twice);
+      // offline they are kept on the phone and sent later.
+      onImported(await submitStops(chosen.map((row) => ({ trackingId: row.trackingId.trim(), address: { raw: row.address.trim() }, serviceDate: date }))));
     } catch (err) {
       setError(err instanceof ApiRequestError ? err.message : 'Could not add these stops');
     } finally {

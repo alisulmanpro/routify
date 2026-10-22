@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { applyEventToRoute, applyStopEvent, earlierStopOf, toDelivery, toRoute, type V2Route, type V2Stop } from '../src/lib/v2';
+import { applyEventToRoute, applyLocalEvent, applyStopEvent, earlierStopOf, toDelivery, toRoute, type V2Route, type V2Stop } from '../src/lib/v2';
 
 const stop = (id: string, over: Partial<V2Stop> = {}): V2Stop => ({
   id, order: 1, status: 'pending', trackingId: 'P-1', customerName: 'Mary',
@@ -61,4 +61,19 @@ test('a stop event updates the saved route without reloading it', () => {
   assert.equal((after as { etag?: string }).etag, undefined);
   // Another route's stop leaves this route as it is.
   assert.equal(applyEventToRoute(r, { stop: stop('zz'), route: null }), r);
+});
+
+test('an event saved offline updates the saved route at once', () => {
+  const r = toRoute(route([stop('a'), stop('b', { order: 2 })]));
+  const one = applyLocalEvent(r, 'a', { type: 'deliver', at: '2026-10-23T09:00:00.000Z' });
+  assert.equal(one.stops[0].delivery.status, 'delivered');
+  assert.deepEqual(one.progress, { total: 2, done: 1, remaining: 1 });
+  assert.equal(one.currentStopId, 'b');
+  assert.equal(one.status, 'active');
+  const both = applyLocalEvent(one, 'b', { type: 'fail', reason: 'customer_unavailable', at: '2026-10-23T09:10:00.000Z' });
+  assert.equal(both.status, 'completed');
+  assert.deepEqual([both.summary.delivered, both.summary.failed, both.summary.pending], [1, 1, 0]);
+  assert.equal(both.stops[1].delivery.failure?.reason, 'customer_unavailable');
+  // Arriving at a finished stop changes nothing.
+  assert.equal(applyLocalEvent(both, 'a', { type: 'arrive', at: '2026-10-23T09:20:00.000Z' }).stops[0].delivery.status, 'delivered');
 });

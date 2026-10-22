@@ -5,12 +5,11 @@ import { KeyboardAwareScrollView, useRevealOnFocus } from '../components/Keyboar
 import * as ImagePicker from 'expo-image-picker';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useFocusEffect } from '../lib/useFocusEffect';
-import { get, del, postFile, fileUrl, ApiRequestError } from '../lib/api';
+import { get, del, fileUrl, ApiRequestError } from '../lib/api';
 import type { Delivery, FailureReason } from '../lib/types';
 import { applyStopEvent, earlierStopOf, type V2EventResult } from '../lib/v2';
-import { sendStopEvent } from '../lib/v2api';
+import { submitProof, submitStopEvent } from '../lib/outbox';
 import { prepareProofPhoto } from '../lib/photo';
-import { rememberStopEvent } from '../lib/queries';
 import { FAILURE_LABELS, stopCardText, timeOnly } from '../lib/format';
 import { Screen } from '../components/Kit';
 import { type PillTone } from '../components/Premium';
@@ -32,6 +31,17 @@ export const STATUS: Record<Delivery['status'], { label: string; tone: PillTone 
  * with Delivered / Failed. The server only takes a result (or a photo) once the stop is marked arrived, so a pending
  * stop is marked arrived first, then the action runs.
  */
+/** The stop as the rider just changed it, while the change waits on the phone to be sent (offline). */
+function savedOnPhone(d: Delivery, status: Delivery['status'], reason?: FailureReason): Delivery {
+  const at = new Date().toISOString();
+  return {
+    ...d, status, arrivedAt: d.arrivedAt ?? at,
+    deliveredAt: status === 'delivered' ? at : d.deliveredAt,
+    failedAt: status === 'failed' ? at : d.failedAt,
+    failure: status === 'failed' ? { reason: reason ?? 'other', note: null } : d.failure,
+  };
+}
+
 export default function DeliveryDetail({ id, onDone, initialStep }: { id: string; onDone: () => void; initialStep?: 'proof' | 'fail' }) {
   const { goBack, resetTo } = useNav();
   // Opened straight on Proof of delivery or Failed delivery (from Live Navigation): closing that step goes back there.
@@ -56,6 +66,9 @@ export default function DeliveryDetail({ id, onDone, initialStep }: { id: string
 
   useFocusEffect(useCallback(() => { load(); }, [load]));
 
+  // How the change reads on the sync list (Home's sync status) while it waits to be sent.
+  const label = (what: string) => `${what} · ${delivery ? stopCardText(delivery).title : 'stop'}`;
+
   const run = async (kind: NonNullable<typeof busy>, fn: () => Promise<void>) => {
     setBusy(kind);
     setError('');
@@ -66,9 +79,8 @@ export default function DeliveryDetail({ id, onDone, initialStep }: { id: string
   // A photo needs the stop marked arrived first (Delivered and Failed record the arrival themselves).
   const ensureArrived = async () => {
     if (delivery?.status !== 'pending') return;
-    const result = await sendStopEvent(id, { type: 'arrive' });
-    rememberStopEvent(result);
-    setDelivery((d) => (d ? applyStopEvent(d, result.stop) : d));
+    const sent = await submitStopEvent(id, { type: 'arrive' }, label('Arrived'));
+    setDelivery((d) => (d ? (sent.status === 'sent' ? applyStopEvent(d, sent.result.stop) : savedOnPhone(d, 'in_progress')) : d));
   };
 
   const capturePhoto = async (fromCamera: boolean) => {
@@ -83,13 +95,17 @@ export default function DeliveryDetail({ id, onDone, initialStep }: { id: string
       await ensureArrived();
       // Scaled down first (P3.10): a full-size camera photo is several MB on a mobile connection.
       const photo = await prepareProofPhoto(asset.uri, asset.width, asset.height);
-      setDelivery((await postFile<Delivery>(`/deliveries/${id}/proof`, photo.uri, 'photo', photo.mimeType)).data);
+      // Kept on the phone until it is uploaded (P4.3): offline it goes up later by itself.
+      const sent = await submitProof(id, photo.uri, label('Photo'));
+      if (sent.status === 'sent') setDelivery((d) => (d ? { ...d, proof: sent.proof } : d));
+      else setError('Photo saved on the phone. It uploads when you are back online.');
     });
   };
 
   // After the last open stop the server completes the route (the event's answer says so): then Route complete, else back.
-  const finish = (result: V2EventResult) => {
-    if (result.route?.status === 'completed') { resetTo('RouteComplete', { routeId: result.route.id }); return; }
+  // Saved on the phone only (offline): back to the route, which already shows it; it is sent later by itself.
+  const finish = (result: V2EventResult | null) => {
+    if (result?.route?.status === 'completed') { resetTo('RouteComplete', { routeId: result.route.id }); return; }
     onDone();
   };
 
@@ -103,10 +119,9 @@ export default function DeliveryDetail({ id, onDone, initialStep }: { id: string
   const confirmDelivery = (allowSkip = false) => run('deliver', async () => {
     const note = deliverNote.trim();
     try {
-      const result = await sendStopEvent(id, { type: 'deliver', ...(allowSkip ? { allowSkip: true } : {}), ...(note ? { note } : {}) });
-      rememberStopEvent(result);
-      setDelivery((d) => (d ? applyStopEvent({ ...d, note: note || d.note }, result.stop) : d));
-      finish(result);
+      const sent = await submitStopEvent(id, { type: 'deliver', ...(allowSkip ? { allowSkip: true } : {}), ...(note ? { note } : {}) }, label('Delivered'));
+      setDelivery((d) => (d ? (sent.status === 'sent' ? applyStopEvent({ ...d, note: note || d.note }, sent.result.stop) : savedOnPhone(d, 'delivered')) : d));
+      finish(sent.status === 'sent' ? sent.result : null);
     } catch (err) {
       const earlier = err instanceof ApiRequestError && err.code === 'EARLIER_STOPS_REMAIN' ? earlierStopOf(err.details) : null;
       if (!earlier) throw err;
@@ -125,10 +140,10 @@ export default function DeliveryDetail({ id, onDone, initialStep }: { id: string
 
   const submitFail = () => run('fail', async () => {
     if (!reason) { setError('Choose a reason'); return; }
-    const result = await sendStopEvent(id, { type: 'fail', reason, ...(failNote.trim() ? { note: failNote.trim() } : {}) });
-    rememberStopEvent(result);
+    const sent = await submitStopEvent(id, { type: 'fail', reason, ...(failNote.trim() ? { note: failNote.trim() } : {}) }, label('Failed'));
     setShowFail(false);
-    finish(result);
+    if (sent.status === 'queued') setDelivery((d) => (d ? savedOnPhone(d, 'failed', reason) : d));
+    finish(sent.status === 'sent' ? sent.result : null);
   });
 
   const removeDelivery = () => {

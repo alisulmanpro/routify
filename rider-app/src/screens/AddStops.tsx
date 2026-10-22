@@ -16,6 +16,7 @@ import StopLines from '../components/StopLines';
 import { get, post, del, ApiRequestError } from '../lib/api';
 import { getRouteOrigin } from '../lib/location';
 import { checkAddress, createStop, DuplicateStopError } from '../lib/stops';
+import { forgetPendingStop, outboxFor, pendingStops } from '../lib/outbox';
 import { findDuplicate, type Duplicate } from '../lib/duplicates';
 import { NATIVE_BUILD_HINT, loadVoicePanel } from '../lib/optionalNative';
 import { dayLabel, isOnlyEircode, normalizeEircodes } from '../lib/format';
@@ -72,7 +73,9 @@ export default function AddStops({ name, date, routeId }: { name: string; date: 
   const area = user?.serviceArea ? { latitude: user.serviceArea.latitude, longitude: user.serviceArea.longitude } : null;
 
   // Stops already added but not on a route yet (e.g. the rider left this screen earlier) belong to this route too.
+  // Stops added offline and not sent yet (P4.1) are listed with them, flagged pending_sync.
   const load = useCallback(async () => {
+    let saved: Delivery[] | null = null;
     try {
       const all: Delivery[] = [];
       for (let page = 1; page <= 3; page++) {
@@ -80,13 +83,33 @@ export default function AddStops({ name, date, routeId }: { name: string; date: 
         all.push(...res.data);
         if (!res.meta || page >= res.meta.pages) break;
       }
-      setStops(all.filter((d) => !d.routeId || (routeId != null && d.routeId === routeId)).reverse());
+      saved = all.filter((d) => !d.routeId || (routeId != null && d.routeId === routeId)).reverse();
     } catch (err) {
-      setError(err instanceof ApiRequestError ? err.message : 'Could not load your stops');
+      // Offline: the list on screen stays; only an answer from the server is an error worth showing.
+      if (!(err instanceof TypeError)) setError(err instanceof ApiRequestError ? err.message : 'Could not load your stops');
     } finally {
+      const waiting = await pendingStops(date).catch(() => []);
+      setStops((list) => {
+        const base = saved ?? list.filter((d) => !d.flags.includes('pending_sync'));
+        const ids = new Set(base.map((d) => d.id));
+        return [...base, ...waiting.filter((d) => !ids.has(d.id))];
+      });
       setLoading(false);
     }
   }, [date, routeId]);
+  // Reload when stops waiting on the phone have been sent (they get their server ids).
+  const userId = user?.id;
+  useEffect(() => {
+    if (!userId) return;
+    const outbox = outboxFor(userId);
+    let waiting = -1;
+    return outbox.subscribe(() => {
+      void outbox.summary().then((now) => {
+        if (!now.sending && waiting >= 0 && now.waiting < waiting) void load();
+        if (!now.sending) waiting = now.waiting;
+      });
+    });
+  }, [userId, load]);
   useFocusEffect(useCallback(() => { void load(); void getRouteOrigin().then(setOrigin); }, [load]));
 
   // Suggestions follow the typing, a moment after the rider pauses. They are hidden once a location is chosen.
@@ -175,6 +198,11 @@ export default function AddStops({ name, date, routeId }: { name: string; date: 
     Alert.alert('Remove this stop?', stop.address.raw, [
       { text: 'Cancel', style: 'cancel' },
       { text: 'Remove', style: 'destructive', onPress: () => {
+        // Never sent: it only has to leave the phone's outbox.
+        if (stop.flags.includes('pending_sync')) {
+          void forgetPendingStop(stop.id).then(() => setStops((list) => list.filter((d) => d.id !== stop.id)));
+          return;
+        }
         del(`/deliveries/${stop.id}`)
           .then(() => setStops((list) => list.filter((d) => d.id !== stop.id)))
           .catch((err) => setError(err instanceof ApiRequestError ? err.message : 'Could not remove this stop'));
@@ -221,6 +249,8 @@ export default function AddStops({ name, date, routeId }: { name: string; date: 
   };
 
   const review = () => navigate('RoutePreview', { name, date, ids: stops.map((d) => d.id) });
+  // Planning needs every stop on the server: stops still on the phone hold Review until they are sent.
+  const unsent = stops.filter((d) => d.flags.includes('pending_sync')).length;
 
   const located = !!picked && picked.label === address;
 
@@ -328,7 +358,9 @@ export default function AddStops({ name, date, routeId }: { name: string; date: 
       />
 
       <View style={s.footer}>
-        <LightButton title={stops.length ? `Review ${stops.length} stop${stops.length === 1 ? '' : 's'}` : 'Add a stop to continue'} onPress={review} disabled={!stops.length} />
+        <LightButton
+          title={unsent ? `Saving ${unsent} stop${unsent === 1 ? '' : 's'}… (offline)` : stops.length ? `Review ${stops.length} stop${stops.length === 1 ? '' : 's'}` : 'Add a stop to continue'}
+          onPress={review} disabled={!stops.length || unsent > 0} />
       </View>
 
       <EircodeScanner visible={sheet === 'scan'} onEircode={onScanned} onTypeInstead={typeInstead} onClose={() => setSheet(null)} />

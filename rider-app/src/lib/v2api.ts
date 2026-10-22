@@ -24,6 +24,8 @@ export async function sendStopEvent(stopId: string, event: StopEvent): Promise<V
 export type NewStop = {
   trackingId?: string; address: { raw: string; normalized?: string }; serviceDate: string;
   location?: { latitude: number; longitude: number }; customer?: { name?: string; phone?: string }; note?: string;
+  /** The rider confirmed another parcel for an Eircode already on that day (P4.7). */
+  secondParcel?: boolean;
 };
 
 const BATCH = 500;

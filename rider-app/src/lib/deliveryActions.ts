@@ -1,6 +1,6 @@
 import { Alert, Linking, Platform } from 'react-native';
 import { ApiRequestError } from './api';
-import { sendStopEvent } from './v2api';
+import { submitStopEvent } from './outbox';
 import type { Delivery } from './types';
 import { stopLabel } from './format';
 
@@ -29,11 +29,11 @@ export async function markDelivered(delivery: Delivery): Promise<boolean> {
   const name = stopLabel(delivery);
   if (!(await confirm('Mark as delivered?', `Confirm the parcel was handed over to ${name}. A proof photo can be added from the delivery details.`, 'Delivered'))) return false;
   try {
-    await sendStopEvent(delivery.id, { type: 'deliver' });
+    await submitStopEvent(delivery.id, { type: 'deliver' }, `Delivered · ${name}`);
   } catch (err) {
     if (!(err instanceof ApiRequestError) || err.code !== 'EARLIER_STOPS_REMAIN') throw err;
     if (!(await confirm('Earlier stops still open', 'Some stops before this one on your route are not finished yet. Deliver this one anyway?', 'Continue anyway'))) return false;
-    await sendStopEvent(delivery.id, { type: 'deliver', allowSkip: true });
+    await submitStopEvent(delivery.id, { type: 'deliver', allowSkip: true }, `Delivered · ${name}`);
   }
   return true;
 }

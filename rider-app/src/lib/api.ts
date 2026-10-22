@@ -234,7 +234,7 @@ export const put = <T,>(path: string, body?: unknown) => api<T>(path, { method: 
 export const del = <T,>(path: string) => api<T>(path, { method: 'DELETE' });
 
 /** Uploads a local file. Pass `fileName` for documents: the server reads the type from its extension. */
-export async function postFile<T>(path: string, fileUri: string, fieldName: string, mimeType: string, fileName?: string) {
+export async function postFile<T>(path: string, fileUri: string, fieldName: string, mimeType: string, fileName?: string, extraHeaders: Record<string, string> = {}) {
   await loadTokens();
   if (!cacheDirectory) throw new Error('The app cache directory is unavailable');
 
@@ -242,20 +242,23 @@ export async function postFile<T>(path: string, fileUri: string, fieldName: stri
   const extension = named || (mimeType === 'application/pdf' ? 'pdf' : mimeType === 'image/png' ? 'png' : 'jpg');
   const stagedUri = `${cacheDirectory}upload-${Date.now()}-${Math.random().toString(36).slice(2)}.${extension}`;
   await copyAsync({ from: fileUri, to: stagedUri });
-  const url = `${API_URL}/api/v1${path}`;
+  const url = urlFor(path);
   try {
+    if (!online) throw new NetworkError('No internet connection');
     const send = () => uploadAsync(url, stagedUri, {
       httpMethod: 'POST',
       uploadType: FileSystemUploadType.MULTIPART,
       fieldName,
       mimeType,
-      headers: tokens?.accessToken ? { Authorization: `Bearer ${tokens.accessToken}` } : {},
+      headers: { ...extraHeaders, ...(tokens?.accessToken ? { Authorization: `Bearer ${tokens.accessToken}` } : {}) },
     });
 
-    let response = await send();
+    // A failed upload (no connection, dropped) is a NetworkError like any other request, so it is retried, not reported.
+    const sendOrOffline = () => send().catch((err: unknown) => { throw new NetworkError(err instanceof Error ? err.message : 'Upload failed'); });
+    let response = await sendOrOffline();
     if (response.status === 401) {
       const refresh = await tryRefresh();
-      if (refresh === 'ok') response = await send();
+      if (refresh === 'ok') response = await sendOrOffline();
       else if (refresh === 'unreachable') throw new NetworkError('Could not renew your session');
       else await setTokens(null);
     }

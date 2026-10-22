@@ -2,7 +2,7 @@ import { post } from './api';
 import { findDuplicate, type Duplicate } from './duplicates';
 import { findEircode } from './format';
 import type { Delivery, GeocodeCheck } from './types';
-import { createStops } from './v2api';
+import { submitStops } from './outbox';
 
 type Point = { latitude: number; longitude: number };
 
@@ -33,12 +33,15 @@ export async function createStop({ raw, parcel, date, location, normalized, prec
     const duplicate = findDuplicate({ eircode: findEircode(raw) || findEircode(normalized), point: precise ? location : null }, existing);
     if (duplicate) throw new DuplicateStopError(duplicate);
   }
-  // POST /v2/deliveries/batch with the phone's own id for the stop: a retry after a lost answer never adds it twice.
-  const [saved] = await createStops([{
+  // Through the outbox (P4.1): saved at once when online; offline it is kept on the phone (a stand-in flagged
+  // pending_sync is returned) and sent later. The phone's own id means a retry never adds it twice. "Add anyway" on a
+  // same-Eircode stop is a second parcel (P4.7).
+  const [saved] = await submitStops([{
     trackingId: parcel.trim().toUpperCase(),
     address: { raw, ...(normalized && normalized !== raw ? { normalized: normalized.slice(0, 400) } : {}) },
     serviceDate: date,
     ...(location ? { location } : {}),
+    ...(allowDuplicate ? { secondParcel: true } : {}),
   }]);
   return saved;
 }
