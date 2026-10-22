@@ -1,12 +1,12 @@
 """Response envelope, pagination and number helpers shared by every endpoint."""
 from __future__ import annotations
 
-import json
 import math
 from datetime import date, datetime, timezone
 from enum import Enum
 from typing import Any
 
+import orjson
 from starlette.responses import JSONResponse
 
 
@@ -75,8 +75,12 @@ def _clean(value: Any) -> Any:
     return value
 
 
+# Dates go through _default (iso) so they keep the Node format; int dict keys become strings as json.dumps did.
+_ORJSON_OPTIONS = orjson.OPT_PASSTHROUGH_DATETIME | orjson.OPT_NON_STR_KEYS
+
+
 def dumps(content: Any) -> bytes:
-    return json.dumps(_clean(content), default=_default, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    return orjson.dumps(_clean(content), default=_default, option=_ORJSON_OPTIONS)
 
 
 class ApiJSONResponse(JSONResponse):

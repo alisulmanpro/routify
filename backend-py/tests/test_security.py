@@ -747,6 +747,18 @@ async def test_rider_endpoints_happy_path_smoke(client):
 
 # ---------------------------------------------------------------- transport headers / CORS / info leaks
 
+async def test_large_json_is_gzipped_small_and_identity_requests_are_not(client):
+    _, auth = await rider(client, "gzip@example.com")
+    items = [delivery(f"GZ-{i}", f"{i} Long Enough Street, Somewhere real enough") for i in range(8)]
+    assert (await client.post("/api/v1/deliveries/bulk", headers=auth, json={"items": items})).status_code == 201
+
+    zipped = await client.get("/api/v1/deliveries", headers={**auth, "Accept-Encoding": "gzip"})
+    assert zipped.headers.get("content-encoding") == "gzip" and zipped.json()["success"] is True
+    plain = await client.get("/api/v1/deliveries", headers={**auth, "Accept-Encoding": "identity"})
+    assert "content-encoding" not in plain.headers and plain.json() == zipped.json()
+    assert "content-encoding" not in (await client.get("/health", headers={"Accept-Encoding": "gzip"})).headers
+
+
 async def test_security_headers_cors_and_no_debug_leaks(client):
     res = await client.get("/health")
     for header in ("content-security-policy", "x-content-type-options", "x-frame-options", "strict-transport-security", "referrer-policy"):

@@ -10,6 +10,7 @@ from fastapi.exceptions import RequestValidationError
 from prisma.errors import UniqueViolationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.cors import CORSMiddleware
+from starlette.middleware.gzip import DEFAULT_EXCLUDED_CONTENT_TYPES, GZipMiddleware
 
 from .config import env
 from .db import connect, disconnect, is_ready
@@ -112,6 +113,8 @@ def create_app(*, run_jobs: bool = True) -> FastAPI:
         CORSMiddleware, allow_origins=list(env.cors_origins), allow_credentials=True, allow_methods=["GET", "POST", "PATCH", "PUT", "DELETE"],
         allow_headers=["Content-Type", "Authorization", "X-Requested-With", "X-Request-Id"], expose_headers=["X-Request-Id"], max_age=600,
     )
+    # JSON (route lists especially) shrinks several times; photos and PDFs are already compressed, so they are sent as they are.
+    app.add_middleware(GZipMiddleware, minimum_size=1000, compresslevel=6, exclude_content_types=(*DEFAULT_EXCLUDED_CONTENT_TYPES, "application/pdf"))
     app.add_middleware(EdgeMiddleware)
     return app
 
