@@ -152,6 +152,8 @@ model Delivery {
   rider      User   @relation(fields: [riderId], references: [id], onDelete: Cascade)
   // Optional: riders can add a stop with only an address. Postgres lets many rows share a NULL here.
   trackingId String? @db.VarChar(80)
+  /// The app's own id for a stop (a UUID made on the phone, POST /v2/deliveries/batch): sending it twice never makes two stops.
+  clientId   String? @db.VarChar(36)
 
   customerName  String @default("") @db.VarChar(160)
   customerPhone String @default("") @db.VarChar(32)
@@ -193,6 +195,7 @@ model Delivery {
 
   // Every rider is independent, so tracking IDs only need to be unique within one rider's own deliveries.
   @@unique([riderId, trackingId])
+  @@unique([riderId, clientId])
   @@index([riderId, status])
   @@index([riderId, serviceDate])
   @@index([serviceDate, status])
