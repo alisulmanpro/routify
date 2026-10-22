@@ -12,7 +12,6 @@ import { LightButton } from '../components/LightKit';
 import ConfirmMap from '../components/scan/ConfirmMap';
 
 const CHECK_EVERY_MS = 6 * 60 * 60 * 1000;
-const POLL_MS = 15 * 60 * 1000;
 const SAME_CITY_KM = 35;
 const lastCheckKey = (userId: string) => `dp_area_check_${userId}`;
 
@@ -97,11 +96,11 @@ export function ServiceAreaProvider({ children }: { children: ReactNode }) {
   const userId = user?.id;
   useEffect(() => {
     if (!userId) return;
-    // Give the first screen a moment to load before asking for location on launch.
+    // On launch (after the first screen has loaded) and whenever the app comes back to the foreground; each check is
+    // skipped within CHECK_EVERY_MS of the last one. No timer while the app is open: it woke the GPS every 15 minutes.
     const first = setTimeout(() => { void runCheck(false); }, 1500);
     const sub = AppState.addEventListener('change', (state) => { if (state === 'active') void runCheck(false); });
-    const timer = setInterval(() => { if (AppState.currentState === 'active') void runCheck(false); }, POLL_MS);
-    return () => { clearTimeout(first); sub.remove(); clearInterval(timer); };
+    return () => { clearTimeout(first); sub.remove(); };
   }, [userId, runCheck]);
 
   // Saves the area at `point` (the server works out the town from it).
