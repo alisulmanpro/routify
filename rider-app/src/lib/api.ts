@@ -1,4 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import NetInfo from '@react-native-community/netinfo';
 import { cacheDirectory, copyAsync, deleteAsync, FileSystemUploadType, uploadAsync } from 'expo-file-system/legacy';
 
 export const API_URL = (process.env.EXPO_PUBLIC_API_URL || 'http://localhost:4000').replace(/\/$/, '');
@@ -13,6 +14,59 @@ export class ApiRequestError extends Error {
     this.code = error.code;
     this.status = status;
     this.details = error.details;
+  }
+}
+
+/**
+ * A request that got no answer: no connection, or it timed out. It is a TypeError, like fetch's own network failure,
+ * so screens that tell "offline" apart from API errors (`err instanceof TypeError`) keep working.
+ */
+export class NetworkError extends TypeError {
+  timedOut: boolean;
+  constructor(message: string, timedOut = false) {
+    super(message);
+    this.name = 'NetworkError';
+    this.timedOut = timedOut;
+  }
+}
+
+// ---- Connection state (NetInfo) ----
+
+let online = true;
+const onlineListeners = new Set<(online: boolean) => void>();
+NetInfo.addEventListener((state) => {
+  // Only a definite "not connected" counts as offline; unknown reachability still tries the request.
+  const next = state.isConnected !== false;
+  if (next !== online) {
+    online = next;
+    onlineListeners.forEach((fn) => fn(next));
+  }
+});
+export const isOnline = () => online;
+/** Calls `fn` whenever the phone goes on- or offline; returns the unsubscribe function. */
+export const onOnlineChange = (fn: (online: boolean) => void) => { onlineListeners.add(fn); return () => { onlineListeners.delete(fn); }; };
+
+// ---- Timeouts and retries ----
+
+const READ_TIMEOUT_MS = 15_000;
+const WRITE_TIMEOUT_MS = 30_000;
+const RETRIES = 2;
+const RETRY_STATUSES = new Set([502, 503, 504]);
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+/** 0.5 s, then 1 s (± 25 %), so many phones coming back online do not retry in step. */
+const backoff = (attempt: number) => 500 * 2 ** attempt * (0.75 + Math.random() * 0.5);
+
+async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number): Promise<Response> {
+  if (!online) throw new NetworkError('No internet connection');
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } catch (err) {
+    if (controller.signal.aborted) throw new NetworkError('The server took too long to answer', true);
+    throw new NetworkError(err instanceof Error ? err.message : 'Network request failed');
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -50,11 +104,11 @@ async function tryRefresh(): Promise<boolean> {
   await loadTokens();
   if (!tokens?.refreshToken) return false;
   if (!refreshing) {
-    refreshing = fetch(`${API_URL}/api/v1/auth/refresh`, {
+    refreshing = fetchWithTimeout(`${API_URL}/api/v1/auth/refresh`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ refreshToken: tokens.refreshToken, client: 'mobile' }),
-    })
+    }, READ_TIMEOUT_MS)
       .then(async (res) => {
         if (!res.ok) return false;
         const payload = await res.json();
@@ -67,27 +121,45 @@ async function tryRefresh(): Promise<boolean> {
   return refreshing;
 }
 
-type Options = { method?: string; body?: unknown; query?: Record<string, string | number | boolean | undefined>; isForm?: boolean; retry?: boolean };
+type Options = {
+  method?: string; body?: unknown; query?: Record<string, string | number | boolean | undefined>; isForm?: boolean; retry?: boolean;
+  headers?: Record<string, string>;
+  /** Safe to send twice (e.g. it carries an Idempotency-Key or client ids): retried after a network error or 502-504. GETs always are. */
+  idempotent?: boolean;
+  timeoutMs?: number;
+};
+type Payload<T> = { data: T; meta?: { page: number; limit: number; total: number; pages: number } };
 
-export async function api<T = unknown>(path: string, opts: Options = {}): Promise<{ data: T; meta?: { page: number; limit: number; total: number; pages: number } }> {
+/** "/v2/..." goes to /api/v2, everything else to /api/v1. */
+const urlFor = (path: string) => `${API_URL}${path.startsWith('/v2/') ? '/api' : '/api/v1'}${path}`;
+
+async function send(path: string, opts: Options): Promise<Response> {
   await loadTokens();
-  const url = new URL(`${API_URL}/api/v1${path}`);
+  const url = new URL(urlFor(path));
   for (const [k, v] of Object.entries(opts.query || {})) if (v !== undefined && v !== '') url.searchParams.set(k, String(v));
 
-  const headers: Record<string, string> = {};
-  if (tokens?.accessToken) headers.Authorization = `Bearer ${tokens.accessToken}`;
-  let body: BodyInit | undefined;
-  if (opts.isForm) body = opts.body as FormData;
-  else if (opts.body !== undefined) { headers['Content-Type'] = 'application/json'; body = JSON.stringify(opts.body); }
-
-  const res = await fetch(url.toString(), { method: opts.method || 'GET', headers, body });
-
-  if (res.status === 401 && opts.retry !== false) {
-    const refreshed = await tryRefresh();
-    if (refreshed) return api<T>(path, { ...opts, retry: false });
-    await setTokens(null);
+  const method = opts.method || 'GET';
+  const repeatable = method === 'GET' || !!opts.idempotent || !!opts.headers?.['Idempotency-Key'];
+  const timeoutMs = opts.timeoutMs ?? (method === 'GET' ? READ_TIMEOUT_MS : WRITE_TIMEOUT_MS);
+  for (let attempt = 0; ; attempt += 1) {
+    const headers: Record<string, string> = { ...opts.headers };
+    if (tokens?.accessToken) headers.Authorization = `Bearer ${tokens.accessToken}`;
+    let body: BodyInit | undefined;
+    if (opts.isForm) body = opts.body as FormData;
+    else if (opts.body !== undefined) { headers['Content-Type'] = 'application/json'; body = JSON.stringify(opts.body); }
+    try {
+      const res = await fetchWithTimeout(url.toString(), { method, headers, body }, timeoutMs);
+      if (repeatable && RETRY_STATUSES.has(res.status) && attempt < RETRIES) { await sleep(backoff(attempt)); continue; }
+      return res;
+    } catch (err) {
+      // Offline: fail at once. Otherwise retry what is safe to repeat; a write without a key is never sent twice.
+      if (!(err instanceof NetworkError) || !repeatable || !online || attempt >= RETRIES) throw err;
+      await sleep(backoff(attempt));
+    }
   }
+}
 
+async function parse<T>(res: Response): Promise<Payload<T>> {
   const payload = await res.json().catch(() => null);
   if (!res.ok || !payload?.success) {
     const error: ApiErrorShape = payload?.error || { code: 'UNKNOWN', message: `Request failed (${res.status})` };
@@ -95,6 +167,30 @@ export async function api<T = unknown>(path: string, opts: Options = {}): Promis
   }
   return payload;
 }
+
+export async function api<T = unknown>(path: string, opts: Options = {}): Promise<Payload<T>> {
+  const res = await send(path, opts);
+  if (res.status === 401 && opts.retry !== false) {
+    if (await tryRefresh()) return api<T>(path, { ...opts, retry: false });
+    await setTokens(null);
+  }
+  return parse<T>(res);
+}
+
+/** GET with an ETag: `notModified` (and no data) when the server says the copy sent as `etag` is still current. */
+export async function getWithEtag<T>(path: string, etag?: string | null, retried = false): Promise<{ data?: T; etag: string | null; notModified: boolean }> {
+  const res = await send(path, { headers: etag ? { 'If-None-Match': etag } : undefined });
+  if (res.status === 401 && !retried) {
+    if (await tryRefresh()) return getWithEtag<T>(path, etag, true);
+    await setTokens(null);
+  }
+  if (res.status === 304) return { etag: res.headers.get('etag') || etag || null, notModified: true };
+  const payload = await parse<T>(res);
+  return { data: payload.data, etag: res.headers.get('etag'), notModified: false };
+}
+
+/** A new random id for an Idempotency-Key or a stop's clientId. */
+export { randomUUID as newId } from 'expo-crypto';
 
 export const get = <T,>(path: string, query?: Options['query']) => api<T>(path, { query });
 export const post = <T,>(path: string, body?: unknown) => api<T>(path, { method: 'POST', body });
