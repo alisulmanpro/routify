@@ -9,6 +9,7 @@ import { createBottomTabNavigator, type BottomTabBarProps } from '@react-navigat
 import { AuthProvider, useAuth } from './src/lib/auth';
 import { popTabToTop, TAB_ROOTS, TabContext, useNav, type TabName } from './src/lib/nav';
 import { ServiceAreaProvider } from './src/lib/serviceArea';
+import { QueryProvider } from './src/lib/query';
 import { Ionicons } from '@expo/vector-icons';
 import { colors, light, spacing } from './src/lib/theme';
 import Login from './src/screens/Login';
@@ -207,9 +208,12 @@ export default function App() {
   return (
     <SafeAreaProvider>
       <AuthProvider>
-        <StatusBar style="light" />
-        <Gate />
-        <Splash />
+        {/* Saved server data (Home, routes) survives restarts, so screens draw at once and refresh in the background. */}
+        <QueryProvider>
+          <StatusBar style="light" />
+          <Gate />
+          <Splash />
+        </QueryProvider>
       </AuthProvider>
     </SafeAreaProvider>
   );

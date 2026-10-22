@@ -2,8 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Platform, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import * as Location from 'expo-location';
-import { useFocusEffect } from '../lib/useFocusEffect';
-import { get, post, ApiRequestError } from '../lib/api';
+import { post, ApiRequestError } from '../lib/api';
 import { openDirections as directionsTo } from '../lib/deliveryActions';
 import { dayLabel, formatMinutes, stopLabel, todayKey } from '../lib/format';
 import type { Route } from '../lib/types';
@@ -14,6 +13,7 @@ import { LightButton, LightError, LightPill, type LightTone } from '../component
 import GoogleRouteMap, { type MapStop } from '../components/GoogleRouteMap';
 import { light as c, lightRadius as lr } from '../lib/theme';
 import { useNav } from '../lib/nav';
+import { useRouteData } from '../lib/queries';
 import { TEST_LOCATION } from '../lib/location';
 
 type Coordinates = { latitude: number; longitude: number };
@@ -108,10 +108,16 @@ export default function RouteMapScreen({ reveal = false, routeId }: { reveal?: b
   const insets = useSafeAreaInsets();
   const { height } = useWindowDimensions();
   const { position, anchor, denied } = useRiderPosition();
-  const [route, setRoute] = useState<Route | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
-  const [error, setError] = useState('');
+  // The saved copy of the route is drawn at once and refreshed in the background (and on every return to this screen).
+  const routeQuery = useRouteData(routeId);
+  const { route, setRoute } = routeQuery;
+  const loading = routeQuery.isPending;
+  const refreshing = routeQuery.isFetching && !routeQuery.isPending;
+  const [actionError, setError] = useState('');
+  // Offline with a saved route: the route stays on screen without an error.
+  const loadError = routeQuery.error instanceof ApiRequestError ? routeQuery.error.message
+    : routeQuery.error && !(routeQuery.error instanceof TypeError && route) ? 'Could not load the active route' : '';
+  const error = actionError || loadError;
   const [road, setRoad] = useState<{ key: string; path: Coordinates[]; legs: Leg[]; km: number; min: number } | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [focus, setFocus] = useState<Coordinates | null>(null);
@@ -131,19 +137,7 @@ export default function RouteMapScreen({ reveal = false, routeId }: { reveal?: b
   // While a finger is on the map, drags move the map, not the page.
   const [onMap, setOnMap] = useState(false);
 
-  const load = useCallback(async () => {
-    setRefreshing(true);
-    try {
-      setRoute((await get<Route | null>(routeId ? `/routes/${routeId}` : '/routes/current', routeId ? undefined : { date: todayKey() })).data);
-      setError('');
-    } catch (err) {
-      setError(err instanceof ApiRequestError ? err.message : 'Could not load the active route');
-    } finally {
-      setRefreshing(false);
-      setLoading(false);
-    }
-  }, [routeId]);
-  useFocusEffect(useCallback(() => { load(); }, [load]));
+  const load = routeQuery.refetch;
 
   const start = anchor || route?.origin || null;
 
@@ -155,7 +149,7 @@ export default function RouteMapScreen({ reveal = false, routeId }: { reveal?: b
     } catch (err) {
       setError(err instanceof ApiRequestError ? err.message : 'Could not optimise the route');
     }
-  }, [anchor]);
+  }, [anchor, setRoute]);
 
   // Stops added since planning are pulled in automatically, once per visit.
   useEffect(() => {

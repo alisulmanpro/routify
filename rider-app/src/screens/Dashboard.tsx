@@ -1,9 +1,9 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { ActivityIndicator, Animated, Image, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View, type DimensionValue } from 'react-native';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
-import { useFocusEffect } from '../lib/useFocusEffect';
-import { get, post, ApiRequestError } from '../lib/api';
-import type { Dashboard as DashboardType, Delivery, LeftOver, Route, RouteListItem } from '../lib/types';
+import { post, ApiRequestError } from '../lib/api';
+import { useHome, type HomeData } from '../lib/queries';
+import type { Route } from '../lib/types';
 import { dayLabel, defaultRouteName, timeOnly, todayKey } from '../lib/format';
 import { routeNameFor } from '../lib/routeNames';
 import { getRouteOrigin } from '../lib/location';
@@ -24,60 +24,41 @@ function greeting() {
 export default function Dashboard() {
   const { navigate, switchTab } = useNav();
   const { user } = useAuth();
-  const [data, setData] = useState<DashboardType | null>(null);
-  // No connection on the last load (fetch itself failed): the last data stays on screen with an offline banner.
-  const [offline, setOffline] = useState(false);
-  const [syncedAt, setSyncedAt] = useState<string | null>(null);
-  const [retrying, setRetrying] = useState(false);
+  // Home is drawn from the saved copy at once (also after a restart or offline) and refreshed in the background.
+  const home = useHome();
+  const data = home.data?.dashboard ?? null;
   // Every route from today on (planned, underway or done): today's list, and the next day's card.
-  const [routes, setRoutes] = useState<RouteListItem[]>([]);
-  // Stops added for today or later that aren't in a route yet (the rider left before planning them).
-  const [unplanned, setUnplanned] = useState<Delivery[]>([]);
+  const routes = home.data?.routes ?? [];
+  // Stops added for today or later that aren't in a route yet (the rider left before planning them), per day.
+  const unplanned = home.data?.unplanned ?? [];
   // Open stops from earlier days: offered to move to today, never removed.
-  const [leftOver, setLeftOver] = useState<LeftOver | null>(null);
+  const leftOver = home.data?.leftOver ?? null;
+  // No connection on the last load (the request itself failed): the last data stays on screen with an offline banner.
+  const offline = home.error instanceof TypeError;
+  const syncedAt = home.dataUpdatedAt ? new Date(home.dataUpdatedAt).toISOString() : null;
+  const [retrying, setRetrying] = useState(false);
   const [moving, setMoving] = useState(false);
-  const [error, setError] = useState('');
+  const [actionError, setActionError] = useState('');
+  const loadError = home.error instanceof ApiRequestError ? home.error.message : home.error && !offline ? 'Could not load your dashboard' : '';
+  const error = actionError || loadError;
   const [refreshing, setRefreshing] = useState(false);
-
-  const load = useCallback(async () => {
-    try {
-      const [res, byDate, left, later] = await Promise.all([
-        get<DashboardType>('/rider/dashboard', { date: todayKey() }),
-        get<RouteListItem[]>('/routes/by-date', { from: todayKey() }),
-        get<LeftOver>('/routes/leftover', { date: todayKey() }),
-        get<Delivery[]>('/deliveries', { status: 'pending', dateFrom: todayKey(), limit: 100, sort: 'recent' }),
-      ]);
-      setData(res.data);
-      setRoutes(byDate.data);
-      setLeftOver(left.data);
-      setUnplanned(later.data.filter((d) => !d.routeId));
-      setError('');
-      setOffline(false);
-      setSyncedAt(new Date().toISOString());
-    } catch (err) {
-      // A request that never reached the server (no connection) fails with a TypeError.
-      setOffline(err instanceof TypeError);
-      setError(err instanceof ApiRequestError ? err.message : err instanceof TypeError ? '' : 'Could not load your dashboard');
-    }
-  }, []);
+  const load = home.refetch;
 
   const retry = async () => { setRetrying(true); await load(); setRetrying(false); };
-
-  useFocusEffect(useCallback(() => { load(); }, [load]));
 
   const onRefresh = async () => { setRefreshing(true); await load(); setRefreshing(false); };
 
   const moveToToday = async () => {
     if (moving) return;
     setMoving(true);
-    setError('');
+    setActionError('');
     try {
       const origin = await getRouteOrigin();
       const res = await post<{ moved: number; route: Route | null }>('/routes/carry-over', { date: todayKey(), ...(origin ? { origin } : {}) });
       await load();
       if (res.data.route) navigate('RoutePreview', { routeId: res.data.route.id });
     } catch (err) {
-      setError(err instanceof ApiRequestError ? err.message : 'Could not move those stops to today');
+      setActionError(err instanceof ApiRequestError ? err.message : 'Could not move those stops to today');
     } finally {
       setMoving(false);
     }
@@ -131,14 +112,14 @@ export default function Dashboard() {
 
   const today = todayKey();
   const todayRoutes = routes.filter((route) => route.serviceDate === today);
-  const todayLoose = unplanned.filter((d) => d.serviceDate === today);
+  const todayLoose = unplanned.find((d) => d.date === today)?.count ?? 0;
   // Today shows its progress whenever it has stops, even loose ones not yet planned into a route.
   const empty = todayRoutes.length === 0 && data.total === 0;
 
   // The next day with work on it: its first route, and the stops added for it that were never planned.
-  const nextDay = [...routes.map((route) => route.serviceDate), ...unplanned.map((d) => d.serviceDate)].filter((key) => key > today).sort()[0];
+  const nextDay = [...routes.map((route) => route.serviceDate), ...unplanned.map((d) => d.date)].filter((key) => key > today).sort()[0];
   const nextRoute = nextDay ? routes.find((route) => route.serviceDate === nextDay && route.status !== 'completed') : undefined;
-  const nextLoose = nextDay ? unplanned.filter((d) => d.serviceDate === nextDay) : [];
+  const nextLoose = nextDay ? unplanned.find((d) => d.date === nextDay)?.count ?? 0 : 0;
 
   // Stops added but never confirmed: back to Add stops for that day (it lists them), to add more or review and plan.
   const continueAdding = async (date: string) => {
@@ -150,9 +131,9 @@ export default function Dashboard() {
   const cards: { key: string; date: string; title: string; meta: string; loose?: boolean; onPress: () => void }[] = [
     // Finished routes leave Home (they are in History); they still count in "delivered today".
     ...todayRoutes.filter((route) => route.status !== 'completed').map((route) => ({ key: route.id, date: today, title: route.name || 'Route', meta: routeMeta(route), onPress: () => navigate('RoutePreview', { routeId: route.id }) })),
-    ...(todayLoose.length ? [{ key: 'loose-today', date: today, title: stopCount(todayLoose.length, 'added'), meta: 'Not finished. Tap to keep adding stops', loose: true, onPress: () => void continueAdding(today) }] : []),
+    ...(todayLoose ? [{ key: 'loose-today', date: today, title: stopCount(todayLoose, 'added'), meta: 'Not finished. Tap to keep adding stops', loose: true, onPress: () => void continueAdding(today) }] : []),
     ...(nextDay && nextRoute ? [{ key: nextRoute.id, date: nextDay, title: nextRoute.name || 'Route', meta: routeMeta(nextRoute), onPress: () => navigate('RoutePreview', { routeId: nextRoute.id }) }] : []),
-    ...(nextDay && nextLoose.length ? [{ key: 'loose-next', date: nextDay, title: stopCount(nextLoose.length, 'added'), meta: 'Not finished. Tap to keep adding stops', loose: true, onPress: () => void continueAdding(nextDay) }] : []),
+    ...(nextDay && nextLoose ? [{ key: 'loose-next', date: nextDay, title: stopCount(nextLoose, 'added'), meta: 'Not finished. Tap to keep adding stops', loose: true, onPress: () => void continueAdding(nextDay) }] : []),
   ];
 
   return (
@@ -230,7 +211,7 @@ export default function Dashboard() {
 const stopCount = (n: number, suffix: string) => `${n} stop${n === 1 ? '' : 's'} ${suffix}`;
 
 /** "7 stops · In progress" for a running route, "9 stops ready" for a planned one (finished ones aren't on Home). */
-const routeMeta = (route: RouteListItem) => {
+const routeMeta = (route: HomeData['routes'][number]) => {
   const stops = route.progress.total;
   if (route.status === 'active') return stopCount(stops, '· In progress');
   return stopCount(stops, 'ready');
