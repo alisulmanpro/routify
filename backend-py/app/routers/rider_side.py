@@ -56,10 +56,14 @@ class Point(Schema):
     longitude: Annotated[float, Field(ge=-180, le=180)]
 
 
+# A whole working day (the 2,000-stops-a-day goal). Planning runs in the worker, so a big list never blocks the API.
+MAX_BUILD_STOPS = 2000
+
+
 class BuildBody(Schema):
     preference: Optional[Preference] = None
     origin: Optional[Point] = None
-    deliveryIds: Optional[Annotated[list[ObjectId], Field(max_length=300)]] = None
+    deliveryIds: Optional[Annotated[list[ObjectId], Field(max_length=MAX_BUILD_STOPS)]] = None
     date: Optional[DateKey] = None
     name: Optional[Annotated[str, StringConstraints(strip_whitespace=True, max_length=80)]] = None
 

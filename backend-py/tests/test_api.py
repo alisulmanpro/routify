@@ -739,3 +739,12 @@ async def test_a_new_route_never_takes_or_removes_another_route_of_the_same_day(
     again = (await client.post("/api/v1/routes/build", headers=auth, json={"name": "Morning v2", "date": today, "deliveryIds": first_ids})).json()["data"]
     assert sorted(s["delivery"]["id"] for s in again["stops"]) == sorted(first_ids)
     assert (await client.get(f"/api/v1/routes/{first['id']}", headers=auth)).status_code == 404
+
+
+async def test_a_build_may_list_a_whole_day_of_stops_but_not_more(client):
+    _, auth = await rider(client, "big-build@example.com")
+    too_many = await client.post("/api/v1/routes/build", headers=auth, json={"deliveryIds": [new_id() for _ in range(2001)]})
+    assert too_many.status_code == 400 and too_many.json()["error"]["code"] == "VALIDATION_ERROR"
+    # 301 ids used to be refused (the old 300 cap); now only the ids themselves are checked.
+    over_old_cap = await client.post("/api/v1/routes/build", headers=auth, json={"deliveryIds": [new_id() for _ in range(301)]})
+    assert over_old_cap.json().get("error", {}).get("code") != "VALIDATION_ERROR", over_old_cap.text
