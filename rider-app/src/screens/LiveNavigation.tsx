@@ -14,6 +14,7 @@ import { openDirections } from '../lib/deliveryActions';
 import { formatMinutes, stopCardText, stopLabel, todayKey } from '../lib/format';
 import { TEST_LOCATION } from '../lib/location';
 import type { Route } from '../lib/types';
+import { useIsFocused } from '@react-navigation/native';
 import { useFocusEffect } from '../lib/useFocusEffect';
 import { useNav } from '../lib/nav';
 import { fetchCurrentRoute } from '../lib/v2api';
@@ -70,8 +71,10 @@ function useLivePosition() {
   const [anchor, setAnchor] = useState<Coordinates | null>(TEST_LOCATION);
   const [heading, setHeading] = useState<number | null>(null);
   const [denied, setDenied] = useState(false);
+  // Watched only while navigation is on screen (it stays mounted under Stop details); the last fix is kept.
+  const focused = useIsFocused();
   useEffect(() => {
-    if (TEST_LOCATION) return;
+    if (TEST_LOCATION || !focused) return;
     let mounted = true;
     let sub: Location.LocationSubscription | null = null;
     (async () => {
@@ -88,7 +91,7 @@ function useLivePosition() {
       if (mounted) sub = next; else next.remove();
     })().catch(() => { /* the map still shows the stops without GPS */ });
     return () => { mounted = false; sub?.remove(); };
-  }, []);
+  }, [focused]);
   return { position, anchor, heading, denied };
 }
 

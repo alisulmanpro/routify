@@ -3,6 +3,7 @@ import { ActivityIndicator, Platform, Pressable, RefreshControl, StyleSheet, Tex
 import { FlashList, type FlashListRef } from '@shopify/flash-list';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import * as Location from 'expo-location';
+import { useIsFocused } from '@react-navigation/native';
 import { get, post, ApiRequestError } from '../lib/api';
 import { decodePolyline } from '../lib/polyline';
 import { openDirections as directionsTo } from '../lib/deliveryActions';
@@ -78,9 +79,11 @@ function useRiderPosition() {
   const [position, setPosition] = useState<Coordinates | null>(TEST_LOCATION);
   const [anchor, setAnchor] = useState<Coordinates | null>(TEST_LOCATION);
   const [denied, setDenied] = useState(false);
+  // The map stays mounted under Stop details: GPS is watched only while the map is on screen (the last fix is kept).
+  const focused = useIsFocused();
 
   useEffect(() => {
-    if (TEST_LOCATION) return;
+    if (TEST_LOCATION || !focused) return;
     let mounted = true;
     let subscription: Location.LocationSubscription | null = null;
     (async () => {
@@ -104,7 +107,7 @@ function useRiderPosition() {
       }
     })();
     return () => { mounted = false; subscription?.remove(); };
-  }, []);
+  }, [focused]);
 
   return { position, anchor, denied };
 }
