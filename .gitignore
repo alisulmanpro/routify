@@ -184,5 +184,5 @@ client.md
 developer.md
 differance.md
 
-# Prisma query engine downloaded into the project on Render (PRISMA_BINARY_CACHE_DIR)
-.prisma-binaries/
+# Prisma query engine copied into backend-py/ by scripts/bundle_prisma_engine.py (Render build)
+backend-py/prisma-query-engine-*
