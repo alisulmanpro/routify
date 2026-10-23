@@ -3,7 +3,7 @@
 ## How these numbers were measured
 
 - **Tool:** `backend-py/scripts/perf_routes.py`. It drives the real FastAPI app in-process, with every middleware included, and counts each round trip to the Prisma query engine: queries, batches and transaction begin/commit. It also counts the SQL statements inside batches, the wall time per flow and the response size.
-- **Not the timing middleware:** P0.7 (timing middleware with a `Server-Timing` header) has not been built yet; Phase 0 was blocked on the dev database (see ISSUE-06). The harness counts the same things from outside the app.
+- **Timing middleware:** since P0.7 every API response carries `Server-Timing: app;dur=…, db;dur=…;desc="N queries"` and the access log has `responseTime`, `dbQueries`, `dbMs`. The Phase 1 numbers below were taken before it existed, with the harness, which counts the same things from outside the app.
 - **Database:** a local PostgreSQL 18 container, wiped before each run. Local round trips cost about 0.1 ms, so the **ms column is mostly server CPU**. On a hosted database every DB round trip adds its network latency on top. That latency is about 1–2 ms on Render Ohio ↔ Neon us-east-2, and about 250 ms from a laptop in Pakistan to Neon. The **DB trips column** is the number that latency multiplies.
 - **Map providers:** set to `none`, so the numbers include no Google or OSM calls. Stops are created with a location, as picked suggestions, pins and scans give them. The last flow uses stops without a location: every lookup misses, and each stop is saved as `not_found`.
 - **Before** = `origin/main` (`4b95abf`). **Mid** = after P1.1–P1.4. **After** = branch `phase-1-backend-fast` after P1.13. Timings are the median of 3 runs; DB counts are identical in every run.
@@ -16,6 +16,25 @@ docker run -d --name dp-test-pg -e POSTGRES_PASSWORD=test -p 127.0.0.1:55432:543
 cd backend-py
 PERF_DATABASE_URL=postgresql://postgres:test@127.0.0.1:55432/perf python -m scripts.perf_routes --stops 200
 ```
+
+## Baseline (P0.11) — the four rider flows, 200-stop route, 2026-10-23
+
+Same harness and local database as below, on branch `final-issues` (every phase up to P7.3). Planning runs inline in
+the harness (as in the worker), so the counts are per flow. Real network time on Neon = **DB trips × latency** (≈ 1–2 ms
+from Render Ohio): read it per request from the `Server-Timing` header.
+
+| Flow | Requests | DB trips | DB statements | ms (local) | Wire KB (gzip) |
+|---|---:|---:|---:|---:|---:|
+| **Open Home** (v1: dashboard + by-date + leftover + pending list) | 4 | 10 | 10 | 307 | 4.7 |
+| **Open Route** | 1 | 3 | 3 | 61 | 5.2 |
+| **Deliver Stop** (v1: arrive + deliver + reload route) | 3 | 14 | 14 | 233 | 6.4 |
+| **Add Typed Stop** | 1 | 9 | 7 | 71 | 0.5 |
+| Build route, addresses not yet looked up (200 stops) | 1 | **18** (217 after Phase 1) | 16 | 529 | 3.9 |
+
+- The app uses v2 since Phase 3: Home is **1 request** (`GET /v2/rider/home`) and Deliver is **1 request** (`POST /v2/stops/{id}/events`), see "Phase 3".
+- Deliver Stop has two more DB trips than after Phase 1 (12 → 14): the `stop_events` audit row (P4.5).
+- The address-lookup build dropped from 217 to 18 trips: the geocode cache is now read once per batch (ISSUE-07).
+- On the Neon dev branch these flows have **not** been re-timed: see owner.md (run the seed script, open the app, read `Server-Timing`).
 
 ## Phase 1 — 200-stop route (one rider)
 

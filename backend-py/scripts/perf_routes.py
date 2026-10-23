@@ -90,6 +90,11 @@ async def main() -> None:
     await ensure_default_plans()
     await db.plan.update_many(where={}, data={"deliveriesPerMonth": 1_000_000})  # measure the flows, not the plan limits
     app = create_app(run_jobs=False)
+    # Planning normally runs in the worker process (P6b.2); here it runs inline as if this were the worker, so the
+    # counts stay per flow (a polling worker in this process would add its own round trips to every flow).
+    from app.services import jobs
+
+    jobs.in_worker.set(True)
     results: list[dict] = []
     today = datetime.now(UTC).strftime("%Y-%m-%d")
 
@@ -130,8 +135,8 @@ async def main() -> None:
             created += (await flow(f"Bulk add {min(300, args.stops - chunk)} stops", [("POST", "/api/v1/deliveries/bulk",
                                                                                         {"items": stops("P", args.stops, True)[chunk:chunk + 300]})]))[0].json()["data"]
         ids = [d["id"] for d in created]
-        # deliveryIds is capped at 300; larger routes are built as "the whole day" (no ids), which has no cap.
-        chosen = {"deliveryIds": ids} if len(ids) <= 300 else {}
+        # deliveryIds is capped at 2,000 (a whole day); larger routes are built as "the whole day" (no ids).
+        chosen = {"deliveryIds": ids} if len(ids) <= 2000 else {}
         route = (await flow(f"Build route ({len(ids)} stops)", [("POST", "/api/v1/routes/build", chosen)]))[0].json()["data"]
         await flow("Open Home", [("GET", f"/api/v1/rider/dashboard?date={today}", None), ("GET", f"/api/v1/routes/by-date?from={today}", None),
                                  ("GET", f"/api/v1/routes/leftover?date={today}", None),
@@ -157,7 +162,7 @@ async def main() -> None:
             created += (await client.post("/api/v1/deliveries/bulk", headers=auth,
                                           json={"items": stops("U", args.stops, False)[chunk:chunk + 300]})).json()["data"]
         await flow(f"Build route, addresses not yet looked up ({len(created)} stops)",
-                   [("POST", "/api/v1/routes/build", {"deliveryIds": [d["id"] for d in created]} if len(created) <= 300 else {})])
+                   [("POST", "/api/v1/routes/build", {"deliveryIds": [d["id"] for d in created]} if len(created) <= 2000 else {})])
 
     await disconnect()
     width = max(len(r["flow"]) for r in results)
