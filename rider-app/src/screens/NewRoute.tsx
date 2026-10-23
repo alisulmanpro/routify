@@ -6,9 +6,10 @@ import { KeyboardAwareScrollView, useRevealOnFocus } from '../components/Keyboar
 import DatePicker from '../components/DatePicker';
 import { Screen } from '../components/Kit';
 import { LightButton, LightError } from '../components/LightKit';
-import { get, ApiRequestError } from '../lib/api';
+import { ApiRequestError } from '../lib/api';
 import { dayKey, defaultRouteName, fromDayKey, todayKey } from '../lib/format';
 import { rememberRouteName } from '../lib/routeNames';
+import { fetchCurrentRoute } from '../lib/v2api';
 import type { Route } from '../lib/types';
 import { useFocusEffect } from '../lib/useFocusEffect';
 import { light as c, lightRadius as lr } from '../lib/theme';
@@ -27,8 +28,8 @@ export default function NewRoute({ initialDate }: { initialDate?: string }) {
 
   // Only one route can be underway; another route for today can be planned once it is finished.
   useFocusEffect(useCallback(() => {
-    get<Route | null>('/routes/current', { date: todayKey() })
-      .then((res) => setActive(res.data?.status === 'active' ? res.data : null))
+    fetchCurrentRoute(todayKey())
+      .then((route) => setActive(route?.status === 'active' ? route : null))
       .catch((err) => setError(err instanceof ApiRequestError ? err.message : 'Could not check your current route'));
   }, []));
 

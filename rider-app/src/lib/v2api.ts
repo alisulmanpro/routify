@@ -11,6 +11,12 @@ export async function fetchRoute(routeId: string, saved?: (Route & { etag?: stri
   return toRoute(res.data!, res.etag);
 }
 
+/** The route underway, else the latest one planned for `date` or earlier (light); null when there is none. */
+export async function fetchCurrentRoute(date: string): Promise<Route | null> {
+  const route = (await api<V2Route | null>('/v2/routes/current', { query: { date } })).data;
+  return route ? toRoute(route) : null;
+}
+
 export type StopEvent = { type: 'arrive' | 'deliver' | 'fail'; reason?: FailureReason; note?: string; allowSkip?: boolean };
 
 /**

@@ -8,7 +8,7 @@ import { Screen } from '../components/Kit';
 import { type McName } from '../components/Premium';
 import { LightButton, LightError } from '../components/LightKit';
 import GoogleRouteMap, { type Coordinates, type MapStop } from '../components/GoogleRouteMap';
-import { get, post, ApiRequestError } from '../lib/api';
+import { post, ApiRequestError } from '../lib/api';
 import { decodePolyline } from '../lib/polyline';
 import { openDirections } from '../lib/deliveryActions';
 import { formatMinutes, stopCardText, stopLabel, todayKey } from '../lib/format';
@@ -16,6 +16,7 @@ import { TEST_LOCATION } from '../lib/location';
 import type { Route } from '../lib/types';
 import { useFocusEffect } from '../lib/useFocusEffect';
 import { useNav } from '../lib/nav';
+import { fetchCurrentRoute } from '../lib/v2api';
 import { light as c } from '../lib/theme';
 
 type Step = { distance: number; duration: number; name: string; maneuver: { type: string; modifier?: string } };
@@ -104,7 +105,7 @@ export default function LiveNavigation() {
 
   const load = useCallback(async () => {
     try {
-      setRoute((await get<Route | null>('/routes/current', { date: todayKey() })).data);
+      setRoute(await fetchCurrentRoute(todayKey()));
       setError('');
     } catch (err) {
       setError(err instanceof ApiRequestError ? err.message : 'Could not load your route');

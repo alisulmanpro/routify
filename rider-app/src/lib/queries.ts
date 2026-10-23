@@ -1,11 +1,11 @@
 import { useCallback, useMemo, useRef } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useFocusEffect } from './useFocusEffect';
-import { ApiRequestError, get } from './api';
+import { ApiRequestError } from './api';
 import { useAuth } from './auth';
 import { todayKey } from './format';
 import { queryClient } from './query';
-import { fetchHome as fetchHomeV2, fetchRoute as fetchRouteV2 } from './v2api';
+import { fetchCurrentRoute, fetchHome as fetchHomeV2, fetchRoute as fetchRouteV2 } from './v2api';
 import { applyEventToRoute, type V2EventResult } from './v2';
 import type { Dashboard, LeftOver, Route, RouteListItem } from './types';
 
@@ -84,8 +84,8 @@ const noop = () => {};
 // ---- Routes ----
 
 async function fetchRoute(userId: string | undefined, routeId: string | undefined): Promise<Route | null> {
-  // "Today's / the one underway" has no v2 endpoint; a known route comes from v2 (light, and 304 when unchanged).
-  if (!routeId) return (await get<Route | null>('/routes/current', { date: todayKey() })).data;
+  // Both from v2 (light); a known route also answers 304 when unchanged.
+  if (!routeId) return fetchCurrentRoute(todayKey());
   return fetchRouteV2(routeId, queryClient.getQueryData<Route & { etag?: string }>(routeKey(userId, routeId)));
 }
 
