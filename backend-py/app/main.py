@@ -18,6 +18,7 @@ from .errors import AppError, error_body
 from .http import ApiJSONResponse, respond
 from .logger import log
 from .middleware import ApiRateLimitMiddleware, BodyLimitMiddleware, EdgeMiddleware
+from .observability import init_sentry
 from .openapi import install_openapi
 from .routers import admin, auth, billing_webhooks, deliveries, rider_side, v2
 from .services import maintenance
@@ -36,6 +37,7 @@ def create_app(*, run_jobs: bool = True) -> FastAPI:
     """`run_jobs` is kept for callers; scheduled work (maintenance) runs in the worker since P7.3, never in the API."""
     del run_jobs
     timing.install()  # Server-Timing and per-request DB counts (P0.7)
+    init_sentry("api")
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):

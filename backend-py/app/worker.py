@@ -13,6 +13,7 @@ import signal
 
 from .db import connect, disconnect
 from .logger import log
+from .observability import init_sentry
 
 # Importing these registers their job handlers.
 from .services import auth_service as _auth_service  # noqa: F401 - password_reset_code
@@ -55,6 +56,7 @@ async def main() -> None:
     stop = asyncio.Event()
     for sig in (signal.SIGTERM, signal.SIGINT):
         asyncio.get_running_loop().add_signal_handler(sig, stop.set)
+    init_sentry("worker")
     await connect()
     log(logging.INFO, "Worker started")
     try:

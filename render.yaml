@@ -60,6 +60,10 @@ services:
       - key: REDIS_URL
         sync: false
 
+      # Error reporting (Sentry) for the API and the worker. Empty = off.
+      - key: SENTRY_DSN
+        sync: false
+
       # Rider app versions (GET /config): below MIN the app must update; below LATEST it suggests updating.
       - key: MIN_APP_VERSION
         value: "1.0.0"

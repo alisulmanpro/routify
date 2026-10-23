@@ -125,6 +125,8 @@ class Settings:
     ALERT_P95_MS: int
     ALERT_QUEUE_BACKLOG: int
     ALERT_GOOGLE_DAILY_USD: float
+    SENTRY_DSN: str
+    SENTRY_TRACES_SAMPLE_RATE: float
     ADMIN_EMAIL: str | None
     ADMIN_PASSWORD: str | None
     ADMIN_NAME: str
@@ -242,6 +244,9 @@ def load_settings() -> Settings:
         ALERT_P95_MS=_int("ALERT_P95_MS", 1000, lo=50, hi=60_000),
         ALERT_QUEUE_BACKLOG=_int("ALERT_QUEUE_BACKLOG", 10, lo=1, hi=100_000),
         ALERT_GOOGLE_DAILY_USD=float(_str("ALERT_GOOGLE_DAILY_USD", "20") or 20),
+        # Error reporting (P0.8). Empty = off. Traces: the share of requests sampled for performance (0 = errors only).
+        SENTRY_DSN=_str("SENTRY_DSN") or "",
+        SENTRY_TRACES_SAMPLE_RATE=min(1.0, max(0.0, float(_str("SENTRY_TRACES_SAMPLE_RATE", "0.05") or 0))),
         ADMIN_EMAIL=admin_email,
         ADMIN_PASSWORD=admin_password,
         ADMIN_NAME=_str("ADMIN_NAME", "Platform Admin") or "Platform Admin",
