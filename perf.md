@@ -182,3 +182,71 @@ this is the **fallback path**: the built-in planner in the worker, on straight-l
 
 With VROOM + our OSRM configured (`VROOM_URL`, `OSRM_URL`), the order comes from VROOM on road times. Its solve time is
 the "VROOM solve" column of the Phase 6a table, still to be measured (ISSUE-31).
+
+## Phase 8 — Load testing (k6 / Locust)
+
+**Status: the suite is written, nothing has been measured.** There is no staging
+environment to load (ISSUE-35): `render.yaml` defines one service (`routify-api`,
+the production one), the app points at a laptop on the LAN, and no config file
+names a staging host. The scripts refuse to run against anything that is not
+clearly a staging host, so nothing was sent anywhere — no request reached
+production.
+
+### What is in the suite (`infra/loadtest/`)
+
+| File | What it does |
+|---|---|
+| `k6/scenarios/route200.js` | a rider with a prepared 200-stop route: open Home, open the route, deliver the next stop |
+| `k6/scenarios/dropout.js` | the phone sends the event and the answer is lost (10 ms timeout); it retries later with the same `Idempotency-Key` |
+| `k6/scenarios/duplicates.js` | the same batch (same `clientId`s) and the same event sent twice |
+| `k6/scenarios/two-devices.js` | two VUs share one account and deliver the same stop at the same time |
+| `k6/scenarios/optimize.js` | half the VUs optimise the 200-stop route, half only read — the API must stay fast |
+| `k6/scenarios/ramp.js` | P8.2: 1K → 5K → 10K concurrent riders |
+| `locust/locustfile.py` | the same scenarios in Locust |
+| `scripts/seed_riders.py` | creates the riders, activates a plan, adds 200 stops, builds the route, writes the rider file |
+| `scripts/measure_route_open.py` | the size of an opened route on the wire (gzipped) |
+| `scripts/report_targets.py` | reads the k6 summaries and prints the table below |
+| `scripts/run.sh` | the staging-only runner (`seed`, `route200`, `dropout`, `duplicates`, `two-devices`, `optimize`, `ramp`, `size`, `report`, `check`) |
+
+The guard was tested: no URL, a production URL, a URL without "staging" in it and
+`localhost` are all refused before any request is sent. The scripts themselves were
+not executed: k6 and Locust are not installed in this environment, and there is no
+staging target to run them against.
+
+### Results (target vs measured)
+
+Nothing was measured on staging. The run needs a staging API in
+`LOADTEST_BASE_URL`; the commands are in `infra/loadtest/README.md`.
+
+| Target | Limit | Measured | Status |
+|---|---|---|---|
+| P8.2 ramp 1K → 5K → 10K riders | — | not measured (no staging) | ⚠️ ISSUE-35 |
+| P8.3 simple read p95 | < 150 ms | not measured (no staging) | ⚠️ ISSUE-35 |
+| P8.4 stop event p95 | < 250 ms | not measured (no staging) | ⚠️ ISSUE-35 |
+| P8.5 route open (200 stops) | < 800 ms on 4G | not measured (no staging, no 4G phone) | ⚠️ ISSUE-35 |
+| P8.5 route open (200 stops), gzipped | < 150 KB | not measured on staging; 5.2 KB gzipped locally (Phase 1, 200 stops) | ⚠️ ISSUE-35 |
+| P8.6 optimise 200 stops | < 5 s | not measured on staging; 2.5 s locally with the fallback planner (Phase 6b), VROOM path still unmeasured (ISSUE-31) | ⚠️ ISSUE-35 |
+| P8.6 the API is not blocked during an optimisation | — | not measured on staging | ⚠️ ISSUE-35 |
+| P8.7 Home = 1 request, deliver = 1 request | 1 / 1 | 1 / 1 by design (Phase 3), not measured under load | ⚠️ ISSUE-35 |
+| P8.7 Home first paint | < 300 ms | not measured (needs a real phone) | ⚠️ ISSUE-35 |
+| P8.8 zero duplicates, zero lost events | 0 / 0 | not measured under load; covered by the Phase 4 tests only | ⚠️ ISSUE-35 |
+| P8.8 error rate | < 0.1 % | not measured (no staging) | ⚠️ ISSUE-35 |
+
+### What the staging environment needs before the run
+
+- Its own service and database (P7.5): a second Render service on a separate Neon
+  branch, with separate keys and the worker process running (`python -m app.worker`,
+  ISSUE-32) — route optimisation runs in the worker, not in the API.
+- Riders must be able to create stops: a plan per rider (`pro`, not the trial plan:
+  the trial plan allows 100 deliveries a month and a 200-stop route needs more).
+  The staging mock store does that (`PAYMENT_STORES=mock`, `ALLOW_MOCK_STORE=true`),
+  or an `owner_admin` account can (`--activate admin`).
+- Raised rate limits: the API counts 1,000 requests per IP per 15 minutes and 40
+  registrations per IP per 15 minutes. A 10K-rider run is far above that, so the
+  staging environment must raise the limits, disable them (`NODE_ENV=test`) or the
+  run must come from several IPs.
+- A k6 machine that can hold the VUs: about 4 GB of memory per 1,000 VUs, so the
+  10K-rider stage needs roughly 40 GB. The ramp can be split across several
+  machines with `RIDER_FILE` per machine, but then the p95 of the whole fleet is not
+  one number — a single big machine (or several k6 instances behind one report) is
+  needed for a clean P8.2 result.

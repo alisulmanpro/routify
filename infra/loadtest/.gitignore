@@ -1,0 +1,5 @@
+# The rider file holds access tokens: never commit it.
+data/
+results/
+.env
+__pycache__/
