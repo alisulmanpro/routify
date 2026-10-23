@@ -171,3 +171,12 @@ backend.zip
 rider-app/delivery-planner
 AUDIT.md
 cmd.txt
+
+# The owner's own working notes (kept locally, never committed)
+design_pref/
+report.md
+task.md
+error.md
+issue.md
+missing.md
+owner.md
