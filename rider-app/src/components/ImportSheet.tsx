@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { memo, useCallback, useState } from 'react';
 import { Modal, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import * as DocumentPicker from 'expo-document-picker';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
@@ -73,7 +73,8 @@ function ImportBody({ date, stops, onClose, onImported }: Omit<Props, 'visible'>
     }
   };
 
-  const update = (i: number, patch: Partial<Row>) => setRows((rs) => rs!.map((row, idx) => (idx === i ? { ...row, ...patch } : row)));
+  // Stable, so typing in one stop re-renders that row only (P3.5), not all of them.
+  const update = useCallback((i: number, patch: Partial<Row>) => setRows((rs) => rs!.map((row, idx) => (idx === i ? { ...row, ...patch } : row))), []);
 
   const add = async () => {
     const chosen = (rows || []).filter((row) => row.include);
@@ -114,18 +115,8 @@ function ImportBody({ date, stops, onClose, onImported }: Omit<Props, 'visible'>
           <>
             <Text style={[s.hint, { marginBottom: 12 }]}>Untick anything you don&apos;t want. Parcel IDs are optional.</Text>
             <View style={{ gap: 10 }}>
-              {rows.map((row, i) => (
-                <View key={`${i}-${row.trackingId}`} style={[s.card, !row.include && { opacity: 0.5 }]}>
-                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 8 }}>
-                    <Text style={{ flex: 1, color: c.textMuted, fontWeight: '800', fontSize: 11 }}>STOP {i + 1}{row.flags.includes('duplicate') ? ' · ALREADY ADDED' : ''}</Text>
-                    <Pressable onPress={() => update(i, { include: !row.include })} hitSlop={8} style={[s.check, row.include && s.checkOn]}>
-                      {row.include ? <Ionicons name="checkmark" size={15} color={DARK_ON_PRIMARY} /> : null}
-                    </Pressable>
-                  </View>
-                  <RevealingTextInput value={row.address} onChangeText={(v) => update(i, { address: v })} placeholder="Address" placeholderTextColor={c.textMuted} multiline style={s.input} />
-                  <RevealingTextInput value={row.trackingId} onChangeText={(v) => update(i, { trackingId: v })} placeholder="Parcel ID (optional)" placeholderTextColor={c.textMuted} autoCapitalize="characters" style={s.input} />
-                </View>
-              ))}
+              {/* Keyed by position, as before: the key must not change while the parcel ID is being typed. */}
+              {rows.map((row, i) => <DraftRow key={i} row={row} index={i} onChange={update} />)}
             </View>
             <PButton title={`Add ${count} stop${count === 1 ? '' : 's'}`} icon="add-circle-outline" onPress={() => void add()} loading={busy} disabled={!count} style={{ marginTop: 16 }} />
             <PButton title="Choose another file" icon="document-outline" variant="secondary" onPress={() => void pick()} disabled={busy} style={{ marginTop: 10 }} />
@@ -135,6 +126,23 @@ function ImportBody({ date, stops, onClose, onImported }: Omit<Props, 'visible'>
     </View>
   );
 }
+
+// One draft stop. Not virtualised (ISSUE-17): the rows hold text inputs inside the keyboard-aware scroll view, and a
+// recycling list can move focus or the keyboard while typing; memoised instead, so an edit re-renders its own row.
+const DraftRow = memo(function DraftRow({ row, index, onChange }: { row: Row; index: number; onChange: (i: number, patch: Partial<Row>) => void }) {
+  return (
+    <View style={[s.card, !row.include && { opacity: 0.5 }]}>
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+        <Text style={{ flex: 1, color: c.textMuted, fontWeight: '800', fontSize: 11 }}>STOP {index + 1}{row.flags.includes('duplicate') ? ' · ALREADY ADDED' : ''}</Text>
+        <Pressable onPress={() => onChange(index, { include: !row.include })} hitSlop={8} style={[s.check, row.include && s.checkOn]}>
+          {row.include ? <Ionicons name="checkmark" size={15} color={DARK_ON_PRIMARY} /> : null}
+        </Pressable>
+      </View>
+      <RevealingTextInput value={row.address} onChangeText={(v) => onChange(index, { address: v })} placeholder="Address" placeholderTextColor={c.textMuted} multiline style={s.input} />
+      <RevealingTextInput value={row.trackingId} onChangeText={(v) => onChange(index, { trackingId: v })} placeholder="Parcel ID (optional)" placeholderTextColor={c.textMuted} autoCapitalize="characters" style={s.input} />
+    </View>
+  );
+});
 
 const s = StyleSheet.create({
   top: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingBottom: 8 },
