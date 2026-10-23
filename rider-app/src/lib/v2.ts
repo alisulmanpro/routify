@@ -70,6 +70,16 @@ export function applyStopEvent(delivery: Delivery, stop: V2Stop): Delivery {
   };
 }
 
+/**
+ * The first open stop before `stopId` on a saved route, like the server's EARLIER_STOPS_REMAIN names it; null when
+ * there is none. Offline the phone asks this itself, so the rider confirms at the door, not later on the sync list.
+ */
+export function earlierOpenStop(route: Route, stopId: string): { trackingId: string; stopOrder: number } | null {
+  const index = route.stops.findIndex((s) => s.delivery.id === stopId);
+  const open = route.stops.slice(0, Math.max(0, index)).find((s) => s.delivery.status === 'pending' || s.delivery.status === 'in_progress');
+  return open ? { trackingId: open.delivery.trackingId, stopOrder: open.order } : null;
+}
+
 /** The earlier open stop named in a v2 EARLIER_STOPS_REMAIN error's details, if any. */
 export function earlierStopOf(details: unknown[] | undefined): { trackingId: string; stopOrder: number } | null {
   const first = details?.[0] as { trackingId?: unknown; stopOrder?: unknown } | undefined;

@@ -5,9 +5,10 @@ import { KeyboardAwareScrollView, useRevealOnFocus } from '../components/Keyboar
 import * as ImagePicker from 'expo-image-picker';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useFocusEffect } from '../lib/useFocusEffect';
-import { get, del, fileUrl, ApiRequestError } from '../lib/api';
-import type { Delivery, FailureReason } from '../lib/types';
-import { applyStopEvent, earlierStopOf, type V2EventResult } from '../lib/v2';
+import { get, del, fileUrl, isOnline, ApiRequestError } from '../lib/api';
+import { queryClient } from '../lib/query';
+import type { Delivery, FailureReason, Route } from '../lib/types';
+import { applyStopEvent, earlierOpenStop, earlierStopOf, type V2EventResult } from '../lib/v2';
 import { submitProof, submitStopEvent } from '../lib/outbox';
 import { prepareProofPhoto } from '../lib/photo';
 import { FAILURE_LABELS, stopCardText, timeOnly } from '../lib/format';
@@ -115,9 +116,25 @@ export default function DeliveryDetail({ id, onDone, initialStep }: { id: string
     { text: 'Cancel', style: 'cancel' },
   ]);
 
+  const askToSkip = (earlier: { trackingId: string; stopOrder: number }) => Alert.alert(
+    'Earlier delivery still open',
+    `Delivery no. ${earlier.stopOrder}${earlier.trackingId ? ` (${earlier.trackingId})` : ''} is not finished. Continue with delivery no. ${delivery?.stopOrder ?? ''}?`,
+    [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Continue anyway', style: 'destructive', onPress: () => confirmDelivery(true) },
+    ],
+  );
+
   // One request: the server records the arrival if needed and refuses (409) while an earlier stop is still open.
+  // Offline that answer cannot come, so the saved route is checked here instead (ISSUE-23).
   const confirmDelivery = (allowSkip = false) => run('deliver', async () => {
     const note = deliverNote.trim();
+    if (!allowSkip && !isOnline()) {
+      const saved = queryClient.getQueriesData<Route | null>({ queryKey: ['route'] }).map(([, r]) => r)
+        .find((r) => r?.stops.some((s) => s.delivery.id === id));
+      const earlier = saved ? earlierOpenStop(saved, id) : null;
+      if (earlier) { askToSkip(earlier); return; }
+    }
     try {
       const sent = await submitStopEvent(id, { type: 'deliver', ...(allowSkip ? { allowSkip: true } : {}), ...(note ? { note } : {}) }, label('Delivered'));
       setDelivery((d) => (d ? (sent.status === 'sent' ? applyStopEvent({ ...d, note: note || d.note }, sent.result.stop) : savedOnPhone(d, 'delivered')) : d));
@@ -125,14 +142,7 @@ export default function DeliveryDetail({ id, onDone, initialStep }: { id: string
     } catch (err) {
       const earlier = err instanceof ApiRequestError && err.code === 'EARLIER_STOPS_REMAIN' ? earlierStopOf(err.details) : null;
       if (!earlier) throw err;
-      Alert.alert(
-        'Earlier delivery still open',
-        `Delivery no. ${earlier.stopOrder}${earlier.trackingId ? ` (${earlier.trackingId})` : ''} is not finished. Continue with delivery no. ${delivery?.stopOrder ?? ''}?`,
-        [
-          { text: 'Cancel', style: 'cancel' },
-          { text: 'Continue anyway', style: 'destructive', onPress: () => confirmDelivery(true) },
-        ],
-      );
+      askToSkip(earlier);
     }
   });
 
