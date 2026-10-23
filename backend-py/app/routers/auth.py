@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Annotated, Literal, Optional
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Request
 from pydantic import StringConstraints, model_validator
@@ -11,7 +11,7 @@ from ..errors import AppError, unauthorized
 from ..http import ApiJSONResponse, ok, respond
 from ..middleware import auth_limiter, email_taken_limiter, limit, reset_email_limiter
 from ..services import auth_service as auth
-from ..validation import Currency, Email, Phone, Schema, Trimmed, validate
+from ..validation import Email, Phone, Schema, Trimmed, validate
 
 router = APIRouter(prefix="/auth")
 COOKIE = "dp_rt"
@@ -19,12 +19,12 @@ Password = Annotated[str, StringConstraints(min_length=6, max_length=128)]
 
 
 class RegisterBody(Schema):
-    # Phone is no longer collected at sign-up; a client that still sends it is ignored (unknown fields are dropped).
+    # Phone and currency are no longer collected at sign-up; a client that still sends them is ignored (unknown fields
+    # are dropped). New riders get the platform's default currency.
     fullName: Trimmed(2, 120)
     email: Email
     password: Password
     confirmPassword: str
-    currency: Currency
 
     @model_validator(mode="after")
     def passwords_match(self):
@@ -40,19 +40,18 @@ class LoginBody(Schema):
 
 
 class RefreshBody(Schema):
-    refreshToken: Optional[Annotated[str, StringConstraints(min_length=20, max_length=200)]] = None
+    refreshToken: Annotated[str, StringConstraints(min_length=20, max_length=200)] | None = None
     client: Literal["mobile", "web"] = "mobile"
 
 
 class ProfileBody(Schema):
     nullable_fields = frozenset({"city", "phone"})
-    fullName: Optional[Trimmed(2, 120)] = None
-    phone: Optional[Phone] = None  # optional; null removes it
-    currency: Optional[Currency] = None
-    routePreference: Optional[Literal["smart", "nearest_first", "shortest"]] = None
-    notificationsEnabled: Optional[bool] = None
+    fullName: Trimmed(2, 120) | None = None
+    phone: Phone | None = None  # optional; null removes it
+    routePreference: Literal["smart", "nearest_first", "shortest"] | None = None
+    notificationsEnabled: bool | None = None
     # A city name sets the rider's service area by hand; null clears it so GPS detection takes over.
-    city: Optional[Annotated[str, StringConstraints(strip_whitespace=True, max_length=120)]] = None
+    city: Annotated[str, StringConstraints(strip_whitespace=True, max_length=120)] | None = None
 
     @model_validator(mode="after")
     def not_empty(self):

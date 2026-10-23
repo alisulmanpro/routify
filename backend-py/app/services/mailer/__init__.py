@@ -6,11 +6,13 @@ for a JSON API) in providers.py and add it to PROVIDERS plus `config.EMAIL_PROVI
 """
 from __future__ import annotations
 
+import dataclasses
+
 from ...background import spawn
 from ...config import env
+from .. import jobs
 from .base import EmailError, EmailMessage, Mailer, Sender
-from .providers import (BrevoMailer, ConsoleMailer, DisabledMailer, MailgunMailer, PostmarkMailer, ResendMailer, SendGridMailer,
-                        SmtpMailer)
+from .providers import BrevoMailer, ConsoleMailer, DisabledMailer, MailgunMailer, PostmarkMailer, ResendMailer, SendGridMailer, SmtpMailer
 
 PROVIDERS: dict[str, type[Mailer]] = {
     "console": ConsoleMailer,
@@ -48,8 +50,14 @@ async def send_email(message: EmailMessage) -> None:
 
 
 def send_in_background(message: EmailMessage) -> None:
-    """Fire-and-forget: the request does not wait for (or reveal) the delivery result. Failures are logged."""
-    spawn(send_email(message), f"send email via {get_mailer().name}")
+    """Fire-and-forget: the request does not wait for (or reveal) the delivery result. The worker sends it (P7.3) and
+    tries again later if the provider fails, so a restart or a provider hiccup does not lose the email."""
+    spawn(jobs.enqueue("send_email", dataclasses.asdict(message)), "queue email")
+
+
+@jobs.handler("send_email", retries=2)
+async def _send_email_job(payload: dict) -> None:
+    await send_email(EmailMessage(**payload))
 
 
 __all__ = ["PROVIDERS", "EmailError", "EmailMessage", "Mailer", "Sender", "get_mailer", "send_email", "send_in_background", "set_mailer_for_tests"]

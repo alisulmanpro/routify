@@ -1,0 +1,10 @@
+{
+  "vehicles": [{ "id": 1, "profile": "bike", "start": [-6.2603, 53.3498] }],
+  "jobs": [
+    { "id": 1, "location": [-6.2595, 53.3438], "service": 180 },
+    { "id": 2, "location": [-6.2672, 53.3415], "service": 180 },
+    { "id": 3, "location": [-6.2489, 53.3381], "service": 180 },
+    { "id": 4, "location": [-6.2780, 53.3530], "service": 180 }
+  ],
+  "options": { "g": false }
+}

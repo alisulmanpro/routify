@@ -1,0 +1,29 @@
+# vroom-express configuration (mounted at /conf in the vroom container).
+cliArgs:
+  geometry: false # route geometry is drawn by the app from OSRM separately
+  planmode: false
+  threads: 4 # solver threads; match the server's cores
+  explore: 5 # search depth 0-5: 5 = best routes, slowest
+  limit: '50mb' # request size (2,000 stops with time windows fits easily)
+  logdir: '/..'
+  logsize: '100M'
+  maxlocations: 3000 # 2,000-stop routes + depot
+  maxvehicles: 200
+  override: true
+  path: ''
+  port: 3000
+  router: 'osrm'
+  timeout: 300000 # ms
+  baseurl: '/'
+# Every vehicle profile name goes to the one OSRM instance; it answers with the profile it was built with (OSRM_PROFILE).
+routingServers:
+  osrm:
+    bike:
+      host: 'osrm'
+      port: '5000'
+    car:
+      host: 'osrm'
+      port: '5000'
+    foot:
+      host: 'osrm'
+      port: '5000'

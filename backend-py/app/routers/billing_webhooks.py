@@ -2,7 +2,7 @@
 the store's own signature (Apple JWS chain / Google OIDC token), never by a user session."""
 from __future__ import annotations
 
-from typing import Annotated, Any, Optional
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Request
 from pydantic import StringConstraints
@@ -20,17 +20,17 @@ class AppleNotification(Schema):
 
 class PubSubMessage(Schema):
     data: Annotated[str, StringConstraints(max_length=100_000)]
-    messageId: Optional[str] = None
+    messageId: str | None = None
 
 
 class PubSubPush(Schema):
     message: PubSubMessage
-    subscription: Optional[str] = None
+    subscription: str | None = None
 
 
 class RevenueCatEvent(Schema):
     event: dict[str, Any]
-    api_version: Optional[str] = None
+    api_version: str | None = None
 
 
 @router.post("/apple")

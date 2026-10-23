@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from typing import Any, Optional
+from datetime import datetime
+from typing import Any
 
-from ..db import db, lock_rider, transaction
+from ..db import as_json, db, lock_rider, transaction
 from ..errors import conflict, forbidden, not_found
 from ..http import now, page_meta, paginate, today_key
 from ..ids import new_id
@@ -10,8 +11,10 @@ from ..uploads import UploadedFile, detect_file_type
 from ..validation import contains_text
 from . import storage_service as storage
 from .geo import normalize_address
+from .geocoding_service import find_eircode, geocode_eircode, is_only_eircode, normalize_eircodes
 from .route_service import on_stop_finished
 from .serializers import serialize_delivery
+from .stop_event_service import record as record_event
 from .subscription_service import assert_can_create_deliveries
 
 FRESH_ADDRESS = {"addressNormalized": None, "addressLatitude": None, "addressLongitude": None, "addressGeocoded": False,
@@ -26,17 +29,27 @@ async def save_delivery(d: Any, data: dict) -> Any:
     return await db.delivery.find_unique(where={"id": d.id})
 
 
-def _to_row(actor: dict, item: dict) -> dict:
+async def _to_row(actor: dict, item: dict) -> dict:
     customer = item.get("customer") or {}
+    # Eircodes are stored as "D01 F5P2" however they were typed, scanned, spoken or imported.
+    raw = normalize_eircodes(item["address"]["raw"])
+    normalized = item["address"].get("normalized") or raw
     row = {
         "id": new_id(), "riderId": actor["id"], "trackingId": item.get("trackingId") or None,
         "customerName": customer.get("name") or "", "customerPhone": customer.get("phone") or "",
-        "addressRaw": item["address"]["raw"], **FRESH_ADDRESS, "serviceDate": item.get("serviceDate") or today_key(),
+        "addressRaw": raw, **FRESH_ADDRESS, "postalCode": find_eircode(raw) or find_eircode(normalized),
+        "serviceDate": item.get("serviceDate") or today_key(),
     }
-    # A picked suggestion or a dropped pin is an exact location, so route planning needs no lookup.
+    # A picked suggestion, a dropped pin or a checked address is a known location, so route planning needs no lookup.
     if location := item.get("location"):
-        row.update(addressLatitude=location["latitude"], addressLongitude=location["longitude"], addressNormalized=item["address"]["raw"],
+        row.update(addressLatitude=location["latitude"], addressLongitude=location["longitude"], addressNormalized=normalized,
                    addressGeocoded=True, geocodeStatus="found")
+        # Only an Eircode: show the provider's address for it, and say when its match is not a rooftop one.
+        # The lookup was just made by geocode-check, so this is normally a cache hit.
+        if is_only_eircode(raw) and (hit := await geocode_eircode(row["postalCode"])):
+            row["addressNormalized"] = hit.get("normalized") or normalized
+            if hit.get("approximate"):
+                row.update(addressApproximate=True, geocodeStatus="approximate")
     if item.get("note"):
         row["note"] = item["note"]
     return row
@@ -46,7 +59,7 @@ async def create_many(actor: dict, items: list[dict]) -> list[dict]:
     if actor["role"] != "rider":
         raise forbidden("Only riders create deliveries")
 
-    rows = [_to_row(actor, item) for item in items]
+    rows = [await _to_row(actor, item) for item in items]
     # One rider's creates run one at a time, so parallel requests cannot both pass the plan limit.
     async with transaction() as tx:
         await lock_rider(tx, actor["id"])
@@ -148,7 +161,8 @@ async def update(actor: dict, delivery_id: str, patch: dict) -> dict:
         data["note"] = patch["note"] or None
     raw = (patch.get("address") or {}).get("raw")
     if raw and normalize_address(raw) != normalize_address(delivery.addressRaw):
-        data.update(addressRaw=raw, **FRESH_ADDRESS)
+        raw = normalize_eircodes(raw)
+        data.update(addressRaw=raw, **FRESH_ADDRESS, postalCode=find_eircode(raw))
     return serialize_delivery(await save_delivery(delivery, data))
 
 
@@ -164,25 +178,75 @@ async def set_location(actor: dict, delivery_id: str, latitude: float, longitude
     }))
 
 
+async def archive_deleted(client: Any, rows: list[Any], reason: str) -> None:
+    """Keeps a copy of stops about to be deleted (deleted_deliveries), so a delete can be looked into or undone."""
+    if rows:
+        await client.deleteddelivery.create_many(data=[
+            {"id": d.id, "riderId": d.riderId, "routeId": d.routeId, "reason": reason, "snapshot": as_json(d.model_dump(mode="json"))} for d in rows
+        ], skip_duplicates=True)
+
+
+# Not copied back from a snapshot: relations, the route it was on (it may be gone or planned again) and bookkeeping.
+_NOT_RESTORED = {"rider", "route", "stops", "routeId", "stopOrder", "version", "createdAt", "updatedAt"}
+_DATETIMES = {"proofCapturedAt", "arrivedAt", "deliveredAt", "failedAt", "lastEventAt"}
+
+
+async def list_deleted(rider_id: str, limit: int = 100) -> list[dict]:
+    """A rider's deleted stops, newest first (admin console: what can be restored)."""
+    rows = await db.deleteddelivery.find_many(where={"riderId": rider_id}, order={"deletedAt": "desc"}, take=limit)
+    return [{"id": r.id, "riderId": r.riderId, "routeId": r.routeId, "reason": r.reason, "deletedAt": r.deletedAt,
+             "trackingId": (r.snapshot or {}).get("trackingId"), "address": (r.snapshot or {}).get("addressRaw"),
+             "serviceDate": (r.snapshot or {}).get("serviceDate"), "status": (r.snapshot or {}).get("status")} for r in rows]
+
+
+async def restore_deleted(deleted_id: str) -> Any:
+    """Puts a deleted stop back as it was (ISSUE-24), on no route: the rider plans it again. An arrived stop comes back open."""
+    async with transaction() as tx:
+        row = await tx.deleteddelivery.find_unique(where={"id": deleted_id})
+        if not row:
+            raise not_found("Deleted delivery")
+        await lock_rider(tx, row.riderId)
+        if await tx.delivery.find_unique(where={"id": row.id}):
+            raise conflict("This delivery is already back", "ALREADY_RESTORED")
+        data: dict[str, Any] = {k: v for k, v in dict(row.snapshot).items() if k not in _NOT_RESTORED and v is not None}
+        for key in _DATETIMES & data.keys():
+            data[key] = datetime.fromisoformat(data[key])
+        if "payment" in data:
+            data["payment"] = as_json(data["payment"])
+        if data.get("status") == "in_progress":
+            data["status"] = "pending"
+        restored = await tx.delivery.create(data={**data, "id": row.id, "riderId": row.riderId})
+        await tx.deleteddelivery.delete(where={"id": row.id})
+    return restored
+
+
 async def remove(actor: dict, delivery_id: str) -> None:
     if actor["role"] != "rider":
         raise forbidden("Only riders delete deliveries")
     delivery = await find_visible(actor, delivery_id)
     if delivery.status != "pending":
         raise conflict("Only pending deliveries can be deleted", "INVALID_STATE")
-    await db.delivery.delete(where={"id": delivery.id})  # its route stop goes with it (ON DELETE CASCADE)
+    async with transaction() as tx:
+        await archive_deleted(tx, [delivery], "delete")
+        await tx.delivery.delete(where={"id": delivery.id})  # its route stop goes with it (ON DELETE CASCADE)
     if delivery.routeId:
         await on_stop_finished(delivery.routeId)
 
 
 async def clear_open(actor: dict) -> dict:
-    """Removes the rider's unstarted delivery queue and any route that has not begun."""
+    """Removes the rider's unstarted delivery queue and any route that has not begun. Stops on the route being driven
+    are never touched (P4.6), and every removed stop is kept in deleted_deliveries."""
     if actor["role"] != "rider":
         raise forbidden("Only riders delete deliveries")
-    planned = await db.route.find_many(where={"riderId": actor["id"], "status": "planned"})
-    deleted = await db.delivery.delete_many(where={"riderId": actor["id"], "status": "pending"})
-    if planned:
-        await db.route.delete_many(where={"id": {"in": [r.id for r in planned]}})
+    async with transaction() as tx:
+        await lock_rider(tx, actor["id"])
+        planned = await tx.route.find_many(where={"riderId": actor["id"], "status": "planned"})
+        rows = await tx.delivery.find_many(where={"riderId": actor["id"], "status": "pending",
+                                                  "OR": [{"routeId": None}, {"route": {"is": {"status": {"not": "active"}}}}]})
+        await archive_deleted(tx, rows, "clear_open")
+        deleted = await tx.delivery.delete_many(where={"id": {"in": [d.id for d in rows]}}) if rows else 0
+        if planned:
+            await tx.route.delete_many(where={"id": {"in": [r.id for r in planned]}})
     return {"deleted": deleted, "plannedRoutesDeleted": len(planned)}
 
 
@@ -197,7 +261,8 @@ def _require_rider(actor: dict) -> None:
         raise forbidden("Only riders can do this")
 
 
-async def arrive(actor: dict, delivery_id: str) -> dict:
+async def arrive(actor: dict, delivery_id: str, *, at: Any = None, audit: bool = True) -> dict:
+    """`at`: when it happened (the phone's clock, v2); `audit=False` when the caller records the event itself (v2)."""
     _require_rider(actor)
     delivery = await find_visible(actor, delivery_id)
     if delivery.status == "in_progress":
@@ -205,13 +270,18 @@ async def arrive(actor: dict, delivery_id: str) -> dict:
     if delivery.status != "pending":
         raise conflict(f"Delivery is already {delivery.status}", "INVALID_STATE")
     await _require_active_route(delivery)
-    return serialize_delivery(await save_delivery(delivery, {"status": "in_progress", "arrivedAt": now()}))
+    at = at or now()
+    saved = await save_delivery(delivery, {"status": "in_progress", "arrivedAt": at, "lastEventAt": at})
+    if audit:
+        await record_event(delivery, "arrive", "applied", "in_progress", at=at, source="v1")
+    return serialize_delivery(saved)
 
 
-async def attach_proof(actor: dict, delivery_id: str, file: Optional[UploadedFile]) -> dict:
+async def attach_proof(actor: dict, delivery_id: str, file: UploadedFile | None, *, allow_delivered: bool = False) -> dict:
+    """`allow_delivered` (v2): the photo may also arrive after the stop was marked delivered, e.g. uploaded once back online."""
     _require_rider(actor)
     delivery = await find_visible(actor, delivery_id)
-    if delivery.status != "in_progress":
+    if delivery.status != "in_progress" and not (allow_delivered and delivery.status == "delivered"):
         raise conflict("Mark the delivery as Arrived before adding a photo", "INVALID_STATE")
     ext = detect_file_type(file.data if file else None, ["jpg", "png"])
     key = await storage.save(file.data, "proofs", ext)
@@ -226,36 +296,43 @@ async def attach_proof(actor: dict, delivery_id: str, file: Optional[UploadedFil
     return serialize_delivery(saved)
 
 
-async def deliver(actor: dict, delivery_id: str, note: Optional[str] = None, allow_skip: bool = False) -> dict:
+async def deliver(actor: dict, delivery_id: str, note: str | None = None, allow_skip: bool = False, *, at: Any = None, audit: bool = True) -> dict:
     _require_rider(actor)
     delivery = await find_visible(actor, delivery_id)
     if delivery.status != "in_progress":
         raise conflict("Mark the delivery as Arrived first", "INVALID_STATE")
 
     if delivery.routeId and delivery.stopOrder is not None and not allow_skip:
+        # One row is enough to refuse; the app only reads the error code (details list the first open stop).
         earlier = await db.delivery.find_many(
             where={"routeId": delivery.routeId, "stopOrder": {"lt": delivery.stopOrder}, "status": {"in": ["pending", "in_progress"]}},
-            order={"stopOrder": "asc"},
+            order={"stopOrder": "asc"}, take=1,
         )
         if earlier:
             raise conflict("Earlier deliveries are still open", "EARLIER_STOPS_REMAIN",
                            [{"trackingId": stop.trackingId, "stopOrder": stop.stopOrder} for stop in earlier])
 
-    data: dict[str, Any] = {"status": "delivered", "deliveredAt": now()}
+    at = at or now()
+    data: dict[str, Any] = {"status": "delivered", "deliveredAt": at, "lastEventAt": at}
     if note:
         data["note"] = note
     saved = await save_delivery(delivery, data)
+    if audit:
+        await record_event(delivery, "deliver", "applied", "delivered", at=at, source="v1", note=note)
     if saved.routeId:
         await on_stop_finished(saved.routeId)
     return serialize_delivery(saved)
 
 
-async def fail(actor: dict, delivery_id: str, reason: str, note: Optional[str] = None) -> dict:
+async def fail(actor: dict, delivery_id: str, reason: str, note: str | None = None, *, at: Any = None, audit: bool = True) -> dict:
     _require_rider(actor)
     delivery = await find_visible(actor, delivery_id)
     if delivery.status != "in_progress":
         raise conflict("Mark the delivery as Arrived first", "INVALID_STATE")
-    saved = await save_delivery(delivery, {"status": "failed", "failedAt": now(), "failureReason": reason, "failureNote": note or None})
+    at = at or now()
+    saved = await save_delivery(delivery, {"status": "failed", "failedAt": at, "failureReason": reason, "failureNote": note or None, "lastEventAt": at})
+    if audit:
+        await record_event(delivery, "fail", "applied", "failed", at=at, source="v1", reason=reason, note=note)
     if saved.routeId:
         await on_stop_finished(saved.routeId)
     return serialize_delivery(saved)

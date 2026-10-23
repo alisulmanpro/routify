@@ -1,12 +1,12 @@
 """Response envelope, pagination and number helpers shared by every endpoint."""
 from __future__ import annotations
 
-import json
 import math
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from enum import Enum
 from typing import Any
 
+import orjson
 from starlette.responses import JSONResponse
 
 
@@ -25,11 +25,11 @@ def page_meta(page: int, limit: int, total: int) -> dict:
 
 
 def now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def today_key(at: datetime | None = None) -> str:
-    return (at or now()).astimezone(timezone.utc).strftime("%Y-%m-%d")
+    return (at or now()).astimezone(UTC).strftime("%Y-%m-%d")
 
 
 def js_round(n: float) -> int:
@@ -46,7 +46,7 @@ def iso(value: datetime | None) -> str | None:
     """Dates are sent exactly as the Node API sent them: 2026-01-31T09:15:00.000Z."""
     if value is None:
         return None
-    value = value.astimezone(timezone.utc) if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    value = value.astimezone(UTC) if value.tzinfo else value.replace(tzinfo=UTC)
     return value.strftime("%Y-%m-%dT%H:%M:%S.") + f"{value.microsecond // 1000:03d}Z"
 
 
@@ -75,8 +75,12 @@ def _clean(value: Any) -> Any:
     return value
 
 
+# Dates go through _default (iso) so they keep the Node format; int dict keys become strings as json.dumps did.
+_ORJSON_OPTIONS = orjson.OPT_PASSTHROUGH_DATETIME | orjson.OPT_NON_STR_KEYS
+
+
 def dumps(content: Any) -> bytes:
-    return json.dumps(_clean(content), default=_default, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    return orjson.dumps(_clean(content), default=_default, option=_ORJSON_OPTIONS)
 
 
 class ApiJSONResponse(JSONResponse):

@@ -63,6 +63,12 @@ npm install
 npx expo start
 ```
 
+**Shipping a rider-app fix without a store release (EAS Update):** builds listen on the channel of their EAS profile
+(`development`, `preview`, `production`). A JS-only change reaches installed apps with
+`npx eas-cli@latest update --channel production --environment production --message "<what changed>"`. The runtime
+version is a fingerprint of the native code, so an update never reaches a build whose native modules differ; after a
+native change (new module, app.json plugin) make a new build instead.
+
 ## Stack
 
 - Backend: Python + FastAPI + Prisma (prisma-client-py) + PostgreSQL

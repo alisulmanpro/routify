@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import re
 import time
 import uuid
@@ -10,6 +11,7 @@ from starlette.datastructures import Headers, MutableHeaders
 from starlette.requests import Request
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from . import metrics, redis_client, timing
 from .config import env
 from .errors import AppError, error_body
 from .http import dumps
@@ -99,7 +101,8 @@ class EdgeMiddleware:
         if len(path) > 1 and path.endswith("/"):
             scope["path"] = path.rstrip("/") or "/"
 
-        started = time.perf_counter()
+        stats = timing.RequestStats(started=time.perf_counter())
+        stats_token = timing.current_stats.set(stats)
         status_holder = {"status": 500, "started": False}
 
         async def send_wrapper(message: Message) -> None:
@@ -110,6 +113,7 @@ class EdgeMiddleware:
                     if key not in headers:
                         headers[key] = value
                 headers["x-request-id"] = request_id
+                headers["server-timing"] = stats.server_timing()
             await send(message)
 
         try:
@@ -122,8 +126,10 @@ class EdgeMiddleware:
         finally:
             status = status_holder["status"]
             level = logging.ERROR if status >= 500 else logging.WARNING if status >= 400 else logging.INFO
+            timing.current_stats.reset(stats_token)
+            metrics.record(path, status, stats.elapsed_ms())
             log(level, "request completed", reqId=request_id, method=scope.get("method"), url=_loggable_url(_raw_url(scope)) or path,
-                statusCode=status, responseTime=round((time.perf_counter() - started) * 1000))
+                statusCode=status, responseTime=round(stats.elapsed_ms()), dbQueries=stats.db_queries, dbMs=round(stats.db_ms, 1))
 
 
 # One atomic upsert per hit: the count lives in PostgreSQL, so all API workers (and restarts) share it.
@@ -137,21 +143,74 @@ RETURNING "count", GREATEST(0, CEIL(EXTRACT(EPOCH FROM ("resetAt" - timezone('ut
 """
 
 
+# Process-local windows for the high-volume limiters: no DB round trip per request. Each worker counts on its own,
+# so with N workers a key can make up to N × limit requests per window — fine for abuse protection, not for security limits.
+_MEMORY_PRUNE_AT = 50_000
+
+
+class _MemoryWindows:
+    def __init__(self):
+        self._windows: dict[str, tuple[int, float]] = {}  # key -> (count, resets at, monotonic seconds)
+
+    def hit(self, key: str, window: int) -> tuple[int, int]:
+        at = time.monotonic()
+        if len(self._windows) >= _MEMORY_PRUNE_AT:
+            self._windows = {k: v for k, v in self._windows.items() if v[1] > at}
+        count, reset_at = self._windows.get(key, (0, 0.0))
+        if reset_at <= at:
+            count, reset_at = 0, at + window
+        self._windows[key] = (count + 1, reset_at)
+        return count + 1, max(0, math.ceil(reset_at - at))
+
+    def count(self, key: str) -> int:
+        count, reset_at = self._windows.get(key, (0, 0.0))
+        return count if reset_at > time.monotonic() else 0
+
+    def clear(self) -> None:
+        self._windows.clear()
+
+
+memory_windows = _MemoryWindows()
+
+
+# One atomic round trip: count the hit, start the window on the first one, say when it resets.
+_REDIS_HIT = """
+local count = redis.call('INCR', KEYS[1])
+if count == 1 then redis.call('EXPIRE', KEYS[1], ARGV[1]) end
+local ttl = redis.call('TTL', KEYS[1])
+if ttl < 0 then redis.call('EXPIRE', KEYS[1], ARGV[1]); ttl = tonumber(ARGV[1]) end
+return {count, ttl}
+"""
+
+
 class RateLimiter:
-    """Fixed-window limiter per key (normally the client IP), shared by every worker through the database."""
+    """Fixed-window limiter per key (normally the client IP).
+
+    store="db" shares the count with every worker through PostgreSQL (security limits: sign-in, password reset, uploads);
+    store="memory" keeps it in this process (the general API limit and other high-volume limits)."""
 
     def __init__(self, name: str, window_seconds: int, limit: int, message: str = "Too many requests. Please slow down and try again shortly.",
-                 *, enforce: bool | None = None):
+                 *, enforce: bool | None = None, store: str = "db"):
         self.name = name
         self.window = window_seconds
         self.limit = limit
         self.message = message
         self.enforce = enforce  # None: on everywhere except NODE_ENV=test
+        self.store = store
 
     async def hit(self, key: str) -> tuple[int, int]:
         """Counts one hit and returns (hits in this window, seconds until the window resets)."""
         from .db import db
 
+        # With Redis (P7.2) every limiter is shared by all processes and instances, without a database write per hit.
+        if (redis := redis_client.client()) is not None:
+            try:
+                count, ttl = await redis.eval(_REDIS_HIT, 1, redis_client.key("rl", self.name, key[:200]), self.window)
+                return int(count), max(0, int(ttl))
+            except Exception:  # noqa: BLE001 - fall back to this limiter's own store
+                redis_client.failed("rate limit")
+        if self.store == "memory":
+            return memory_windows.hit(f"{self.name}:{key}"[:300], self.window)
         rows = await db.query_raw(_HIT_SQL, f"{self.name}:{key}"[:300], self.window)
         return int(rows[0]["count"]), int(rows[0]["resetIn"])
 
@@ -164,6 +223,13 @@ class RateLimiter:
 
         if not self._enforced():
             return False
+        if (redis := redis_client.client()) is not None:
+            try:
+                return int(await redis.get(redis_client.key("rl", self.name, key[:200])) or 0) >= self.limit
+            except Exception:  # noqa: BLE001
+                redis_client.failed("rate limit")
+        if self.store == "memory":
+            return memory_windows.count(f"{self.name}:{key}"[:300]) >= self.limit
         try:
             rows = await db.query_raw("""SELECT "count" FROM "rate_limits" WHERE "key" = $1 AND "resetAt" > timezone('utc', now())""",
                                       f"{self.name}:{key}"[:300])
@@ -189,13 +255,24 @@ class RateLimiter:
         return headers
 
 
-api_limiter = RateLimiter("api", 15 * 60, 1000)
+api_limiter = RateLimiter("api", 15 * 60, 1000, store="memory")
 auth_limiter = RateLimiter("auth", 15 * 60, 40)
 upload_limiter = RateLimiter("upload", 15 * 60, 120)
 # The camera checks each label it reads; this keeps a stuck scan loop from flooding the geocoder.
-geocode_limiter = RateLimiter("geocode", 15 * 60, 200, "Too many address checks. Wait a moment and try again.")
+geocode_limiter = RateLimiter("geocode", 15 * 60, 200, "Too many address checks. Wait a moment and try again.", store="memory")
 # Suggestions are requested while the rider types, so they get a bigger allowance than full lookups.
-suggest_limiter = RateLimiter("geocode-suggest", 15 * 60, 1500, "Too many address searches. Wait a moment and try again.")
+suggest_limiter = RateLimiter("geocode-suggest", 15 * 60, 1500, "Too many address searches. Wait a moment and try again.", store="memory")
+# Per rider per day (P5.5), shared by every worker (database): caps what one account (or a stuck app loop) can spend on
+# Google. Address lookups (check, pin, picked suggestion) and suggestions while typing are counted separately.
+DAY = 24 * 60 * 60
+geocode_daily_limiter = RateLimiter("geocode-day", DAY, 600, "You have reached today's limit of address lookups. It resets within 24 hours.")
+suggest_daily_limiter = RateLimiter("suggest-day", DAY, 4000, "You have reached today's limit of address searches. It resets within 24 hours.")
+
+
+async def limit_rider(actor: dict, limiter: RateLimiter) -> None:
+    await limiter.check(actor["id"])
+
+
 # Registration has to say when an email is taken (it signs the rider straight in), so cap how often one IP can learn that.
 email_taken_limiter = RateLimiter("email-taken", 60 * 60, 5, "Too many sign-up attempts. Please try again later or sign in instead.")
 # Keyed by the email address, not the IP: caps the codes one inbox can receive.
@@ -207,13 +284,13 @@ async def limit(request: Request, limiter: RateLimiter) -> None:
 
 
 class ApiRateLimitMiddleware:
-    """Applies the general /api/v1 limit (inside CORS, so preflight requests are never counted)."""
+    """Applies the general /api/v1 and /api/v2 limit (inside CORS, so preflight requests are never counted)."""
 
     def __init__(self, app: ASGIApp):
         self.app = app
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] != "http" or not scope.get("path", "").startswith("/api/v1"):
+        if scope["type"] != "http" or not scope.get("path", "").startswith(("/api/v1", "/api/v2")):
             return await self.app(scope, receive, send)
         try:
             headers = await api_limiter.check(scope.get("state", {}).get("ip", ""))
@@ -234,7 +311,7 @@ class ApiRateLimitMiddleware:
 
 JSON_BODY_LIMIT = 1024 * 1024
 UPLOAD_BODY_LIMIT = 11 * 1024 * 1024  # largest upload (10 MB document) plus multipart overhead
-_UPLOAD_PATH = re.compile(r"^/api/v1/deliveries/(import/(pdf|file)|[0-9a-fA-F]{24}/proof)$")
+_UPLOAD_PATH = re.compile(r"^/api/(v1/deliveries/(import/(pdf|file)|[0-9a-fA-F]{24}/proof)|v2/uploads/proof)$")
 
 
 class BodyTooLarge(AppError):

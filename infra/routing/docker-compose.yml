@@ -1,0 +1,29 @@
+# Routing proof of concept (Phase 6a): OSRM (road distances/times from OpenStreetMap, Ireland) + VROOM (route
+# optimisation on top of OSRM). Local only: ports are bound to 127.0.0.1. Run scripts/prepare-ireland.sh once first.
+#
+#   cp .env.example .env && ./scripts/prepare-ireland.sh && docker compose up -d
+#   curl "http://127.0.0.1:5000/route/v1/bike/-6.26,53.34;-6.25,53.35"     # OSRM
+#   curl -X POST http://127.0.0.1:3000 -H 'Content-Type: application/json' -d @bench/sample-vroom.json   # VROOM
+services:
+  osrm:
+    image: ${OSRM_IMAGE:-ghcr.io/project-osrm/osrm-backend:v26.4.0}
+    # MLD: the algorithm OSRM's docs pair with osrm-partition/osrm-customize. One profile per data set (OSRM_PROFILE).
+    command: osrm-routed --algorithm mld --max-table-size ${OSRM_MAX_TABLE_SIZE:-2500} /data/ireland.osrm
+    volumes:
+      - ./data:/data:ro
+    ports:
+      - "127.0.0.1:5000:5000"
+    restart: unless-stopped
+
+  vroom:
+    image: ${VROOM_IMAGE:-ghcr.io/vroom-project/vroom-docker:v1.14.0}
+    # vroom-express (HTTP on 3000) runs the vroom solver; road times/distances come from the osrm service above.
+    environment:
+      VROOM_ROUTER: osrm
+    volumes:
+      - ./vroom-conf:/conf
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      - osrm
+    restart: unless-stopped

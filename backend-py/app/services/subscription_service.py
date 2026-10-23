@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import calendar
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from ..db import db
@@ -56,7 +56,7 @@ async def create_inactive_subscription(user_id: str) -> Any:
 
 def month_start() -> datetime:
     d = now()
-    return datetime(d.year, d.month, 1, tzinfo=timezone.utc)
+    return datetime(d.year, d.month, 1, tzinfo=UTC)
 
 
 async def get_usage(actor: dict, client: Any = None) -> dict:

@@ -9,7 +9,7 @@ import json
 import math
 import re
 from datetime import date
-from typing import Annotated, Any, ClassVar, Literal, Optional
+from typing import Annotated, Any, ClassVar, Literal
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, StringConstraints, ValidationError, model_validator
 from starlette.requests import Request
@@ -82,7 +82,7 @@ def contains_text(s: str) -> dict:
     return {"contains": escaped, "mode": "insensitive"}
 
 
-def Trimmed(lo: int, hi: int):  # noqa: N802 - reads like a type
+def Trimmed(lo: int, hi: int):
     return Annotated[str, StringConstraints(strip_whitespace=True, min_length=lo, max_length=hi)]
 
 
@@ -93,7 +93,7 @@ Email = Annotated[str, StringConstraints(max_length=254), AfterValidator(_email)
 Money = Annotated[float, Field(ge=0, le=1_000_000_000), AfterValidator(_finite)]
 Currency = Literal["USD", "GBP", "EUR", "PKR", "INR"]
 Preference = Literal["smart", "nearest_first", "shortest"]
-OptionalText = lambda hi: Optional[Annotated[str, StringConstraints(strip_whitespace=True, max_length=hi)]]  # noqa: E731
+OptionalText = lambda hi: Annotated[str, StringConstraints(strip_whitespace=True, max_length=hi)] | None
 
 
 class IdParams(Schema):
@@ -101,8 +101,8 @@ class IdParams(Schema):
 
 
 class Pagination(Schema):
-    page: Optional[Annotated[int, Field(ge=1, le=1_000_000)]] = None
-    limit: Optional[Annotated[int, Field(ge=1, le=100)]] = None
+    page: Annotated[int, Field(ge=1, le=1000000)] | None = None
+    limit: Annotated[int, Field(ge=1, le=100)] | None = None
 
 
 # ---- parsing ----
@@ -115,8 +115,7 @@ def _issues(part: str, error: ValidationError) -> list[dict]:
     for e in error.errors():
         path = ".".join(str(p) for p in e.get("loc", ()) if p != "__root__")
         message = e.get("msg", "Invalid value")
-        if message.startswith("Value error, "):
-            message = message[len("Value error, "):]
+        message = message.removeprefix("Value error, ")
         if e.get("type") == "missing":
             message = "Required"
         out.append({"location": part, "path": path, "message": message})
@@ -169,17 +168,16 @@ async def validate(request: Request, *, params: type[Schema] | None = None, quer
         payload = await read_json(request)
         sources.append(("body", body, payload if payload is not None else (body_default if body_default is not None else {})))
     for part, schema, data in sources:
+        if not isinstance(data, dict):
+            issues.append({"location": part, "path": "", "message": "Expected object"})
+            continue
         try:
-            if not isinstance(data, dict):
-                raise ValueError
             if _has_null_byte(data):
                 issues.append({"location": part, "path": "", "message": "Text must not contain null characters"})
                 continue
             valid[part] = schema.model_validate(data)
         except ValidationError as error:
             issues.extend(_issues(part, error))
-        except ValueError:
-            issues.append({"location": part, "path": "", "message": "Expected object"})
     if issues:
         raise validation_error(issues)
     return valid

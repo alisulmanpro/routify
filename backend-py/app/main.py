@@ -10,58 +10,49 @@ from fastapi.exceptions import RequestValidationError
 from prisma.errors import UniqueViolationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.cors import CORSMiddleware
+from starlette.middleware.gzip import DEFAULT_EXCLUDED_CONTENT_TYPES, GZipMiddleware
 
+from . import metrics, timing
 from .config import env
 from .db import connect, disconnect, is_ready
 from .errors import AppError, error_body
 from .http import ApiJSONResponse, respond
 from .logger import log
 from .middleware import ApiRateLimitMiddleware, BodyLimitMiddleware, EdgeMiddleware
+from .observability import init_sentry
 from .openapi import install_openapi
-from .routers import admin, auth, billing_webhooks, deliveries, rider_side
+from .routers import admin, auth, billing_webhooks, deliveries, rider_side, v2
+from .services import maintenance
 from .services.subscription_service import ensure_default_plans
-
-HOUR = 3600
 
 
 async def run_maintenance() -> None:
-    """Hourly: expire lapsed subscriptions and drop stale cache/token rows (MongoDB did the latter with TTL indexes)."""
-    from datetime import timedelta
-
-    from .db import db
-    from .http import now
-    from .services.subscription_service import sweep_subscriptions
-
+    """The hourly housekeeping, now run by the worker (services/maintenance.py); kept here for scripts and tests."""
     try:
-        expired = await sweep_subscriptions()
-        if expired:
-            log(logging.INFO, "Expired lapsed subscriptions", expired=expired)
-        await db.geocodecache.delete_many(where={"expiresAt": {"lt": now()}})
-        await db.refreshtoken.delete_many(where={"expiresAt": {"lt": now() - timedelta(days=7)}})
-        await db.passwordreset.delete_many(where={"expiresAt": {"lt": now() - timedelta(days=1)}})
-        await db.ratelimit.delete_many(where={"resetAt": {"lt": now()}, "OR": [{"lockedUntil": None}, {"lockedUntil": {"lt": now()}}]})
+        await maintenance.run_maintenance()
     except Exception:  # noqa: BLE001
         log(logging.ERROR, "Maintenance job failed", exc_info=True)
 
 
-async def _jobs_loop() -> None:
-    while True:
-        await run_maintenance()
-        await asyncio.sleep(HOUR)
-
-
 def create_app(*, run_jobs: bool = True) -> FastAPI:
+    """`run_jobs` is kept for callers; scheduled work (maintenance) runs in the worker since P7.3, never in the API."""
+    del run_jobs
+    timing.install()  # Server-Timing and per-request DB counts (P0.7)
+    init_sentry("api")
+
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
         await connect()
         await ensure_default_plans()
-        task = asyncio.create_task(_jobs_loop()) if run_jobs else None
         log(logging.INFO, f"Delivery Planner API listening on :{env.PORT} ({env.NODE_ENV})")
+        # Request counts and latencies per minute for the worker's alerts (P7.6).
+        stop_metrics = asyncio.Event()
+        flusher = asyncio.create_task(metrics.run_flusher(stop_metrics))
         try:
             yield
         finally:
-            if task:
-                task.cancel()
+            stop_metrics.set()
+            await flusher
             await disconnect()
 
     app = FastAPI(title="Routify API", version="2.0.0", lifespan=lifespan, redirect_slashes=False,
@@ -102,6 +93,7 @@ def create_app(*, run_jobs: bool = True) -> FastAPI:
                    rider_side.rider_router, rider_side.reports_router, rider_side.subscriptions_router, billing_webhooks.router, admin.router):
         api.include_router(router)
     app.include_router(api)
+    app.include_router(v2.router, prefix="/api/v2")
     if not env.is_production:
         install_openapi(app)
 
@@ -112,6 +104,8 @@ def create_app(*, run_jobs: bool = True) -> FastAPI:
         CORSMiddleware, allow_origins=list(env.cors_origins), allow_credentials=True, allow_methods=["GET", "POST", "PATCH", "PUT", "DELETE"],
         allow_headers=["Content-Type", "Authorization", "X-Requested-With", "X-Request-Id"], expose_headers=["X-Request-Id"], max_age=600,
     )
+    # JSON (route lists especially) shrinks several times; photos and PDFs are already compressed, so they are sent as they are.
+    app.add_middleware(GZipMiddleware, minimum_size=1000, compresslevel=6, exclude_content_types=(*DEFAULT_EXCLUDED_CONTENT_TYPES, "application/pdf"))
     app.add_middleware(EdgeMiddleware)
     return app
 

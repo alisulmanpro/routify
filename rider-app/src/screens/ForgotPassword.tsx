@@ -7,6 +7,7 @@ import { ApiRequestError, API_URL, get, post } from '../lib/api';
 import type { PublicConfig } from '../lib/types';
 import { Screen } from '../components/Kit';
 import { ErrorBanner, PButton, PInput, SectionLabel } from '../components/Premium';
+import { AUTOFILL } from '../lib/inputs';
 import { premium as c, premiumRadius as r } from '../lib/theme';
 
 type Step = 'email' | 'code' | 'password';
@@ -84,7 +85,7 @@ export default function ForgotPassword({ initialEmail = '', onBack }: { initialE
           {step === 'email' ? (
             <>
               <SectionLabel>Email</SectionLabel>
-              <PInput icon="mail-outline" autoCapitalize="none" keyboardType="email-address" autoComplete="email" value={email} onChangeText={setEmail}
+              <PInput icon="mail-outline" {...AUTOFILL.email} autoCapitalize="none" keyboardType="email-address" value={email} onChangeText={setEmail}
                 placeholder="you@example.com" returnKeyType="send" onSubmitEditing={() => { if (email.trim()) void sendCode(); }} />
               <PButton title="Send code" icon="send-outline" onPress={sendCode} loading={busy} disabled={!email.trim()} chevron style={{ marginTop: 22 }} />
             </>
@@ -93,7 +94,7 @@ export default function ForgotPassword({ initialEmail = '', onBack }: { initialE
           {step === 'code' ? (
             <>
               <SectionLabel>6-digit code</SectionLabel>
-              <PInput icon="keypad-outline" keyboardType="number-pad" maxLength={6} autoComplete="one-time-code" textContentType="oneTimeCode"
+              <PInput icon="keypad-outline" keyboardType="number-pad" maxLength={6} {...AUTOFILL.oneTimeCode}
                 value={code} onChangeText={(v) => setCode(v.replace(/\D/g, ''))} placeholder="123456"
                 returnKeyType="go" onSubmitEditing={() => { if (code.length === 6) void verifyCode(); }} />
               <PButton title="Verify code" icon="checkmark-circle-outline" onPress={verifyCode} loading={busy} disabled={code.length !== 6} chevron style={{ marginTop: 22 }} />
@@ -110,11 +111,11 @@ export default function ForgotPassword({ initialEmail = '', onBack }: { initialE
             <View style={{ gap: 14 }}>
               <View>
                 <SectionLabel>{`New password (min ${minLength} characters)`}</SectionLabel>
-                <PInput icon="lock-closed-outline" secureTextEntry autoComplete="new-password" value={password} onChangeText={setPassword} placeholder="••••••••" />
+                <PInput icon="lock-closed-outline" {...AUTOFILL.newPassword} secureTextEntry value={password} onChangeText={setPassword} placeholder="••••••••" />
               </View>
               <View>
                 <SectionLabel>Confirm new password</SectionLabel>
-                <PInput icon="shield-checkmark-outline" secureTextEntry autoComplete="new-password" value={confirm} onChangeText={setConfirm} placeholder="••••••••"
+                <PInput icon="shield-checkmark-outline" {...AUTOFILL.newPassword} secureTextEntry value={confirm} onChangeText={setConfirm} placeholder="••••••••"
                   returnKeyType="go" onSubmitEditing={() => { if (password && confirm) void resetPassword(); }} />
               </View>
               <PButton title="Reset password & sign in" icon="log-in-outline" onPress={resetPassword} loading={busy} disabled={!password || !confirm} chevron style={{ marginTop: 8 }} />

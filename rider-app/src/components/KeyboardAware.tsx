@@ -1,5 +1,6 @@
 import { createContext, forwardRef, useCallback, useContext, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import { Keyboard, Platform, ScrollView, StyleSheet, TextInput, type KeyboardEvent, type TextInputProps, type NativeScrollEvent, type NativeSyntheticEvent, type ScrollViewProps } from 'react-native';
+import { iosNoAutofill } from '../lib/inputs';
 
 /**
  * A ScrollView that keeps the focused input above the on-screen keyboard.
@@ -22,7 +23,7 @@ export const useRevealOnFocus = () => useContext(KeyboardAwareContext);
 /** A plain TextInput that keeps itself above the keyboard when it gains focus inside a KeyboardAwareScrollView. */
 export const RevealingTextInput = forwardRef<TextInput, TextInputProps>(function RevealingTextInput(props, ref) {
   const reveal = useRevealOnFocus();
-  return <TextInput ref={ref} {...props} onFocus={(e) => { reveal(); props.onFocus?.(e); }} />;
+  return <TextInput ref={ref} {...iosNoAutofill(props.secureTextEntry)} {...props} onFocus={(e) => { reveal(); props.onFocus?.(e); }} />;
 });
 
 export const KeyboardAwareScrollView = forwardRef<ScrollView, ScrollViewProps>(function KeyboardAwareScrollView(

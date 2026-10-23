@@ -9,8 +9,12 @@ services:
     region: ohio                   # same area as the Neon database (aws us-east-2)
     rootDir: backend-py
     # Migrations run during the build (pre-deploy commands need a paid plan). They only ever add to the schema.
-    buildCommand: pip install -r requirements.txt && prisma generate && prisma migrate deploy
-    startCommand: python -m app
+    # They use DIRECT_URL (Neon's direct host); until it is set in the dashboard they fall back to DATABASE_URL.
+    buildCommand: pip install -r requirements.txt && prisma generate && DIRECT_URL="${DIRECT_URL:-$DATABASE_URL}" prisma migrate deploy
+    # Two processes: the worker (route optimisation jobs, python -m app.worker) and the API. Heavy planning never runs
+    # in the API process. If the worker dies, the loop starts it again after 5 s. On a paid plan, move the worker to its
+    # own Render "worker" service (Render then restarts it) and set this back to `python -m app` (ISSUE-32).
+    startCommand: sh -c "(while true; do python -m app.worker; echo 'worker exited; restarting in 5 s' >&2; sleep 5; done) & exec python -m app"
     healthCheckPath: /ready
     envVars:
       - key: NODE_ENV
@@ -26,7 +30,9 @@ services:
       - key: TRUST_PROXY
         value: "1"
 
-      - key: DATABASE_URL           # Neon connection string (...?sslmode=require&channel_binding=require)
+      - key: DATABASE_URL           # Neon pooled connection string: "-pooler" host, ...?sslmode=require&channel_binding=require&pgbouncer=true
+        sync: false
+      - key: DIRECT_URL             # Neon direct connection string (no "-pooler"), used only by prisma migrate deploy
         sync: false
       - key: JWT_ACCESS_SECRET
         generateValue: true
@@ -37,6 +43,40 @@ services:
       # Allowed browser origins (the admin console). The mobile app does not need CORS.
       - key: CORS_ORIGINS
         value: http://localhost:5173
+
+      # Files in Cloudflare R2 (S3-compatible). Copy existing files first: python -m scripts.migrate_files_to_s3.
+      - key: S3_ENDPOINT              # https://<account-id>.r2.cloudflarestorage.com
+        sync: false
+      - key: S3_BUCKET
+        sync: false
+      - key: S3_ACCESS_KEY_ID
+        sync: false
+      - key: S3_SECRET_ACCESS_KEY
+        sync: false
+      - key: S3_REGION
+        value: auto
+
+      # Redis: rate limits and caches shared by all API processes/instances (Render Key Value or Upstash).
+      - key: REDIS_URL
+        sync: false
+
+      # Error reporting (Sentry) for the API and the worker. Empty = off.
+      - key: SENTRY_DSN
+        sync: false
+
+      # Log shipping (e.g. Better Stack HTTP source) and alerts (Slack-compatible webhook). Empty = off.
+      - key: LOG_SHIP_URL
+        sync: false
+      - key: LOG_SHIP_TOKEN
+        sync: false
+      - key: ALERT_WEBHOOK_URL
+        sync: false
+
+      # Rider app versions (GET /config): below MIN the app must update; below LATEST it suggests updating.
+      - key: MIN_APP_VERSION
+        value: "1.0.0"
+      - key: LATEST_APP_VERSION
+        value: "1.0.0"
 
       - key: GEOCODING_PROVIDER
         value: google

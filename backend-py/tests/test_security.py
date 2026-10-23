@@ -331,6 +331,41 @@ async def test_suspension_kills_access_and_refresh_immediately(client):
     assert (await client.patch(f"/api/v1/admin/riders/{admin_row.id}", headers=admin_auth, json={"status": "suspended"})).status_code == 404
 
 
+async def test_cached_account_skips_lookups_but_changes_apply_at_once(client, monkeypatch):
+    from app import auth as auth_module
+
+    body, auth = await rider(client, "cached-account@example.com")
+    admin_auth, _ = await make_admin(client, "cache-admin@example.com")
+    client.cookies.clear()
+    assert (await client.get("/api/v1/auth/me", headers=auth)).status_code == 200
+
+    lookups = []
+    actions = type(auth_module.db.user)
+    find_unique = actions.find_unique
+
+    async def counting_find_unique(self, *args, **kwargs):
+        lookups.append(kwargs.get("where"))
+        return await find_unique(self, *args, **kwargs)
+
+    monkeypatch.setattr(actions, "find_unique", counting_find_unique)
+    for _ in range(3):
+        assert (await client.get("/api/v1/auth/me", headers=auth)).status_code == 200
+    # Only /auth/me's own profile read is left: authenticate() answered from the cache (it was 2 lookups per request).
+    assert len([w for w in lookups if w == {"id": body["user"]["id"]}]) == 3
+
+    # A password change revokes old tokens straight away, even though the account was cached.
+    changed = await client.post("/api/v1/auth/change-password", headers=auth,
+                                json={"currentPassword": PASSWORD, "newPassword": PASSWORD + "x", "confirmPassword": PASSWORD + "x"})
+    assert changed.status_code == 200, changed.text
+    assert (await client.get("/api/v1/auth/me", headers=auth)).json()["error"]["code"] == "TOKEN_REVOKED"
+    fresh = {"Authorization": f"Bearer {changed.json()['data']['accessToken']}"}
+    assert (await client.get("/api/v1/auth/me", headers=fresh)).status_code == 200
+
+    # So does a suspension.
+    assert (await client.patch(f"/api/v1/admin/riders/{body['user']['id']}", headers=admin_auth, json={"status": "suspended"})).status_code == 200
+    assert (await client.get("/api/v1/auth/me", headers=fresh)).status_code == 403
+
+
 # ---------------------------------------------------------------- refresh tokens / cookies / CSRF
 
 async def test_refresh_token_edge_cases(client):
@@ -712,6 +747,18 @@ async def test_rider_endpoints_happy_path_smoke(client):
 
 # ---------------------------------------------------------------- transport headers / CORS / info leaks
 
+async def test_large_json_is_gzipped_small_and_identity_requests_are_not(client):
+    _, auth = await rider(client, "gzip@example.com")
+    items = [delivery(f"GZ-{i}", f"{i} Long Enough Street, Somewhere real enough") for i in range(8)]
+    assert (await client.post("/api/v1/deliveries/bulk", headers=auth, json={"items": items})).status_code == 201
+
+    zipped = await client.get("/api/v1/deliveries", headers={**auth, "Accept-Encoding": "gzip"})
+    assert zipped.headers.get("content-encoding") == "gzip" and zipped.json()["success"] is True
+    plain = await client.get("/api/v1/deliveries", headers={**auth, "Accept-Encoding": "identity"})
+    assert "content-encoding" not in plain.headers and plain.json() == zipped.json()
+    assert "content-encoding" not in (await client.get("/health", headers={"Accept-Encoding": "gzip"})).headers
+
+
 async def test_security_headers_cors_and_no_debug_leaks(client):
     res = await client.get("/health")
     for header in ("content-security-policy", "x-content-type-options", "x-frame-options", "strict-transport-security", "referrer-policy"):
@@ -754,6 +801,24 @@ async def test_rate_limits_are_shared_across_workers_and_atomic(client):
         assert sum(not isinstance(r, Exception) for r in results) == 3
     finally:
         await db.ratelimit.delete_many(where={"key": {"startswith": "shared-test:"}})
+
+
+async def test_general_limits_count_in_memory_without_db_writes(client):
+    from app.middleware import RateLimiter, api_limiter, auth_limiter, memory_windows, upload_limiter
+
+    assert api_limiter.store == "memory"
+    assert auth_limiter.store == "db" and upload_limiter.store == "db"
+    limiter = RateLimiter("memory-test", 60, 3, enforce=True, store="memory")
+    try:
+        for remaining in (2, 1, 0):
+            assert f"r={remaining};" in (await limiter.check("203.0.113.10"))["RateLimit"]
+        with pytest.raises(Exception) as blocked:
+            await limiter.check("203.0.113.10")
+        assert getattr(blocked.value, "code", None) == "RATE_LIMITED"
+        assert await limiter.exceeded("203.0.113.10") and not await limiter.exceeded("203.0.113.11")
+        assert not await db.ratelimit.find_first(where={"key": {"startswith": "memory-test:"}})
+    finally:
+        memory_windows.clear()
 
 
 async def test_registration_cannot_be_used_to_enumerate_accounts_at_scale(client):

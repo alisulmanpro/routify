@@ -5,7 +5,7 @@ import hashlib
 import hmac
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from ...config import env
 from ...errors import AppError
@@ -61,7 +61,7 @@ def account_token(user_id: str) -> str:
 
 
 def from_millis(value: int | str | None) -> datetime | None:
-    return datetime.fromtimestamp(int(value) / 1000, tz=timezone.utc) if value not in (None, "") else None
+    return datetime.fromtimestamp(int(value) / 1000, tz=UTC) if value not in (None, "") else None
 
 
 def from_rfc3339(value: str | None) -> datetime | None:
@@ -73,7 +73,7 @@ def from_rfc3339(value: str | None) -> datetime | None:
         head, rest = text.split(".", 1)
         digits = "".join(ch for ch in rest if ch.isdigit())
         text = f"{head}.{digits[:6].ljust(6, '0')}{rest[len(digits):]}"
-    return datetime.fromisoformat(text).astimezone(timezone.utc)
+    return datetime.fromisoformat(text).astimezone(UTC)
 
 
 def mock_product_id(plan: str, cycle: str) -> str:

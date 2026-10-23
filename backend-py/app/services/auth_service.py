@@ -9,6 +9,7 @@ from typing import Any
 
 from prisma.errors import UniqueViolationError
 
+from ..auth import invalidate_user
 from ..background import spawn
 from ..config import env
 from ..db import db
@@ -16,6 +17,7 @@ from ..errors import AppError, conflict, forbidden, unauthorized, unprocessable,
 from ..http import now
 from ..ids import new_id
 from ..security import generate_refresh_token, hash_password, hash_password_sync, hash_token, sign_access_token, verify_password
+from . import jobs
 from .audit_service import audit
 from .geocoding_service import detect_service_area, find_service_area
 from .mailer import send_email, send_in_background
@@ -60,7 +62,7 @@ async def _assert_password_policy(password: str) -> None:
         raise validation_error([{"path": "password", "message": message}], message)
 
 
-async def create_rider_account(*, full_name: str, email: str, password: str, currency: str, phone: str | None = None) -> Any:
+async def create_rider_account(*, full_name: str, email: str, password: str, phone: str | None = None) -> Any:
     """Creates a rider account with its own free-trial subscription.
 
     Every rider is fully independent: there is no organization or team concept anywhere in this app.
@@ -68,8 +70,6 @@ async def create_rider_account(*, full_name: str, email: str, password: str, cur
     """
     await _assert_password_policy(password)
     settings = await get_settings()
-    if currency not in settings["currencies"]:
-        raise validation_error([{"path": "currency", "message": "Currency is not enabled"}])
     email = email.lower()
     if await db.user.find_unique(where={"email": email}):
         raise conflict("An account with this email already exists", "EMAIL_TAKEN")
@@ -79,7 +79,7 @@ async def create_rider_account(*, full_name: str, email: str, password: str, cur
     try:
         user = await db.user.create(data={
             "id": user_id, "fullName": full_name, "phone": phone, "email": email, "passwordHash": password_hash, "role": "rider",
-            "currency": currency, "routePreference": settings["route"]["defaultPreference"],
+            "currency": settings["defaultCurrency"], "routePreference": settings["route"]["defaultPreference"],
         })
     except UniqueViolationError:
         raise conflict("An account with this email already exists", "EMAIL_TAKEN") from None
@@ -101,7 +101,7 @@ async def _issue_tokens(user: Any, *, family: str | None = None, user_agent: str
 
 
 async def register(data: dict, ctx: dict) -> dict:
-    user = await create_rider_account(full_name=data["fullName"], email=data["email"], password=data["password"], currency=data["currency"])
+    user = await create_rider_account(full_name=data["fullName"], email=data["email"], password=data["password"])
     tokens = await _issue_tokens(user, user_agent=ctx.get("userAgent"))
     await _send_welcome(user)
     return {"user": serialize_user(user), **tokens}
@@ -250,10 +250,8 @@ async def update_profile(user_id: str, patch: dict) -> dict:
             if not area:
                 raise validation_error([{"path": "city", "message": 'We could not find that city. Try adding the country, e.g. "Lahore, Pakistan".'}])
             data.update(area_columns(area, "manual"))
-    if data.get("currency"):
-        if data["currency"] not in (await get_settings())["currencies"]:
-            raise validation_error([{"path": "currency", "message": "Currency is not enabled"}])
     user = await db.user.update(where={"id": user_id}, data=data) if data else await db.user.find_unique(where={"id": user_id})
+    await invalidate_user(user_id)
     return serialize_user(user)
 
 
@@ -282,6 +280,7 @@ async def change_password(user_id: str, current_password: str, new_password: str
         raise unprocessable("Current password is incorrect", "INVALID_CREDENTIALS")
     await db.refreshtoken.update_many(where={"userId": user.id, "revokedAt": None}, data={"revokedAt": now()})
     user = await db.user.update(where={"id": user.id}, data={"passwordHash": await hash_password(new_password), "tokenVersion": {"increment": 1}})
+    await invalidate_user(user.id)
     await _notify_password_changed(user)
     return {"changed": True, **await _issue_tokens(user, user_agent=ctx.get("userAgent"))}
 
@@ -307,8 +306,14 @@ def _invalid_reset_code() -> AppError:
 
 
 def request_password_reset(email: str, ctx: dict) -> None:
-    """Answers at once and does the work in the background: the response looks and takes the same whether or not the email exists."""
-    spawn(_send_reset_code(email.lower(), ctx.get("ip")), "password reset email")
+    """Answers at once and does the work in the worker: the response looks and takes the same whether or not the email exists.
+    The job holds only the address; the code is made (and only its HMAC stored) when the job runs."""
+    spawn(jobs.enqueue("password_reset_code", {"email": email.lower(), "ip": ctx.get("ip")}), "queue password reset email")
+
+
+@jobs.handler("password_reset_code", retries=2)
+async def _password_reset_job(payload: dict) -> None:
+    await _send_reset_code(payload["email"], payload.get("ip"))
 
 
 async def _send_reset_code(email: str, ip: str | None) -> None:
@@ -364,6 +369,7 @@ async def reset_password(email: str, code: str, new_password: str, ctx: dict) ->
     user = await db.user.update(where={"id": user.id}, data={
         "passwordHash": await hash_password(new_password), "tokenVersion": {"increment": 1}, "failedLoginCount": 0, "lockedUntil": None,
     })
+    await invalidate_user(user.id)
     await audit({"id": user.id, "email": user.email}, "auth.password_reset", ip=ctx.get("ip"))
     await _notify_password_changed(user)
     return {"reset": True}

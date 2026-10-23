@@ -23,6 +23,9 @@ def spawn(work: Awaitable[None], what: str) -> None:
 
 
 async def wait_all() -> None:
-    """Tests use this to let queued work finish before asserting on it."""
+    """Tests use this to let queued work finish before asserting on it (including the emails the worker sends)."""
+    from .services import jobs
+
     while _tasks:
         await asyncio.gather(*list(_tasks), return_exceptions=True)
+    await jobs.wait_idle(("send_email", "password_reset_code"))

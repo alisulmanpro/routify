@@ -24,6 +24,16 @@ _EMAIL_RE = re.compile(r"[^@\s]+@[^@\s]+\.[^@\s]+")
 _problems: list[str] = []
 
 
+_VERSION_RE = re.compile(r"^\d{1,4}(\.\d{1,4}){0,2}$")
+
+
+def _version(name: str, default: str) -> str:
+    value = _str(name, default) or default
+    if not _VERSION_RE.fullmatch(value):
+        _problems.append(f"  - {name}: expected a version such as 1.4.0")
+    return value
+
+
 def _str(name: str, default: str | None = None, *, required: bool = False, min_len: int = 0) -> str | None:
     value = os.environ.get(name)
     if value is None or value == "":
@@ -93,6 +103,31 @@ class Settings:
     ROUTING_PROVIDER: str
     ROUTING_TRAVEL_MODE: str
     OSRM_URL: str
+    OSRM_PROFILE: str
+    VROOM_URL: str
+    VROOM_PROFILE: str
+    PLANNER_INLINE_MAX: int
+    PLAN_JOB_WAIT_SECONDS: int
+    STORAGE_BACKEND: str
+    S3_ENDPOINT: str
+    S3_BUCKET: str
+    S3_REGION: str
+    S3_ACCESS_KEY_ID: str
+    S3_SECRET_ACCESS_KEY: str
+    REDIS_URL: str
+    REDIS_KEY_PREFIX: str
+    WEB_CONCURRENCY: int
+    GRACEFUL_SHUTDOWN_SECONDS: int
+    WORKER_CONCURRENCY: int
+    LOG_SHIP_URL: str
+    LOG_SHIP_TOKEN: str
+    ALERT_WEBHOOK_URL: str
+    ALERT_ERROR_RATE: float
+    ALERT_P95_MS: int
+    ALERT_QUEUE_BACKLOG: int
+    ALERT_GOOGLE_DAILY_USD: float
+    SENTRY_DSN: str
+    SENTRY_TRACES_SAMPLE_RATE: float
     ADMIN_EMAIL: str | None
     ADMIN_PASSWORD: str | None
     ADMIN_NAME: str
@@ -118,6 +153,8 @@ class Settings:
     GOOGLE_SERVICE_ACCOUNT_FILE: str | None
     GOOGLE_PUBSUB_AUDIENCE: str | None
     GOOGLE_PUBSUB_SERVICE_ACCOUNT: str | None
+    MIN_APP_VERSION: str
+    LATEST_APP_VERSION: str
     REVENUECAT_SECRET_API_KEY: str | None
     REVENUECAT_WEBHOOK_AUTH: str | None
     REVENUECAT_ENTITLEMENT: str
@@ -170,9 +207,49 @@ def load_settings() -> Settings:
         GEOCODING_PROVIDER=_enum("GEOCODING_PROVIDER", ("nominatim", "google", "none"), "nominatim"),
         GEOCODING_USER_AGENT=_str("GEOCODING_USER_AGENT"),
         GOOGLE_MAPS_API_KEY=_str("GOOGLE_MAPS_API_KEY"),
-        ROUTING_PROVIDER=_enum("ROUTING_PROVIDER", ("google", "osrm", "none"), "google" if _str("GOOGLE_MAPS_API_KEY") else "osrm"),
+        # Road data (matrix, geometry, navigation): osrm = our own OSRM (infra/routing, OSRM_URL), never the public demo
+        # server; google = Routes API matrix (≤ 60 points); none = straight lines.
+        ROUTING_PROVIDER=_enum("ROUTING_PROVIDER", ("google", "osrm", "none"),
+                               "osrm" if _str("OSRM_URL") else "google" if _str("GOOGLE_MAPS_API_KEY") else "none"),
         ROUTING_TRAVEL_MODE=_enum("ROUTING_TRAVEL_MODE", ("BICYCLE", "DRIVE", "TWO_WHEELER"), "BICYCLE"),
-        OSRM_URL=_str("OSRM_URL", "https://router.project-osrm.org") or "https://router.project-osrm.org",
+        OSRM_URL=(_str("OSRM_URL") or "").rstrip("/"),
+        # The profile name in OSRM URLs (one OSRM data set answers any name; it is built for OSRM_PROFILE in infra/routing).
+        OSRM_PROFILE=_str("OSRM_PROFILE", "bike") or "bike",
+        # Route optimisation by our VROOM (infra/routing); empty = the built-in Python planner only.
+        VROOM_URL=(_str("VROOM_URL") or "").rstrip("/"),
+        VROOM_PROFILE=_str("VROOM_PROFILE", "bike") or "bike",
+        # Plans up to this many stops run inside the API (a few ms); larger ones always go to the worker process.
+        PLANNER_INLINE_MAX=_int("PLANNER_INLINE_MAX", 8, lo=0, hi=12),
+        # How long a v1 build/optimise request waits for the worker before answering 503.
+        PLAN_JOB_WAIT_SECONDS=_int("PLAN_JOB_WAIT_SECONDS", 90, lo=5, hi=600),
+        # Files (proof photos, report PDFs): local disk (STORAGE_DIR) for development, or an S3-compatible bucket
+        # (Cloudflare R2: S3_ENDPOINT=https://<account>.r2.cloudflarestorage.com, S3_REGION=auto). s3 when S3_BUCKET is set.
+        STORAGE_BACKEND=_enum("STORAGE_BACKEND", ("local", "s3"), "s3" if _str("S3_BUCKET") else "local"),
+        S3_ENDPOINT=(_str("S3_ENDPOINT") or "").rstrip("/"),
+        S3_BUCKET=_str("S3_BUCKET") or "",
+        S3_REGION=_str("S3_REGION", "auto") or "auto",
+        S3_ACCESS_KEY_ID=_str("S3_ACCESS_KEY_ID") or "",
+        S3_SECRET_ACCESS_KEY=_str("S3_SECRET_ACCESS_KEY") or "",
+        # Shared rate limits, caches and request metrics across API instances; empty = per-process (local development).
+        REDIS_URL=_str("REDIS_URL") or "",
+        REDIS_KEY_PREFIX=_str("REDIS_KEY_PREFIX", "routify:") or "routify:",
+        # Uvicorn worker processes per instance, and how long a stopping instance lets running requests finish.
+        WEB_CONCURRENCY=_int("WEB_CONCURRENCY", 1, lo=1, hi=32),
+        GRACEFUL_SHUTDOWN_SECONDS=_int("GRACEFUL_SHUTDOWN_SECONDS", 25, lo=1, hi=300),
+        # Jobs one worker process runs at a time (emails and PDFs wait on the network; plans use a thread each).
+        WORKER_CONCURRENCY=_int("WORKER_CONCURRENCY", 2, lo=1, hi=16),
+        # Log shipping: JSON lines POSTed in batches (e.g. Better Stack / Logtail HTTP source). Empty = stdout only.
+        LOG_SHIP_URL=_str("LOG_SHIP_URL") or "",
+        LOG_SHIP_TOKEN=_str("LOG_SHIP_TOKEN") or "",
+        # Alerts (Slack-compatible incoming webhook) and their thresholds; checked every 5 minutes by the worker.
+        ALERT_WEBHOOK_URL=_str("ALERT_WEBHOOK_URL") or "",
+        ALERT_ERROR_RATE=float(_str("ALERT_ERROR_RATE", "0.02") or 0.02),
+        ALERT_P95_MS=_int("ALERT_P95_MS", 1000, lo=50, hi=60_000),
+        ALERT_QUEUE_BACKLOG=_int("ALERT_QUEUE_BACKLOG", 10, lo=1, hi=100_000),
+        ALERT_GOOGLE_DAILY_USD=float(_str("ALERT_GOOGLE_DAILY_USD", "20") or 20),
+        # Error reporting (P0.8). Empty = off. Traces: the share of requests sampled for performance (0 = errors only).
+        SENTRY_DSN=_str("SENTRY_DSN") or "",
+        SENTRY_TRACES_SAMPLE_RATE=min(1.0, max(0.0, float(_str("SENTRY_TRACES_SAMPLE_RATE", "0.05") or 0))),
         ADMIN_EMAIL=admin_email,
         ADMIN_PASSWORD=admin_password,
         ADMIN_NAME=_str("ADMIN_NAME", "Platform Admin") or "Platform Admin",
@@ -199,6 +276,9 @@ def load_settings() -> Settings:
         GOOGLE_SERVICE_ACCOUNT_FILE=_str("GOOGLE_SERVICE_ACCOUNT_FILE"),
         GOOGLE_PUBSUB_AUDIENCE=_str("GOOGLE_PUBSUB_AUDIENCE"),
         GOOGLE_PUBSUB_SERVICE_ACCOUNT=_str("GOOGLE_PUBSUB_SERVICE_ACCOUNT"),
+        # The app shows a blocking "Update the app" screen below MIN_APP_VERSION and a gentle prompt below LATEST_APP_VERSION.
+        MIN_APP_VERSION=_version("MIN_APP_VERSION", "1.0.0"),
+        LATEST_APP_VERSION=_version("LATEST_APP_VERSION", "1.0.0"),
         REVENUECAT_SECRET_API_KEY=_str("REVENUECAT_SECRET_API_KEY"),
         REVENUECAT_WEBHOOK_AUTH=_str("REVENUECAT_WEBHOOK_AUTH", min_len=16),
         REVENUECAT_ENTITLEMENT=_str("REVENUECAT_ENTITLEMENT", "routify_pro") or "routify_pro",
@@ -212,6 +292,12 @@ def load_settings() -> Settings:
         raise ConfigError("GOOGLE_MAPS_API_KEY is required when GEOCODING_PROVIDER=google")
     if settings.ROUTING_PROVIDER == "google" and not settings.GOOGLE_MAPS_API_KEY:
         raise ConfigError("GOOGLE_MAPS_API_KEY is required when ROUTING_PROVIDER=google")
+    if settings.STORAGE_BACKEND == "s3":
+        missing = [n for n in ("S3_ENDPOINT", "S3_BUCKET", "S3_ACCESS_KEY_ID", "S3_SECRET_ACCESS_KEY") if not getattr(settings, n)]
+        if missing:
+            raise ConfigError(f"STORAGE_BACKEND=s3 needs {', '.join(missing)}")
+    if settings.ROUTING_PROVIDER == "osrm" and not settings.OSRM_URL:
+        raise ConfigError("OSRM_URL (our own OSRM, see infra/routing) is required when ROUTING_PROVIDER=osrm")
     if is_production and settings.COOKIE_SAMESITE == "none" and cookie_secure is False:
         raise ConfigError("COOKIE_SAMESITE=none requires COOKIE_SECURE=true")
     _check_email(settings)

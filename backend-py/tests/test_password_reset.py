@@ -40,6 +40,14 @@ def outbox():
     mailer.set_mailer_for_tests(None)
 
 
+async def registered(client, outbox, email, **kwargs):
+    """A rider whose "Welcome to Routify" email has been sent and cleared, so a test sees only its own emails."""
+    created = await rider(client, email, **kwargs)
+    await background.wait_all()
+    outbox.sent.clear()
+    return created
+
+
 async def forgot(client, email):
     res = await client.post("/api/v1/auth/forgot-password", json={"email": email})
     await background.wait_all()
@@ -78,7 +86,7 @@ async def test_full_reset_flow_signs_out_everywhere_and_unlocks(client, outbox):
 
 
 async def test_unknown_email_gets_the_same_answer_and_no_email(client, outbox):
-    await rider(client, "known-reset@example.com")
+    await registered(client, outbox, "known-reset@example.com")
     known = await forgot(client, "known-reset@example.com")
     unknown = await forgot(client, "nobody-here@example.com")
     assert known.status_code == unknown.status_code == 200
@@ -113,7 +121,7 @@ async def test_new_request_replaces_old_code_and_weak_password_keeps_code(client
 
 
 async def test_suspended_accounts_get_no_code(client, outbox):
-    body, _ = await rider(client, "suspended-reset@example.com")
+    body, _ = await registered(client, outbox, "suspended-reset@example.com")
     await db.user.update(where={"id": body["user"]["id"]}, data={"status": "suspended"})
     await forgot(client, "suspended-reset@example.com")
     assert not outbox.sent
@@ -192,7 +200,7 @@ def test_every_configurable_provider_is_registered():
 
 
 async def test_in_app_password_change_sends_a_notice(client, outbox):
-    _, auth = await rider(client, "change-notice@example.com", name="Ali Rider")
+    _, auth = await registered(client, outbox, "change-notice@example.com", name="Ali Rider")
     res = await client.post("/api/v1/auth/change-password", headers=auth, json={"currentPassword": PASSWORD, "newPassword": NEW_PASSWORD})
     assert res.status_code == 200
     await background.wait_all()

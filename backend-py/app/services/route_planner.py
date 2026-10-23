@@ -13,7 +13,6 @@ road distances / travel times; without one, straight-line (haversine) distance s
 from __future__ import annotations
 
 import time
-from typing import Optional
 
 from ..http import js_round, round2
 from .geo import haversine_km
@@ -27,7 +26,7 @@ START = "__start__"
 
 
 def plan_route(*, origin: dict | None, stops: list[dict], preference: str, avg_speed_kmh: float = 25, service_minutes: float = 3,
-               matrix: Optional[dict] = None) -> dict:
+               matrix: dict | None = None) -> dict:
     """matrix: {"ids": [START?, stop ids...], "durations": [[s]], "distances": [[m]]} or None."""
     if not stops:
         return {"order": [], "legs": [], "distanceKm": 0, "durationMin": 0}
@@ -79,12 +78,12 @@ def plan_route(*, origin: dict | None, stops: list[dict], preference: str, avg_s
     return {"order": order, "legs": legs, "distanceKm": round2(distance_km), "durationMin": travel + len(stops) * service_minutes}
 
 
-def _road_lookup(matrix: Optional[dict]):
+def _road_lookup(matrix: dict | None):
     if not matrix:
         return None
     index = {pid: i for i, pid in enumerate(matrix["ids"])}
 
-    def lookup(a_id: str, b_id: str) -> Optional[tuple[float, float]]:
+    def lookup(a_id: str, b_id: str) -> tuple[float, float] | None:
         i, j = index.get(a_id), index.get(b_id)
         if i is None or j is None:
             return None
@@ -112,7 +111,7 @@ def solve_open_path(table: list[list[float]]) -> list[int]:
         return _held_karp(table)
     # Local search from a few greedy starts (from the start point, then from the nearest stops), within a time budget.
     deadline = time.monotonic() + SEARCH_SECONDS
-    starts: list[Optional[int]] = [None, *sorted(range(1, n + 1), key=lambda j: table[0][j])[:max(0, min(n, 600 // n) - 1)]]
+    starts: list[int | None] = [None, *sorted(range(1, n + 1), key=lambda j: table[0][j])[:max(0, min(n, 600 // n) - 1)]]
     best: list[int] | None = None
     for first in starts:
         if best is not None and time.monotonic() > deadline:
@@ -172,7 +171,7 @@ def _nearest_neighbour(table: list[list[float]], first: int | None) -> list[int]
     return path
 
 
-def _improve(table: list[list[float]], path: list[int], deadline: Optional[float] = None) -> list[int]:
+def _improve(table: list[list[float]], path: list[int], deadline: float | None = None) -> list[int]:
     """2-opt (segment reversal) and Or-opt (move 1-3 stops elsewhere) until neither helps or `deadline` passes.
     Each candidate move is priced in O(1) from prefix sums, so costs may be asymmetric (one-way streets)."""
     seq = [0] + path  # seq[0] is the start; the path is open (no return)

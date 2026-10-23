@@ -1,11 +1,16 @@
-import { useEffect, useRef, useState } from 'react';
-import { Pressable, Text, View, type LayoutChangeEvent, type ViewStyle } from 'react-native';
-import MapView, { Marker, Polyline, PROVIDER_GOOGLE } from 'react-native-maps';
+import { memo, useEffect, useMemo, useRef, useState } from 'react';
+import { Platform, Pressable, StyleSheet, Text, View, type LayoutChangeEvent, type ViewStyle } from 'react-native';
+import MapView, { Marker, Polyline, PROVIDER_DEFAULT, PROVIDER_GOOGLE, UrlTile } from 'react-native-maps';
+import { isRunningInExpoGo } from 'expo';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
-import { premium as c } from '../lib/theme';
+import { light as l, premium as c } from '../lib/theme';
+import { LIGHT_MAP_STYLE } from '../lib/mapStyles';
+import { visibleStops } from '../lib/mapPins';
 
 export type Coordinates = { latitude: number; longitude: number };
-export type MapStop = Coordinates & { id: string; label: string; title: string; kind: 'next' | 'upcoming' | 'done' | 'failed' };
+// 'last' is the final open stop and 'current' the stop being driven to (both black on the light map, like the
+// designs; on the dark map they look like 'upcoming' and 'next').
+export type MapStop = Coordinates & { id: string; label: string; title: string; kind: 'next' | 'current' | 'upcoming' | 'last' | 'done' | 'failed' };
 export type GoogleRouteMapProps = {
   stops: MapStop[];
   position: Coordinates | null;
@@ -25,33 +30,46 @@ export type GoogleRouteMapProps = {
   // Navigation: the camera follows the rider, rotated to their direction of travel.
   follow?: boolean;
   heading?: number | null;
+  /** The light design_pref look: light map, blue numbered pins, blue route line. */
+  light?: boolean;
+  /** Draw at most this many stop pins (see visibleStops in lib/mapPins); all when unset. */
+  maxStops?: number;
 };
 
 const EDGE = { top: 60, right: 50, bottom: 60, left: 50 };
+
+// Expo Go is a prebuilt app that ignores this app's Google Maps key, so Google draws no map there. While testing in
+// Expo Go the map is drawn from free dark OpenStreetMap tiles (CARTO) instead; app builds use Google Maps with our key.
+// The CARTO tiles are for development only: their free use is limited, so release builds never load them.
+const IN_EXPO_GO = isRunningInExpoGo();
+const DEV_TILES = 'https://basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png';
+// Android only has Google; iOS falls back to Apple Maps in Expo Go.
+const PROVIDER = IN_EXPO_GO && Platform.OS === 'ios' ? PROVIDER_DEFAULT : PROVIDER_GOOGLE;
 const MARKER_COLORS: Record<MapStop['kind'], { bg: string; fg: string; border: string }> = {
   next: { bg: c.primary, fg: '#1A1206', border: '#fff' },
+  current: { bg: c.primary, fg: '#1A1206', border: '#fff' },
   upcoming: { bg: '#16223A', fg: c.text, border: c.textSecondary },
+  last: { bg: '#16223A', fg: c.text, border: c.textSecondary },
   done: { bg: c.success, fg: '#05301E', border: '#fff' },
   failed: { bg: c.danger, fg: '#fff', border: '#fff' },
 };
+const LIGHT_MARKER_COLORS: Record<MapStop['kind'], { bg: string; fg: string; border: string }> = {
+  next: { bg: l.link, fg: '#fff', border: '#fff' },
+  current: { bg: l.ink, fg: '#fff', border: '#fff' },
+  upcoming: { bg: l.link, fg: '#fff', border: '#fff' },
+  last: { bg: l.ink, fg: '#fff', border: '#fff' },
+  done: { bg: '#E4E4E7', fg: l.textLabel, border: '#fff' },
+  failed: { bg: l.danger, fg: '#fff', border: '#fff' },
+};
 
-export default function GoogleRouteMap({ stops, position, path, order, focus, style, pinning, onCenterChange, initialCenter, reveal, follow, heading }: GoogleRouteMapProps) {
+export default function GoogleRouteMap({ stops: allStops, position, path, order, focus, style, pinning, onCenterChange, initialCenter, reveal, follow, heading, light, maxStops }: GoogleRouteMapProps) {
+  const stops = useMemo(() => visibleStops(allStops, maxStops), [allStops, maxStops]);
+  const line = light ? l.link : c.primary;
   const map = useRef<MapView>(null);
   const [ready, setReady] = useState(false);
-  // Android draws custom marker views once; keep redrawing briefly so they appear, then stop for speed.
-  const [redraw, setRedraw] = useState(true);
   // Once the rider pans or zooms, automatic fitting stops until they tap the fit button.
   const userMoved = useRef(false);
   const layoutTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  useEffect(() => {
-    const timer = setTimeout(() => setRedraw(false), 800);
-    return () => clearTimeout(timer);
-  }, [stops, reveal]);
-  useEffect(() => {
-    const timer = setTimeout(() => setRedraw(true), 0);
-    return () => clearTimeout(timer);
-  }, [stops, reveal]);
 
   // Every marker (all stops and the rider) in view.
   const fit = (animated: boolean) => {
@@ -96,13 +114,15 @@ export default function GoogleRouteMap({ stops, position, path, order, focus, st
   const revealing = reveal != null && reveal < stops.length;
 
   return (
-    <View onLayout={onLayout} style={[{ height: 300, overflow: 'hidden', backgroundColor: c.surface }, style]}>
+    <View onLayout={onLayout} style={[{ height: 300, overflow: 'hidden', backgroundColor: light ? '#EEF0F3' : c.surface }, style]}>
       <MapView
         ref={map}
-        provider={PROVIDER_GOOGLE}
+        provider={PROVIDER}
+        mapType={IN_EXPO_GO && Platform.OS === 'android' ? 'none' : 'standard'}
+        userInterfaceStyle="dark"
         style={{ flex: 1 }}
         initialRegion={{ ...start, latitudeDelta: start === initialCenter ? 0.2 : 0.05, longitudeDelta: start === initialCenter ? 0.2 : 0.05 }}
-        customMapStyle={DARK_STYLE}
+        customMapStyle={light ? LIGHT_MAP_STYLE : DARK_STYLE}
         onMapReady={() => setReady(true)}
         onRegionChangeComplete={(region, details) => {
           if (details?.isGesture) userMoved.current = true;
@@ -113,50 +133,81 @@ export default function GoogleRouteMap({ stops, position, path, order, focus, st
         rotateEnabled={!!follow}
         pitchEnabled={!!follow}
       >
+        {IN_EXPO_GO && Platform.OS === 'android' ? <UrlTile urlTemplate={DEV_TILES} maximumZ={19} tileSize={256} zIndex={-1} /> : null}
+
         {revealing ? null : path.length > 1 ? (
-          <Polyline coordinates={path} strokeColor={c.primary} strokeWidth={5} />
+          <Polyline coordinates={path} strokeColor={line} strokeWidth={5} />
         ) : order.length > 1 || (position && order.length) ? (
-          <Polyline coordinates={position ? [position, ...order] : order} strokeColor={c.primary} strokeWidth={3} lineDashPattern={[10, 8]} />
+          <Polyline coordinates={position ? [position, ...order] : order} strokeColor={line} strokeWidth={3} lineDashPattern={[10, 8]} />
         ) : null}
 
-        {shown.map((s) => {
-          const col = MARKER_COLORS[s.kind];
-          const big = s.kind === 'next';
-          return (
-            <Marker key={s.id} coordinate={s} title={s.title} anchor={{ x: 0.5, y: 0.5 }} tracksViewChanges={redraw} zIndex={big ? 10 : s.kind === 'upcoming' ? 5 : 1}>
-              <View style={{ width: big ? 36 : 28, height: big ? 36 : 28, borderRadius: 18, backgroundColor: col.bg, borderWidth: big ? 3 : 2, borderColor: col.border, alignItems: 'center', justifyContent: 'center' }}>
-                {s.kind === 'done' ? <Ionicons name="checkmark" size={15} color={col.fg} />
-                  : s.kind === 'failed' ? <Ionicons name="close" size={15} color={col.fg} />
-                    : <Text style={{ color: col.fg, fontWeight: '800', fontSize: big ? 14 : 12 }}>{s.label}</Text>}
-              </View>
-            </Marker>
-          );
-        })}
+        {shown.map((st) => (
+          <StopMarker key={st.id} latitude={st.latitude} longitude={st.longitude} title={st.title} kind={st.kind} label={st.label} light={!!light} />
+        ))}
 
-        {position ? (
-          <Marker coordinate={position} anchor={{ x: 0.5, y: 0.5 }} tracksViewChanges={redraw} zIndex={20} title="You are here">
-            <View style={{ width: 22, height: 22, borderRadius: 11, backgroundColor: 'rgba(61,139,255,0.3)', alignItems: 'center', justifyContent: 'center' }}>
-              <View style={{ width: 14, height: 14, borderRadius: 7, backgroundColor: '#3D8BFF', borderWidth: 2, borderColor: '#fff' }} />
-            </View>
-          </Marker>
-        ) : null}
+        {position ? <PositionMarker latitude={position.latitude} longitude={position.longitude} /> : null}
       </MapView>
 
       {pinning ? (
         <View pointerEvents="none" style={{ position: 'absolute', left: 0, right: 0, top: 0, bottom: 0, alignItems: 'center', justifyContent: 'center' }}>
           {/* The pin's tip marks the map centre. */}
           <View style={{ marginBottom: 40, alignItems: 'center' }}>
-            <MaterialCommunityIcons name="map-marker" size={44} color={c.primary} />
+            <MaterialCommunityIcons name="map-marker" size={44} color={line} />
           </View>
         </View>
       ) : null}
 
-      <Pressable onPress={() => { userMoved.current = false; if (follow && position) map.current?.animateCamera({ center: position, zoom: 17, heading: heading ?? 0, pitch: 35 }, { duration: 400 }); else fit(true); }} hitSlop={6} style={{ position: 'absolute', right: 12, top: 12, width: 40, height: 40, borderRadius: 20, backgroundColor: 'rgba(13,22,41,0.92)', borderWidth: 1, borderColor: c.border, alignItems: 'center', justifyContent: 'center' }}>
-        <MaterialCommunityIcons name="crosshairs-gps" size={19} color={c.primary} />
+      <Pressable onPress={() => { userMoved.current = false; if (follow && position) map.current?.animateCamera({ center: position, zoom: 17, heading: heading ?? 0, pitch: 35 }, { duration: 400 }); else fit(true); }} hitSlop={6} style={light ? s.fitLight : s.fitDark} accessibilityLabel="Show the whole route">
+        <MaterialCommunityIcons name="crosshairs-gps" size={19} color={light ? l.ink : c.primary} />
       </Pressable>
     </View>
   );
 }
+
+/**
+ * Android draws a custom marker view into a bitmap; `tracksViewChanges` must be on until that is done, and every
+ * tracking marker costs a redraw per frame. So each pin tracks only for a moment after its own look changes.
+ */
+function useBriefTracking(look: string) {
+  // The look whose bitmap is drawn; while it differs from the current look, the marker keeps tracking.
+  const [settled, setSettled] = useState<string | null>(null);
+  useEffect(() => {
+    const timer = setTimeout(() => setSettled(look), 600);
+    return () => clearTimeout(timer);
+  }, [look]);
+  return settled !== look;
+}
+
+const StopMarker = memo(function StopMarker({ latitude, longitude, title, kind, label, light }: {
+  latitude: number; longitude: number; title: string; kind: MapStop['kind']; label: string; light: boolean;
+}) {
+  const col = (light ? LIGHT_MARKER_COLORS : MARKER_COLORS)[kind];
+  const big = kind === 'next' || kind === 'current';
+  const track = useBriefTracking(`${kind}|${label}|${light}`);
+  const coordinate = useMemo(() => ({ latitude, longitude }), [latitude, longitude]);
+  return (
+    <Marker coordinate={coordinate} title={title} anchor={{ x: 0.5, y: 0.5 }} tracksViewChanges={track} zIndex={big ? 10 : kind === 'upcoming' || kind === 'last' ? 5 : 1}>
+      <View style={{ width: big ? 36 : 28, height: big ? 36 : 28, borderRadius: 18, backgroundColor: col.bg, borderWidth: big ? 3 : 2, borderColor: col.border, alignItems: 'center', justifyContent: 'center' }}>
+        {kind === 'done' && !(light && label) ? <Ionicons name="checkmark" size={15} color={col.fg} />
+          : kind === 'failed' ? <Ionicons name="close" size={15} color={col.fg} />
+            : <Text style={{ color: col.fg, fontWeight: '800', fontSize: big ? 14 : 12 }}>{label}</Text>}
+      </View>
+    </Marker>
+  );
+});
+
+const PositionMarker = memo(function PositionMarker({ latitude, longitude }: Coordinates) {
+  // Its look never changes, so it only tracks once; moving it does not need tracking.
+  const track = useBriefTracking('position');
+  const coordinate = useMemo(() => ({ latitude, longitude }), [latitude, longitude]);
+  return (
+    <Marker coordinate={coordinate} anchor={{ x: 0.5, y: 0.5 }} tracksViewChanges={track} zIndex={20} title="You are here">
+      <View style={{ width: 22, height: 22, borderRadius: 11, backgroundColor: 'rgba(61,139,255,0.3)', alignItems: 'center', justifyContent: 'center' }}>
+        <View style={{ width: 14, height: 14, borderRadius: 7, backgroundColor: '#3D8BFF', borderWidth: 2, borderColor: '#fff' }} />
+      </View>
+    </Marker>
+  );
+});
 
 // Google's dark map theme, close to the app's colours.
 const DARK_STYLE = [
@@ -175,3 +226,8 @@ const DARK_STYLE = [
   { featureType: 'water', elementType: 'geometry', stylers: [{ color: '#0e1626' }] },
   { featureType: 'water', elementType: 'labels.text.fill', stylers: [{ color: '#4e6d70' }] },
 ];
+
+const s = StyleSheet.create({
+  fitDark: { position: 'absolute', right: 12, top: 12, width: 40, height: 40, borderRadius: 20, backgroundColor: 'rgba(13,22,41,0.92)', borderWidth: 1, borderColor: c.border, alignItems: 'center', justifyContent: 'center' },
+  fitLight: { position: 'absolute', right: 16, top: 16, width: 44, height: 44, borderRadius: 22, backgroundColor: '#fff', alignItems: 'center', justifyContent: 'center', shadowColor: '#000', shadowOpacity: 0.12, shadowRadius: 8, shadowOffset: { width: 0, height: 2 }, elevation: 4 },
+});

@@ -70,8 +70,11 @@ function PinBody({ position, center, onClose, onPick }: Omit<Props, 'visible'>) 
         </View>
       )}
       <View style={[s.top, { top: Platform.OS === 'ios' ? 50 : 16 }]}>
-        <Text style={{ flex: 1, color: c.text, fontWeight: '800', fontSize: 15 }}>Move the map to put the pin on the door</Text>
-        <Pressable onPress={onClose} hitSlop={10} style={s.close}><Ionicons name="close" size={20} color={c.text} /></Pressable>
+        <Pressable onPress={onClose} hitSlop={10} accessibilityLabel="Back" style={({ pressed }) => [s.back, pressed && { opacity: 0.8 }]}>
+          <Ionicons name="chevron-back" size={16} color="#CFC5FF" />
+          <Text style={{ color: '#CFC5FF', fontWeight: '800', fontSize: 13 }}>Back</Text>
+        </Pressable>
+        <Text style={{ flex: 1, color: c.text, fontWeight: '700', fontSize: 13 }}>Move the map to put the pin on the door</Text>
       </View>
       <View style={s.bottom}>
         <PButton title="Use this location" icon="location" onPress={() => void confirm()} loading={saving} disabled={!at || locating || !start} />
@@ -82,6 +85,6 @@ function PinBody({ position, center, onClose, onPick }: Omit<Props, 'visible'>) 
 
 const s = StyleSheet.create({
   top: { position: 'absolute', left: 12, right: 12, flexDirection: 'row', alignItems: 'center', gap: 10, padding: 12, borderRadius: r.medium, backgroundColor: 'rgba(13,22,41,0.95)', borderWidth: 1, borderColor: c.border },
-  close: { width: 34, height: 34, borderRadius: 17, backgroundColor: c.surfaceSoft, alignItems: 'center', justifyContent: 'center' },
+  back: { flexDirection: 'row', alignItems: 'center', gap: 2, paddingLeft: 8, paddingRight: 12, paddingVertical: 8, borderRadius: 99, backgroundColor: c.surfaceSoft },
   bottom: { position: 'absolute', left: 16, right: 16, bottom: 28 },
 });

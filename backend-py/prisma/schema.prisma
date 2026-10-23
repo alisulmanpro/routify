@@ -8,9 +8,12 @@ generator client {
   recursive_type_depth = 5
 }
 
+// DATABASE_URL: Neon's pooled host ("-pooler", with pgbouncer=true) for the app. DIRECT_URL: the direct host, used by
+// prisma migrate / db push, which need a session the pooler does not give them.
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
 }
 
 enum Role {
@@ -135,6 +138,9 @@ model User {
   refreshTokens RefreshToken[]
   passwordResets PasswordReset[]
   storePurchases StorePurchase[]
+  idempotencyKeys IdempotencyKey[]
+  stopEvents      StopEvent[]
+  deletedDeliveries DeletedDelivery[]
 
   @@index([role])
   @@index([status])
@@ -148,6 +154,8 @@ model Delivery {
   rider      User   @relation(fields: [riderId], references: [id], onDelete: Cascade)
   // Optional: riders can add a stop with only an address. Postgres lets many rows share a NULL here.
   trackingId String? @db.VarChar(80)
+  /// The app's own id for a stop (a UUID made on the phone, POST /v2/deliveries/batch): sending it twice never makes two stops.
+  clientId   String? @db.VarChar(36)
 
   customerName  String @default("") @db.VarChar(160)
   customerPhone String @default("") @db.VarChar(32)
@@ -159,6 +167,8 @@ model Delivery {
   addressGeocoded    Boolean       @default(false)
   addressApproximate Boolean       @default(false)
   geocodeStatus      GeocodeStatus @default(pending)
+  /// The Eircode ("D01 F5P2") or other postcode, from what the rider entered or from the geocoder.
+  postalCode         String?       @db.VarChar(16)
 
   // Legacy: deliveries no longer carry payment details. Kept so records migrated from MongoDB still load.
   payment Json?
@@ -177,6 +187,11 @@ model Delivery {
   arrivedAt       DateTime?
   deliveredAt     DateTime?
   failedAt        DateTime?
+  /// When the newest arrive/deliver/fail applied to this stop happened, by the phone's clock: an older event that
+  /// arrives later (another device, an offline phone) does not undo a newer one.
+  lastEventAt     DateTime?
+  /// The rider confirmed this is another parcel for an address already on that day (same Eircode).
+  secondParcel    Boolean   @default(false)
 
   // Optimistic concurrency: every save bumps this and fails with 409 if someone else saved first.
   version   Int      @default(0)
@@ -187,10 +202,14 @@ model Delivery {
 
   // Every rider is independent, so tracking IDs only need to be unique within one rider's own deliveries.
   @@unique([riderId, trackingId])
+  @@unique([riderId, clientId])
   @@index([riderId, status])
   @@index([riderId, serviceDate])
   @@index([serviceDate, status])
-  @@index([routeId])
+  // Monthly plan usage counts a rider's deliveries by createdAt.
+  @@index([riderId, createdAt])
+  // A route's stops by status in stop order (deliver's earlier-stop check, auto-complete, start); also serves routeId alone.
+  @@index([routeId, status, stopOrder])
   @@index([createdAt(sort: Desc)])
   @@map("deliveries")
 }
@@ -218,7 +237,11 @@ model Route {
   stops      RouteStop[]
   deliveries Delivery[]
 
+  // Also in the database, not expressible here (Prisma 5 has no partial indexes): "routes_one_active_per_rider", unique
+  // on (riderId) WHERE status = 'active' (migration 20261022130000). If `prisma migrate dev` ever proposes dropping it,
+  // delete that line from the generated migration.
   @@index([riderId, status])
+  @@index([riderId, serviceDate])
   @@index([status])
   @@map("routes")
 }
@@ -428,6 +451,146 @@ model GeocodeCache {
 
   @@index([expiresAt])
   @@map("geocode_cache")
+}
+
+// One row per Idempotency-Key a rider sent to a /v2 write: a retry with the same key and the same request gets the
+// stored answer back instead of running again. Rows expire after a day (hourly cleanup in app/main.py).
+model IdempotencyKey {
+  riderId        String   @db.VarChar(24)
+  rider          User     @relation(fields: [riderId], references: [id], onDelete: Cascade)
+  key            String   @db.VarChar(128)
+  /// The endpoint it was used on, e.g. "POST /v2/stops/{id}/events".
+  scope          String   @db.VarChar(120)
+  /// sha256 of the request's meaningful content: the same key with a different request is refused.
+  requestHash    String   @db.VarChar(64)
+  /// in_progress while the first request runs, then done.
+  state          String   @default("in_progress") @db.VarChar(16)
+  responseStatus Int?
+  /// The JSON body sent back, replayed as-is.
+  responseBody   String?
+  lockedAt       DateTime @default(now())
+  createdAt      DateTime @default(now())
+  expiresAt      DateTime
+
+  @@id([riderId, key])
+  @@index([expiresAt])
+  @@map("idempotency_keys")
+}
+
+// Every arrive / deliver / fail a rider sent, applied or not, in the order received. Who did what to which stop, when
+// (by the phone's clock and the server's), from which path; deliveries keep only their latest state.
+model StopEvent {
+  id             String   @id @db.VarChar(24)
+  riderId        String   @db.VarChar(24)
+  rider          User     @relation(fields: [riderId], references: [id], onDelete: Cascade)
+  /// No foreign key: the history outlives a deleted stop.
+  deliveryId     String   @db.VarChar(24)
+  routeId        String?  @db.VarChar(24)
+  type           String   @db.VarChar(16)
+  /// applied · no_change (already in that state) · superseded (older than the stop's latest event) · rejected
+  outcome        String   @db.VarChar(16)
+  fromStatus     String   @db.VarChar(16)
+  toStatus       String   @db.VarChar(16)
+  reason         String?  @db.VarChar(40)
+  note           String?  @db.VarChar(1000)
+  /// When it happened on the phone, and when the server got it (offline phones send hours later).
+  at             DateTime
+  receivedAt     DateTime @default(now())
+  /// v1 (/deliveries/{id}/...) or v2 (/v2/stops/{id}/events).
+  source         String   @db.VarChar(8)
+  idempotencyKey String?  @db.VarChar(128)
+
+  @@index([deliveryId, at])
+  @@index([riderId, receivedAt])
+  @@map("stop_events")
+}
+
+// Deleted stops are kept here (the full row as it was), so a delete can be looked into or undone and the route change
+// feed can report it. The live deliveries table stays free of deleted rows, so no query has to filter them out.
+model DeletedDelivery {
+  id        String   @id @db.VarChar(24)
+  riderId   String   @db.VarChar(24)
+  rider     User     @relation(fields: [riderId], references: [id], onDelete: Cascade)
+  routeId   String?  @db.VarChar(24)
+  /// delete (one stop) · clear_open (the unstarted queue) · clear_history (finished work)
+  reason    String   @db.VarChar(20)
+  snapshot  Json
+  deletedAt DateTime @default(now())
+
+  @@index([riderId, deletedAt])
+  @@index([routeId, deletedAt])
+  @@map("deleted_deliveries")
+}
+
+// Google Maps Platform calls made by the API, per day, rider and API (P5.6): what each rider costs, and where a
+// runaway client or loop shows up first. riderId "-" = not on behalf of a rider (maintenance, admin).
+/// Requests per API process and minute (P7.6): the worker's alerts read error rate and p95 from here.
+model RequestMinute {
+  minute   DateTime
+  /// host:pid of the API process that served them.
+  instance String   @db.VarChar(64)
+  requests Int
+  /// 5xx answers.
+  errors   Int
+  /// Requests per latency bucket (upper bounds in app/metrics.py BUCKETS_MS, then one for slower).
+  buckets  Json
+
+  @@id([minute, instance])
+  @@index([minute])
+  @@map("request_minutes")
+}
+
+model GoogleUsage {
+  day     String @db.VarChar(10)
+  riderId String @db.VarChar(24)
+  /// geocoding · geocoding_reverse · places_autocomplete · places_details · places_text_search · routes_matrix
+  api     String @db.VarChar(32)
+  calls   Int    @default(0)
+
+  @@id([day, riderId, api])
+  @@index([riderId, day])
+  @@map("google_usage")
+}
+
+// Background work done by the worker process (python -m app.worker), never by the API process (P6b.2): route
+// optimisation and large plans. The API enqueues and either answers at once (v2: job id) or waits for it (v1).
+model Job {
+  id         String    @id @db.VarChar(24)
+  /// The rider it is for (their jobs only are visible to them).
+  riderId    String?   @db.VarChar(24)
+  /// optimize_route · plan · send_email · password_reset_code · report_pdf · maintenance · alerts
+  type       String    @db.VarChar(32)
+  /// queued · running · done · failed
+  status     String    @default("queued") @db.VarChar(16)
+  /// For optimize_route: the route, so a second request while one is queued returns the same job.
+  routeId    String?   @db.VarChar(24)
+  input      Json
+  result     Json?
+  error      String?
+  attempts   Int       @default(0)
+  /// A retry waits until then (emails).
+  runAfter   DateTime?
+  /// Scheduled jobs: "maintenance:<hour>", "alerts:<slot>". Unique, so several workers queue each slot once.
+  dedupKey   String?   @unique @db.VarChar(64)
+  createdAt  DateTime  @default(now())
+  startedAt  DateTime?
+  finishedAt DateTime?
+
+  @@index([status, createdAt])
+  @@index([riderId, createdAt])
+  @@index([routeId, status])
+  @@map("jobs")
+}
+
+// The road line of a route for one version of it (P6b.4): computed once by our OSRM, served until the route changes.
+model RouteGeometry {
+  routeId   String   @id @db.VarChar(24)
+  /// The route's ETag (v2_service.route_etag) the line was made for.
+  version   String   @db.VarChar(64)
+  data      Json
+  createdAt DateTime @default(now())
+
+  @@map("route_geometries")
 }
 
 // Shared counters for rate limits and unknown-email login lockouts, so every API worker sees the same numbers.

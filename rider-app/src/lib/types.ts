@@ -1,22 +1,30 @@
-export type Currency = 'USD' | 'GBP' | 'EUR' | 'PKR' | 'INR';
 export type RoutePreference = 'smart' | 'nearest_first' | 'shortest';
 
 export type ServiceArea = { city: string; country: string | null; countryCode: string; latitude: number; longitude: number; source: 'gps' | 'manual'; confirmedAt: string | null };
 
 export type User = {
   id: string; fullName: string; phone: string; email: string; role: 'rider';
-  currency: Currency; routePreference: RoutePreference; notificationsEnabled: boolean; status: string;
+  routePreference: RoutePreference; notificationsEnabled: boolean; status: string;
   serviceArea: ServiceArea | null;
 };
 
-export type PublicConfig = { currencies: Currency[]; defaultCurrency: Currency; routePreference: RoutePreference; minPasswordLength: number; platformName: string; supportEmail: string; privacyUrl: string; paymentInstructions: string; trialDays: number };
+export type PublicConfig = {
+  routePreference: RoutePreference; minPasswordLength: number; platformName: string; supportEmail: string; privacyUrl: string; paymentInstructions: string; trialDays: number;
+  /** Below this app version the app must be updated before it can be used; below latestAppVersion an update is suggested. */
+  minAppVersion?: string; latestAppVersion?: string; storeUrls?: { android: string | null; ios: string | null };
+};
 
 export type FailureReason = 'customer_unavailable' | 'customer_refused' | 'wrong_address' | 'phone_unreachable' | 'business_closed' | 'other';
 
 export type Delivery = {
   id: string; riderId: string; trackingId: string;
   customer: { name: string; phone: string };
-  address: { raw: string; normalized: string | null; latitude: number | null; longitude: number | null; geocoded: boolean; approximate: boolean; geocodeStatus: 'pending' | 'found' | 'approximate' | 'not_found' };
+  address: {
+    raw: string; normalized: string | null; latitude: number | null; longitude: number | null; geocoded: boolean; approximate: boolean;
+    geocodeStatus: 'pending' | 'found' | 'approximate' | 'not_found';
+    /** The Eircode ("D01 F5P2") or other postcode; null when none is known (e.g. stops added before postcodes were kept). */
+    postalCode: string | null;
+  };
   status: 'pending' | 'in_progress' | 'delivered' | 'failed';
   proof: { photoUrl: string; capturedAt: string } | null;
   note: string | null;
@@ -38,6 +46,12 @@ export type Route = {
   newStops: number;
 };
 
+/** A route without its stops, from GET /routes/by-date (e.g. the Home day selector). */
+export type RouteListItem = Pick<Route, 'id' | 'name' | 'status' | 'preference' | 'serviceDate' | 'distanceKm' | 'durationMin' | 'startedAt' | 'completedAt' | 'progress' | 'summary'>;
+
+/** Open stops left from days before today (GET /routes/leftover), latest day first. */
+export type LeftOver = { total: number; days: { date: string; count: number }[] };
+
 export type Dashboard = {
   rider: { id: string; fullName: string }; date: string;
   total: number; delivered: number; failed: number; pending: number; distanceKm: number;
@@ -50,6 +64,8 @@ export type ReportRow = { id: string; date: string; summary: Record<string, numb
 
 /** A matching address for what the rider typed, from POST /deliveries/geocode-suggest. */
 export type AddressSuggestion = { label: string; latitude: number; longitude: number; approximate: boolean };
+/** POST /deliveries/geocode-check: the map's match for an address, without saving anything. */
+export type GeocodeCheck = { found: boolean; approximate: boolean; latitude: number | null; longitude: number | null; normalized: string | null; postalCode: string | null };
 
 export type ImportDraftItem = { trackingId: string; customerName: string; phone: string; address: string; note: string; flags: string[] };
 export type ImportDraft = { fileType: string; items: ImportDraftItem[] };

@@ -5,13 +5,12 @@ import csv
 import io
 import zipfile
 from datetime import date, datetime
-from typing import Any, Optional
+from typing import Any
 
 from ..errors import unprocessable
 from ..uploads import UploadedFile, detect_document_type
 from .pdf_import import extract_addresses_from_lines, extract_deliveries_from_text, extract_pdf_text, flag_duplicates
 from .subscription_service import assert_can_create_deliveries
-
 
 # A 10 MB upload may not unpack into gigabytes (zip bomb): real delivery sheets are a tiny fraction of these limits.
 MAX_UNZIPPED_BYTES = 100 * 1024 * 1024
@@ -123,7 +122,7 @@ def _extract_text(data: bytes, ext: str) -> str:
     raise unprocessable("Unsupported file type", "UNSUPPORTED_FILE")
 
 
-async def build_draft_from_file(actor: dict, file: Optional[UploadedFile]) -> dict:
+async def build_draft_from_file(actor: dict, file: UploadedFile | None) -> dict:
     ext = detect_document_type(file.data if file else None, file.filename if file else None)
     await assert_can_create_deliveries(actor, 1)
 
