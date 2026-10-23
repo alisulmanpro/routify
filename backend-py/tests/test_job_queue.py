@@ -95,7 +95,9 @@ async def test_a_stopping_worker_puts_its_unfinished_jobs_back_at_once(client):
     from app.ids import new_id
 
     job_id = new_id()
-    await db.job.create(data={"id": job_id, "type": "send_email", "input": as_json({}), "status": "running", "attempts": 1, "startedAt": now()})
+    # runAfter keeps the test's own worker from claiming it again once it is queued.
+    await db.job.create(data={"id": job_id, "type": "send_email", "input": as_json({}), "status": "running", "attempts": 1, "startedAt": now(),
+                              "runAfter": now() + timedelta(days=1)})
     assert await jobs.release({job_id}) == 1
     job = await db.job.find_unique(where={"id": job_id})
     assert job.status == "queued" and job.attempts == 0 and job.startedAt is None
