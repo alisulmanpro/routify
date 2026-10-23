@@ -8,9 +8,11 @@ services:
     plan: free                     # sleeps after 15 min idle; uploaded photos/PDFs are lost on restart (no disk on free)
     region: ohio                   # same area as the Neon database (aws us-east-2)
     rootDir: backend-py
+    # scripts.bundle_prisma_engine copies Prisma's query engine into backend-py/: Render keeps only the project folder
+    # for the running service, so the engine in ~/.cache would be gone at start (BinaryNotFoundError).
     # Migrations run during the build (pre-deploy commands need a paid plan). They only ever add to the schema.
     # They use DIRECT_URL (Neon's direct host); until it is set in the dashboard they fall back to DATABASE_URL.
-    buildCommand: pip install -r requirements.txt && prisma generate && DIRECT_URL="${DIRECT_URL:-$DATABASE_URL}" prisma migrate deploy
+    buildCommand: pip install -r requirements.txt && prisma generate && python -m scripts.bundle_prisma_engine && DIRECT_URL="${DIRECT_URL:-$DATABASE_URL}" prisma migrate deploy
     # Two processes: the worker (route optimisation jobs, python -m app.worker) and the API. Heavy planning never runs
     # in the API process. If the worker dies, the loop starts it again after 5 s. On a paid plan, move the worker to its
     # own Render "worker" service (Render then restarts it) and set this back to `python -m app` (ISSUE-32).
@@ -19,10 +21,6 @@ services:
     envVars:
       - key: NODE_ENV
         value: production
-      # Prisma downloads its query engine during the build. Render keeps only the project folder for the running
-      # service, so the engine must go there (the default ~/.cache is gone at start: BinaryNotFoundError).
-      - key: PRISMA_BINARY_CACHE_DIR
-        value: /opt/render/project/src/backend-py/.prisma-binaries
       - key: LOG_LEVEL
         value: info
       # Render keeps only the project folder between build and runtime, so Prisma's engines must be downloaded there.
