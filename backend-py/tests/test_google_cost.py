@@ -178,3 +178,37 @@ async def test_google_calls_are_counted_per_rider_api_and_day(client, monkeypatc
     google_usage.current_rider.set(None)
     await google_usage.record("geocoding")
     assert await db.googleusage.find_unique(where={"day_riderId_api": {"day": today, "riderId": "-", "api": "geocoding"}})
+
+
+async def test_a_batch_reads_the_geocode_cache_once(client, monkeypatch):
+    """ISSUE-07: geocode_many prefetches every cache row in one query; no per-address cache read is left."""
+    cached = ["1 Cached Lane, Dublin", "2 Cached Lane, Dublin, D02 X285"]
+    for raw in cached:
+        await db.geocodecache.create(data={"key": geo.cache_key(raw, None), "found": True, "latitude": 53.3, "longitude": -6.2, "normalized": raw,
+                                           "expiresAt": datetime.now(UTC) + timedelta(days=1)})
+    looked_up: list[str] = []
+
+    async def found(address, area):
+        looked_up.append(address)
+        return {"latitude": 53.4, "longitude": -6.3, "normalized": address, "approximate": False}
+
+    async def no_single_reads(*args, **kwargs):
+        raise AssertionError("geocode_many must not read the cache row by row")
+
+    reads: list[dict] = []
+    find_many = type(db.geocodecache).find_many
+
+    async def counted_find_many(self, *args, **kwargs):
+        reads.append(kwargs)
+        return await find_many(self, *args, **kwargs)
+
+    geo.set_geocoder_for_tests(found)
+    monkeypatch.setattr(type(db.geocodecache), "find_unique", no_single_reads)
+    monkeypatch.setattr(type(db.geocodecache), "find_many", counted_find_many)
+    try:
+        out = await geo.geocode_many([*cached, "3 New Lane, Dublin", cached[0]])
+    finally:
+        geo.set_geocoder_for_tests()
+    assert len(reads) == 1, "one cache read for the whole batch"
+    assert looked_up == ["3 New Lane, Dublin"], "cache hits never reach the provider"
+    assert out[cached[0]]["latitude"] == 53.3 and out["3 New Lane, Dublin"]["latitude"] == 53.4

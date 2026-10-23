@@ -324,13 +324,24 @@ def set_eircode_geocoder_for_tests(fn=None) -> None:
     _eircode_lookup = fn or EIRCODE_PROVIDERS["none" if env.is_test else env.GEOCODING_PROVIDER]
 
 
-async def geocode_eircode(code: str) -> dict | None:
+def _eircode_cache_key(code: str) -> str:
+    # v5: one lookup per code (the "-street" variants with a reverse lookup are gone).
+    return hashlib.sha1(f"v5|eircode|{code}".encode()).hexdigest()
+
+
+async def _cache_row(key: str, prefetched: dict[str, Any] | None) -> Any:
+    """The cache row for `key`; from `prefetched` (geocode_many's one read for the whole batch) when it was looked up there."""
+    if prefetched is not None and key in prefetched:
+        return prefetched[key]
+    return await db.geocodecache.find_unique(where={"key": key})
+
+
+async def geocode_eircode(code: str, *, prefetched: dict[str, Any] | None = None) -> dict | None:
     """{latitude, longitude, normalized, approximate, postalCode, eircode=True} for an Eircode match, else None (never raises).
     One forward lookup only (P5.3): no reverse geocode for a street name, so a scanned Eircode costs one call (and none
     while it is cached). `normalized` is the provider's own address for the code (e.g. "Dublin 1, D01 F5P2")."""
-    # v5: one lookup per code (the "-street" variants with a reverse lookup are gone).
-    key = hashlib.sha1(f"v5|eircode|{code}".encode()).hexdigest()
-    cached = await db.geocodecache.find_unique(where={"key": key})
+    key = _eircode_cache_key(code)
+    cached = await _cache_row(key, prefetched)
     if cached and cached.expiresAt > now() and cached.found:
         return {"latitude": cached.latitude, "longitude": cached.longitude, "normalized": cached.normalized,
                 "approximate": bool(cached.approximate), "postalCode": code, "eircode": True}
@@ -374,15 +385,15 @@ def _caches_misses() -> bool:
     return env.GEOCODING_PROVIDER != "none"
 
 
-async def geocode_address(raw: str, *, retry_approximate: bool = False, area: Any = None) -> dict | None:
+async def geocode_address(raw: str, *, retry_approximate: bool = False, area: Any = None, prefetched: dict[str, Any] | None = None) -> dict | None:
     """Returns {latitude, longitude, normalized, approximate} or None. Provider errors are not cached; "nothing found" is,
     for NOT_FOUND_CACHE_DAYS (a retry asks the provider again anyway).
     An Eircode in the address is looked up first; the full address only when that finds nothing."""
     code = find_eircode(raw)
-    if code and (hit := await geocode_eircode(code)):
+    if code and (hit := await geocode_eircode(code, prefetched=prefetched)):
         return hit
     key = cache_key(raw, area)
-    cached = await db.geocodecache.find_unique(where={"key": key})
+    cached = await _cache_row(key, prefetched)
     if cached and cached.expiresAt > now() and not cached.found and not retry_approximate:
         return None
     if cached and cached.expiresAt > now() and cached.found and (not retry_approximate or not cached.approximate):
@@ -413,6 +424,17 @@ async def geocode_address(raw: str, *, retry_approximate: bool = False, area: An
     return result
 
 
+async def _prefetch_cache(addresses: list[str], area: Any) -> dict[str, Any]:
+    """Every cache row a batch may need (the Eircode's and the address's), in one query (ISSUE-07). A key with no row
+    maps to None, so geocode_address does not look it up again."""
+    keys = {cache_key(raw, area) for raw in addresses} | {_eircode_cache_key(code) for raw in addresses if (code := find_eircode(raw))}
+    if not keys:
+        return {}
+    rows = await db.geocodecache.find_many(where={"key": {"in": list(keys)}})
+    found = {row.key: row for row in rows}
+    return {key: found.get(key) for key in keys}
+
+
 async def geocode_many(addresses: list[str], *, failed: set[str] | None = None, **options) -> dict[str, dict | None]:
     """Geocodes distinct addresses respecting provider limits. Returns {raw: result|None}.
 
@@ -422,10 +444,11 @@ async def geocode_many(addresses: list[str], *, failed: set[str] | None = None, 
     out: dict[str, dict | None] = {}
     errors: list[AppError] = []
     failed = failed if failed is not None else set()
+    prefetched = await _prefetch_cache(unique, options.get("area"))
 
     async def one(raw: str) -> None:
         try:
-            out[raw] = await geocode_address(raw, **options)
+            out[raw] = await geocode_address(raw, prefetched=prefetched, **options)
         except AppError as error:
             if error.code != "GEOCODING_UNAVAILABLE":
                 raise
