@@ -11,6 +11,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.cors import CORSMiddleware
 from starlette.middleware.gzip import DEFAULT_EXCLUDED_CONTENT_TYPES, GZipMiddleware
 
+from . import timing
 from .config import env
 from .db import connect, disconnect, is_ready
 from .errors import AppError, error_body
@@ -34,6 +35,7 @@ async def run_maintenance() -> None:
 def create_app(*, run_jobs: bool = True) -> FastAPI:
     """`run_jobs` is kept for callers; scheduled work (maintenance) runs in the worker since P7.3, never in the API."""
     del run_jobs
+    timing.install()  # Server-Timing and per-request DB counts (P0.7)
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):

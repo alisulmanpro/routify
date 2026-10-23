@@ -11,7 +11,7 @@ from starlette.datastructures import Headers, MutableHeaders
 from starlette.requests import Request
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from . import redis_client
+from . import redis_client, timing
 from .config import env
 from .errors import AppError, error_body
 from .http import dumps
@@ -101,7 +101,8 @@ class EdgeMiddleware:
         if len(path) > 1 and path.endswith("/"):
             scope["path"] = path.rstrip("/") or "/"
 
-        started = time.perf_counter()
+        stats = timing.RequestStats(started=time.perf_counter())
+        stats_token = timing.current_stats.set(stats)
         status_holder = {"status": 500, "started": False}
 
         async def send_wrapper(message: Message) -> None:
@@ -112,6 +113,7 @@ class EdgeMiddleware:
                     if key not in headers:
                         headers[key] = value
                 headers["x-request-id"] = request_id
+                headers["server-timing"] = stats.server_timing()
             await send(message)
 
         try:
@@ -124,8 +126,9 @@ class EdgeMiddleware:
         finally:
             status = status_holder["status"]
             level = logging.ERROR if status >= 500 else logging.WARNING if status >= 400 else logging.INFO
+            timing.current_stats.reset(stats_token)
             log(level, "request completed", reqId=request_id, method=scope.get("method"), url=_loggable_url(_raw_url(scope)) or path,
-                statusCode=status, responseTime=round((time.perf_counter() - started) * 1000))
+                statusCode=status, responseTime=round(stats.elapsed_ms()), dbQueries=stats.db_queries, dbMs=round(stats.db_ms, 1))
 
 
 # One atomic upsert per hit: the count lives in PostgreSQL, so all API workers (and restarts) share it.

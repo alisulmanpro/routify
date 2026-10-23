@@ -749,3 +749,13 @@ async def test_a_build_may_list_a_whole_day_of_stops_but_not_more(client):
     # 301 ids used to be refused (the old 300 cap); now only the ids themselves are checked.
     over_old_cap = await client.post("/api/v1/routes/build", headers=auth, json={"deliveryIds": [new_id() for _ in range(301)]})
     assert over_old_cap.json().get("error", {}).get("code") != "VALIDATION_ERROR", over_old_cap.text
+
+
+async def test_every_response_says_how_long_it_took_and_how_many_db_queries(client):
+    _, auth = await rider(client, "timing@example.com")
+    res = await client.get("/api/v1/auth/me", headers=auth)
+    timing = res.headers["server-timing"]
+    match = re.fullmatch(r'app;dur=([\d.]+), db;dur=([\d.]+);desc="(\d+) queries"', timing)
+    assert match, timing
+    assert float(match.group(1)) >= float(match.group(2)) and int(match.group(3)) >= 1
+    assert re.fullmatch(r'app;dur=[\d.]+, db;dur=0\.0;desc="0 queries"', (await client.get("/health")).headers["server-timing"])
