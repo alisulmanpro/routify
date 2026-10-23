@@ -11,7 +11,7 @@ from starlette.datastructures import Headers, MutableHeaders
 from starlette.requests import Request
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from . import redis_client, timing
+from . import metrics, redis_client, timing
 from .config import env
 from .errors import AppError, error_body
 from .http import dumps
@@ -127,6 +127,7 @@ class EdgeMiddleware:
             status = status_holder["status"]
             level = logging.ERROR if status >= 500 else logging.WARNING if status >= 400 else logging.INFO
             timing.current_stats.reset(stats_token)
+            metrics.record(path, status, stats.elapsed_ms())
             log(level, "request completed", reqId=request_id, method=scope.get("method"), url=_loggable_url(_raw_url(scope)) or path,
                 statusCode=status, responseTime=round(stats.elapsed_ms()), dbQueries=stats.db_queries, dbMs=round(stats.db_ms, 1))
 

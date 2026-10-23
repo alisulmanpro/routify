@@ -8,7 +8,7 @@ from datetime import timedelta
 from ..db import db
 from ..http import now
 from ..logger import log
-from . import jobs
+from . import alerts, jobs
 
 
 async def run_maintenance() -> None:
@@ -23,6 +23,7 @@ async def run_maintenance() -> None:
     await db.passwordreset.delete_many(where={"expiresAt": {"lt": now() - timedelta(days=1)}})
     await db.ratelimit.delete_many(where={"resetAt": {"lt": now()}, "OR": [{"lockedUntil": None}, {"lockedUntil": {"lt": now()}}]})
     await db.idempotencykey.delete_many(where={"expiresAt": {"lt": now()}})
+    await db.requestminute.delete_many(where={"minute": {"lt": now() - timedelta(days=7)}})
     await jobs.delete_old()
 
 
@@ -36,3 +37,4 @@ async def schedule() -> None:
     hour = now().strftime("%Y-%m-%dT%H")
     if await jobs.schedule_once("maintenance", f"maintenance:{hour}"):
         log(logging.INFO, "Queued hourly maintenance", hour=hour)
+    await alerts.schedule()  # every 5 minutes, when ALERT_WEBHOOK_URL is set (P7.6)

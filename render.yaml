@@ -64,6 +64,14 @@ services:
       - key: SENTRY_DSN
         sync: false
 
+      # Log shipping (e.g. Better Stack HTTP source) and alerts (Slack-compatible webhook). Empty = off.
+      - key: LOG_SHIP_URL
+        sync: false
+      - key: LOG_SHIP_TOKEN
+        sync: false
+      - key: ALERT_WEBHOOK_URL
+        sync: false
+
       # Rider app versions (GET /config): below MIN the app must update; below LATEST it suggests updating.
       - key: MIN_APP_VERSION
         value: "1.0.0"

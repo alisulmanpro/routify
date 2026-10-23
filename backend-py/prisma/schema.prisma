@@ -524,6 +524,22 @@ model DeletedDelivery {
 
 // Google Maps Platform calls made by the API, per day, rider and API (P5.6): what each rider costs, and where a
 // runaway client or loop shows up first. riderId "-" = not on behalf of a rider (maintenance, admin).
+/// Requests per API process and minute (P7.6): the worker's alerts read error rate and p95 from here.
+model RequestMinute {
+  minute   DateTime
+  /// host:pid of the API process that served them.
+  instance String   @db.VarChar(64)
+  requests Int
+  /// 5xx answers.
+  errors   Int
+  /// Requests per latency bucket (upper bounds in app/metrics.py BUCKETS_MS, then one for slower).
+  buckets  Json
+
+  @@id([minute, instance])
+  @@index([minute])
+  @@map("request_minutes")
+}
+
 model GoogleUsage {
   day     String @db.VarChar(10)
   riderId String @db.VarChar(24)

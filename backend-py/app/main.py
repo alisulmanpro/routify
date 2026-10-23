@@ -1,6 +1,7 @@
 """FastAPI application: same routes, envelopes and error codes as the former Express API."""
 from __future__ import annotations
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 
@@ -11,7 +12,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.cors import CORSMiddleware
 from starlette.middleware.gzip import DEFAULT_EXCLUDED_CONTENT_TYPES, GZipMiddleware
 
-from . import timing
+from . import metrics, timing
 from .config import env
 from .db import connect, disconnect, is_ready
 from .errors import AppError, error_body
@@ -44,9 +45,14 @@ def create_app(*, run_jobs: bool = True) -> FastAPI:
         await connect()
         await ensure_default_plans()
         log(logging.INFO, f"Delivery Planner API listening on :{env.PORT} ({env.NODE_ENV})")
+        # Request counts and latencies per minute for the worker's alerts (P7.6).
+        stop_metrics = asyncio.Event()
+        flusher = asyncio.create_task(metrics.run_flusher(stop_metrics))
         try:
             yield
         finally:
+            stop_metrics.set()
+            await flusher
             await disconnect()
 
     app = FastAPI(title="Routify API", version="2.0.0", lifespan=lifespan, redirect_slashes=False,
