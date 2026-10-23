@@ -13,9 +13,18 @@ pip install -r requirements-dev.txt
 cp .env.example .env                       # fill in the three secrets + DATABASE_URL / DIRECT_URL (Neon)
 prisma migrate deploy                      # create the tables
 python -m scripts.seed_admin               # first platform admin (ADMIN_EMAIL / ADMIN_PASSWORD)
-python -m app                              # http://localhost:4000 (reloads on code changes)
-python -m app.worker                       # in a second terminal: route planning/optimisation jobs
+./start.sh --worker                        # API on uvicorn + the job worker; Ctrl+C stops both
 ```
+
+`./start.sh` (or `python -m app` on Windows) starts the API on uvicorn at http://localhost:4000 and reloads on code
+changes. `./start.sh --worker` also starts the worker (route planning/optimisation, emails, PDFs), which otherwise runs
+in a second terminal with `python -m app.worker`. Options: `--port 5000`, `--host 127.0.0.1`, `--no-reload`,
+`--workers 4` (`./start.sh --help`); each defaults to `.env`, so production (`python -m app`) is unchanged.
+
+Logs: in development each line is readable and coloured, e.g.
+`10:41:02.118 INFO  GET /api/v1/auth/me 200 12ms · 3 queries 4.1ms  reqId=…`. Elsewhere they are one JSON object per
+line, which log services read. `LOG_FORMAT=pretty|json` picks one, `LOG_LEVEL` (debug, info, warn, error) the detail,
+and `NO_COLOR=1` turns colours off.
 
 The database is hosted on [Neon](https://neon.tech) (serverless PostgreSQL); no local database or Docker
 is needed. From the Neon console (a dev branch, never production), copy the **pooled** connection string ("-pooler" host,

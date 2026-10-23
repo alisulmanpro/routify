@@ -180,3 +180,9 @@ error.md
 issue.md
 missing.md
 owner.md
+client.md
+developer.md
+differance.md
+
+# Prisma query engine downloaded into the project on Render (PRISMA_BINARY_CACHE_DIR)
+.prisma-binaries/
