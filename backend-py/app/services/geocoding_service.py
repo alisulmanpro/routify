@@ -207,19 +207,34 @@ async def _provider_google(address: str, area: Any) -> dict | None:
     # Place names ("railway station", "City Hospital") are what Geocoding is worst at: look them up as places in the city.
     if area and (not result or result["approximate"]):
         try:
-            places = await google_places(address, area, limit=1)
+            match = await google_place_match(address, area)
         except Exception:  # noqa: BLE001 - the geocoding answer (if any) still stands
             log(logging.WARNING, "Places lookup failed", exc_info=True)
-            places = []
-        if places:
-            p = places[0]
-            return {"latitude": p["latitude"], "longitude": p["longitude"], "normalized": p["label"], "approximate": False,
-                    "postalCode": find_eircode(p["label"])}
+            match = None
+        if match:
+            return {**match, "approximate": False}
     return result
 
 
+async def google_place_match(query: str, area: Any) -> dict | None:
+    """The best place for `query` in the rider's area, for route building (ISSUE-29): Text Search asking for the place ID
+    only (the no-charge "IDs Only" SKU), then Place Details Essentials for it, instead of Text Search Pro ($32/1000)."""
+    min_lon, min_lat, max_lon, max_lat = area_box(area)
+    body = {"textQuery": query, "pageSize": 1,
+            "locationRestriction": {"rectangle": {"low": {"latitude": min_lat, "longitude": min_lon}, "high": {"latitude": max_lat, "longitude": max_lon}}}}
+    await google_usage.record("places_text_search_ids")
+    async with httpx.AsyncClient(timeout=TIMEOUT) as client:
+        res = await client.post("https://places.googleapis.com/v1/places:searchText", json=body,
+                                headers={"X-Goog-Api-Key": env.GOOGLE_MAPS_API_KEY or "", "X-Goog-FieldMask": "places.id"})
+    if res.status_code >= 400:
+        raise RuntimeError(f"Google Places responded {res.status_code}")
+    places = [p for p in res.json().get("places", []) if p.get("id")]
+    return await _details_google(places[0]["id"], None) if places else None
+
+
 async def google_places(query: str, area: Any, *, limit: int) -> list[dict]:
-    """Places API (New) Text Search, restricted to the rider's service area. [{label, latitude, longitude}]."""
+    """Places API (New) Text Search (Pro fields), restricted to the rider's service area. [{label, latitude, longitude}].
+    Only the old per-keystroke suggestions use it (ISSUE-30); route building uses google_place_match."""
     min_lon, min_lat, max_lon, max_lat = area_box(area)
     body = {"textQuery": query, "pageSize": limit,
             "locationRestriction": {"rectangle": {"low": {"latitude": min_lat, "longitude": min_lon}, "high": {"latitude": max_lat, "longitude": max_lon}}}}

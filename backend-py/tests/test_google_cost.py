@@ -212,3 +212,41 @@ async def test_a_batch_reads_the_geocode_cache_once(client, monkeypatch):
     assert len(reads) == 1, "one cache read for the whole batch"
     assert looked_up == ["3 New Lane, Dublin"], "cache hits never reach the provider"
     assert out[cached[0]]["latitude"] == 53.3 and out["3 New Lane, Dublin"]["latitude"] == 53.4
+
+
+async def test_route_building_finds_unclear_places_without_text_search_pro(monkeypatch):
+    """ISSUE-29: an address Geocoding finds only roughly is matched with Text Search IDs only + Place Details Essentials."""
+    calls: list[tuple] = []
+
+    class FakeResponse:
+        status_code = 200
+
+        def __init__(self, data):
+            self._data = data
+
+        def json(self):
+            return self._data
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs): ...
+        async def __aenter__(self): return self
+        async def __aexit__(self, *exc): return False
+
+        async def post(self, url, json=None, headers=None):
+            calls.append(("text_search", headers["X-Goog-FieldMask"]))
+            return FakeResponse({"places": [{"id": "ChIJhospital"}]})
+
+        async def get(self, url, params=None, headers=None):
+            if "geocode" in url:
+                calls.append(("geocoding", None))
+                return FakeResponse({"status": "OK", "results": [{"geometry": {"location": {"lat": 53.35, "lng": -6.26}, "location_type": "APPROXIMATE"},
+                                                                  "formatted_address": "Dublin, Ireland", "address_components": []}]})
+            calls.append(("details", headers["X-Goog-FieldMask"]))
+            return FakeResponse({"location": {"latitude": 53.36, "longitude": -6.27}, "formattedAddress": "Eccles St, Dublin 7, D07 R2WY",
+                                 "addressComponents": [{"longText": "D07 R2WY", "types": ["postal_code"]}, {"shortText": "IE", "types": ["country"]}]})
+
+    monkeypatch.setattr(geo.httpx, "AsyncClient", FakeClient)
+    area = {"city": "Dublin", "countryCode": "ie", "latitude": 53.35, "longitude": -6.26}
+    hit = await geo._provider_google("Mater Hospital", area)
+    assert calls == [("geocoding", None), ("text_search", "places.id"), ("details", "id,location,formattedAddress,addressComponents")]
+    assert hit == {"latitude": 53.36, "longitude": -6.27, "normalized": "Eccles St, Dublin 7, D07 R2WY", "postalCode": "D07 R2WY", "approximate": False}
