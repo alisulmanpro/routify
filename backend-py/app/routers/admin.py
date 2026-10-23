@@ -341,8 +341,9 @@ class BillingSettings(Schema):
 class SettingsBody(NotEmpty):
     currencies: Annotated[list[Currency], Field(min_length=1)] | None = None
     defaultCurrency: Currency | None = None
-    # Free-trial length for store subscriptions. Match it in Play Console (offer free-trial-<days>d) and App Store Connect.
-    trialDays: Literal[7, 14, 30] | None = None
+    # Free-trial length for store subscriptions. Match it in Play Console (offer free-trial-<days>d) and App Store Connect;
+    # both stores' shortest free trial is 3 days, so 1 day only works with the test stores (mock, RevenueCat Test Store).
+    trialDays: Literal[1, 3, 7, 14, 30] | None = None
     route: RouteSettings | None = None
     reports: ReportSettings | None = None
     platform: PlatformSettings | None = None

@@ -354,7 +354,7 @@ async def test_store_trial_length_follows_the_admin_setting(client):
     from app.services.settings_service import update_settings
 
     headers, _ = await make_admin(client, "trial-admin@example.com")
-    assert (await client.put("/api/v1/admin/settings", headers=headers, json={"trialDays": 10})).status_code == 400  # only 7, 14 or 30
+    assert (await client.put("/api/v1/admin/settings", headers=headers, json={"trialDays": 10})).status_code == 400  # only 1, 3, 7, 14 or 30
     try:
         assert (await client.put("/api/v1/admin/settings", headers=headers, json={"trialDays": 7})).status_code == 200
         _, auth = await rider(client, "trial-7@example.com", subscribed=False)
@@ -367,6 +367,21 @@ async def test_store_trial_length_follows_the_admin_setting(client):
         assert sub["status"] == "trialing" and 6.9 < days <= 7
         blocked_before = await client.post("/api/v1/deliveries/manual", headers=auth, json=delivery("TRIAL7-1"))
         assert blocked_before.status_code == 201  # the store trial unlocks the app
+    finally:
+        await update_settings({"trialDays": 14})
+
+
+async def test_one_day_trial_for_the_test_stores(client):
+    from app.services.settings_service import update_settings
+
+    headers, _ = await make_admin(client, "trial1-admin@example.com")
+    try:
+        assert (await client.put("/api/v1/admin/settings", headers=headers, json={"trialDays": 1})).status_code == 200
+        _, auth = await rider(client, "trial-1@example.com", subscribed=False)
+        res = await client.post("/api/v1/subscriptions/purchases", headers=auth, json={"store": "mock", "productId": "pro.monthly", "trial": True})
+        sub = res.json()["data"]["subscription"]
+        days = (datetime.fromisoformat(sub["currentPeriodEnd"]) - now()).total_seconds() / 86400
+        assert sub["status"] == "trialing" and sub["planKey"] == "pro" and 0.9 < days <= 1
     finally:
         await update_settings({"trialDays": 14})
 
