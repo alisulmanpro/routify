@@ -44,7 +44,7 @@ def create_app(*, run_jobs: bool = True) -> FastAPI:
     async def lifespan(_app: FastAPI):
         await connect()
         await ensure_default_plans()
-        log(logging.INFO, f"Delivery Planner API listening on :{env.PORT} ({env.NODE_ENV})")
+        log(logging.INFO, f"Delivery Planner API ready ({env.NODE_ENV})")
         # Request counts and latencies per minute for the worker's alerts (P7.6).
         stop_metrics = asyncio.Event()
         flusher = asyncio.create_task(metrics.run_flusher(stop_metrics))

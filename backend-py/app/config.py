@@ -84,6 +84,7 @@ class Settings:
     NODE_ENV: str
     PORT: int
     LOG_LEVEL: str
+    LOG_FORMAT: str
     DATABASE_URL: str
     JWT_ACCESS_SECRET: str
     JWT_REFRESH_SECRET: str
@@ -191,6 +192,8 @@ def load_settings() -> Settings:
         NODE_ENV=node_env,
         PORT=_int("PORT", 4000, lo=1),
         LOG_LEVEL=_str("LOG_LEVEL", "info") or "info",
+        # pretty: readable, coloured lines for a terminal (development default) · json: one object per line (log services)
+        LOG_FORMAT=_enum("LOG_FORMAT", ("pretty", "json"), "pretty" if node_env == "development" else "json"),
         DATABASE_URL=_str("DATABASE_URL", required=True) or "",
         JWT_ACCESS_SECRET=_str("JWT_ACCESS_SECRET", required=True, min_len=32) or "",
         JWT_REFRESH_SECRET=_str("JWT_REFRESH_SECRET", required=True, min_len=32) or "",
