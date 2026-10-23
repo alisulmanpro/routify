@@ -542,7 +542,7 @@ model Job {
   id         String    @id @db.VarChar(24)
   /// The rider it is for (their jobs only are visible to them).
   riderId    String?   @db.VarChar(24)
-  /// optimize_route · plan
+  /// optimize_route · plan · send_email · password_reset_code · report_pdf · maintenance · alerts
   type       String    @db.VarChar(32)
   /// queued · running · done · failed
   status     String    @default("queued") @db.VarChar(16)
@@ -552,6 +552,10 @@ model Job {
   result     Json?
   error      String?
   attempts   Int       @default(0)
+  /// A retry waits until then (emails).
+  runAfter   DateTime?
+  /// Scheduled jobs: "maintenance:<hour>", "alerts:<slot>". Unique, so several workers queue each slot once.
+  dedupKey   String?   @unique @db.VarChar(64)
   createdAt  DateTime  @default(now())
   startedAt  DateTime?
   finishedAt DateTime?

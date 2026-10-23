@@ -91,7 +91,7 @@ async def client():
     from app import worker
 
     stop = asyncio.Event()
-    worker_task = asyncio.create_task(worker.run(stop, poll=0.02))
+    worker_task = asyncio.create_task(worker.run(stop, poll=0.02, schedule=False))
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=application), base_url="http://test") as c:
         yield c
     stop.set()

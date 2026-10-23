@@ -6,7 +6,6 @@ from app.services.pdf_import import extract_addresses_from_lines, extract_delive
 from app.services.route_planner import plan_route
 from app.services.serializers import clean_delivery_address
 
-
 # ---- geocoding ----
 
 def test_locality_fallback_strips_country_and_province_suffixes():

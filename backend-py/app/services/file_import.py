@@ -12,7 +12,6 @@ from ..uploads import UploadedFile, detect_document_type
 from .pdf_import import extract_addresses_from_lines, extract_deliveries_from_text, extract_pdf_text, flag_duplicates
 from .subscription_service import assert_can_create_deliveries
 
-
 # A 10 MB upload may not unpack into gigabytes (zip bomb): real delivery sheets are a tiny fraction of these limits.
 MAX_UNZIPPED_BYTES = 100 * 1024 * 1024
 MAX_ZIP_ENTRIES = 2000

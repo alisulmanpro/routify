@@ -1,7 +1,6 @@
 """FastAPI application: same routes, envelopes and error codes as the former Express API."""
 from __future__ import annotations
 
-import asyncio
 import logging
 from contextlib import asynccontextmanager
 
@@ -20,51 +19,30 @@ from .logger import log
 from .middleware import ApiRateLimitMiddleware, BodyLimitMiddleware, EdgeMiddleware
 from .openapi import install_openapi
 from .routers import admin, auth, billing_webhooks, deliveries, rider_side, v2
+from .services import maintenance
 from .services.subscription_service import ensure_default_plans
-
-HOUR = 3600
 
 
 async def run_maintenance() -> None:
-    """Hourly: expire lapsed subscriptions and drop stale cache/token rows (MongoDB did the latter with TTL indexes)."""
-    from datetime import timedelta
-
-    from .db import db
-    from .http import now
-    from .services.subscription_service import sweep_subscriptions
-
+    """The hourly housekeeping, now run by the worker (services/maintenance.py); kept here for scripts and tests."""
     try:
-        expired = await sweep_subscriptions()
-        if expired:
-            log(logging.INFO, "Expired lapsed subscriptions", expired=expired)
-        await db.geocodecache.delete_many(where={"expiresAt": {"lt": now()}})
-        await db.refreshtoken.delete_many(where={"expiresAt": {"lt": now() - timedelta(days=7)}})
-        await db.passwordreset.delete_many(where={"expiresAt": {"lt": now() - timedelta(days=1)}})
-        await db.ratelimit.delete_many(where={"resetAt": {"lt": now()}, "OR": [{"lockedUntil": None}, {"lockedUntil": {"lt": now()}}]})
-        await db.idempotencykey.delete_many(where={"expiresAt": {"lt": now()}})
-        await db.job.delete_many(where={"finishedAt": {"lt": now() - timedelta(days=7)}})
+        await maintenance.run_maintenance()
     except Exception:  # noqa: BLE001
         log(logging.ERROR, "Maintenance job failed", exc_info=True)
 
 
-async def _jobs_loop() -> None:
-    while True:
-        await run_maintenance()
-        await asyncio.sleep(HOUR)
-
-
 def create_app(*, run_jobs: bool = True) -> FastAPI:
+    """`run_jobs` is kept for callers; scheduled work (maintenance) runs in the worker since P7.3, never in the API."""
+    del run_jobs
+
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
         await connect()
         await ensure_default_plans()
-        task = asyncio.create_task(_jobs_loop()) if run_jobs else None
         log(logging.INFO, f"Delivery Planner API listening on :{env.PORT} ({env.NODE_ENV})")
         try:
             yield
         finally:
-            if task:
-                task.cancel()
             await disconnect()
 
     app = FastAPI(title="Routify API", version="2.0.0", lifespan=lifespan, redirect_slashes=False,

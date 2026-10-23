@@ -17,6 +17,7 @@ from ..errors import AppError, conflict, forbidden, unauthorized, unprocessable,
 from ..http import now
 from ..ids import new_id
 from ..security import generate_refresh_token, hash_password, hash_password_sync, hash_token, sign_access_token, verify_password
+from . import jobs
 from .audit_service import audit
 from .geocoding_service import detect_service_area, find_service_area
 from .mailer import send_email, send_in_background
@@ -305,8 +306,14 @@ def _invalid_reset_code() -> AppError:
 
 
 def request_password_reset(email: str, ctx: dict) -> None:
-    """Answers at once and does the work in the background: the response looks and takes the same whether or not the email exists."""
-    spawn(_send_reset_code(email.lower(), ctx.get("ip")), "password reset email")
+    """Answers at once and does the work in the worker: the response looks and takes the same whether or not the email exists.
+    The job holds only the address; the code is made (and only its HMAC stored) when the job runs."""
+    spawn(jobs.enqueue("password_reset_code", {"email": email.lower(), "ip": ctx.get("ip")}), "queue password reset email")
+
+
+@jobs.handler("password_reset_code", retries=2)
+async def _password_reset_job(payload: dict) -> None:
+    await _send_reset_code(payload["email"], payload.get("ip"))
 
 
 async def _send_reset_code(email: str, ip: str | None) -> None:

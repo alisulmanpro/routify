@@ -396,8 +396,9 @@ async def test_proof_photo_upload_and_signed_url(client):
 
 
 async def test_pdf_import_reads_a_real_pdf(client):
-    from reportlab.pdfgen import canvas
     import io
+
+    from reportlab.pdfgen import canvas
 
     _, auth = await rider(client, "import@example.com")
     buf = io.BytesIO()

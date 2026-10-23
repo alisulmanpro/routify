@@ -5,11 +5,13 @@ import io
 from typing import Any
 from xml.sax.saxutils import escape
 
+from ..config import env
 from ..db import as_json, db, lock_rider, transaction
-from ..errors import forbidden, not_found, unprocessable
+from ..errors import AppError, forbidden, not_found, unprocessable
 from ..http import iso, now
 from ..ids import new_id
 from ..security import sign_file_url
+from . import jobs
 from . import storage_service as storage
 from .route_service import summarize
 from .settings_service import get_settings
@@ -104,7 +106,32 @@ async def generate(actor: dict, date: str) -> dict:
 
     existing = await db.report.find_unique(where={"riderId_date": {"riderId": actor["id"], "date": date}})
     await assert_can_create_report(actor, not existing)  # early refusal before the slow render; re-checked under the lock below
+    if jobs.in_worker.get():
+        return serialize_report(await _render_and_save(actor, date, deliveries))
+    # P7.3: the PDF is drawn in the worker process (CPU-heavy, photos downloaded); the API waits for it like before.
+    done = await jobs.run_and_wait("report_pdf", {"actor": actor, "date": date}, rider_id=actor["id"], timeout_s=env.PLAN_JOB_WAIT_SECONDS,
+                                   failed=_report_failed, busy=_report_busy)
+    return serialize_report(await db.report.find_unique(where={"id": done["id"]}))
 
+
+def _report_failed() -> AppError:
+    return AppError(503, "REPORT_FAILED", "The report could not be created right now. Please try again.")
+
+
+def _report_busy() -> AppError:
+    return AppError(503, "REPORT_BUSY", "Creating the report is taking longer than usual. Please try again in a minute.")
+
+
+@jobs.handler("report_pdf")
+async def _report_job(payload: dict) -> dict:
+    actor, date = payload["actor"], payload["date"]
+    deliveries = sorted(await db.delivery.find_many(where={"riderId": actor["id"], "serviceDate": date}), key=_by_route_order)
+    if not deliveries:
+        raise unprocessable("There are no deliveries for this date", "NO_DELIVERIES")
+    return {"id": (await _render_and_save(actor, date, deliveries)).id}
+
+
+async def _render_and_save(actor: dict, date: str, deliveries: list) -> Any:
     rider, route, settings = await asyncio.gather(
         db.user.find_unique(where={"id": actor["id"]}),
         db.route.find_first(where={"riderId": actor["id"], "serviceDate": date, "status": {"in": ["completed", "active"]}},
@@ -139,9 +166,9 @@ async def generate(actor: dict, date: str) -> dict:
     except Exception:
         await storage.remove(file_key)
         raise
-    if existing and existing.fileKey:
+    if existing and existing.fileKey and existing.fileKey != report.fileKey:
         await storage.remove(existing.fileKey)
-    return serialize_report(report)
+    return report
 
 
 async def find_visible(actor: dict, report_id: str) -> Any:
