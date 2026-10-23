@@ -6,12 +6,18 @@ import { useNav } from '../lib/nav';
 import { get, post, ApiRequestError } from '../lib/api';
 import type { StoreConfig, SubscriptionInfo } from '../lib/types';
 import { money, titleCase, shortDate } from '../lib/format';
-import { loadStoreConfig, mockEvent, openStoreSubscriptions, pickStore, PREMIUM_NAME, PREMIUM_PLAN_KEY, STORE_LABEL, trialLabel, type MockEvent } from '../lib/billing';
+import { loadStoreConfig, mockEvent, openStoreSubscriptions, pickStore, PREMIUM_NAME, PREMIUM_PLAN_KEY, STORE_LABEL, trialAdjective, trialLabel, type MockEvent } from '../lib/billing';
 import { Screen } from '../components/Kit';
 import { LightButton, LightError, LightPill, LightProgress, type LightTone } from '../components/LightKit';
 import { light as c } from '../lib/theme';
 
 type McName = ComponentProps<typeof MaterialCommunityIcons>['name'];
+
+/** Routify Premium's monthly price from the API's plan, e.g. "€30.00" (the store's own price is shown on the Paywall). */
+const premiumPrice = (info: SubscriptionInfo) => {
+  const plan = info.plans.find((p) => p.key === PREMIUM_PLAN_KEY);
+  return plan ? money(plan.monthlyPrice, plan.currency) : null;
+};
 
 const errorText = (err: unknown, fallback: string) => (err instanceof ApiRequestError || err instanceof Error ? err.message : fallback);
 
@@ -79,7 +85,7 @@ export default function Subscription() {
                 onEvent={(event) => run(`mock-${event}`, () => mockEvent(event), 'The test event failed')} />
             ) : null}
 
-            {store && !storeManaged ? <UpgradeCard trial={trial} trialText={trialLabel(config?.trialDays ?? 1)} onOpen={() => navigate('Paywall')} /> : null}
+            {store && !storeManaged ? <UpgradeCard trial={trial} trialDays={config?.trialDays ?? 7} price={premiumPrice(info)} onOpen={() => navigate('Paywall')} /> : null}
             {storeUnreachable ? <StoreUnavailable /> : null}
             {manualMode ? (
               <ManualPremium info={info} busy={busy}
@@ -155,17 +161,18 @@ function CurrentPlan({ info, storeManaged, manualMode, busy, onCancel, onManage 
   );
 }
 
-function UpgradeCard({ trial, trialText, onOpen }: { trial: boolean; trialText: string; onOpen: () => void }) {
+function UpgradeCard({ trial, trialDays, price, onOpen }: { trial: boolean; trialDays: number; price: string | null; onOpen: () => void }) {
+  const trialText = trialLabel(trialDays);
   return (
     <View style={s.card}>
       <View style={s.cardHead}>
         <View style={s.icon}><MaterialCommunityIcons name="crown-outline" size={24} color={c.link} /></View>
         <View style={{ flex: 1 }}>
-          <Text style={s.planName}>{trial ? `Try ${PREMIUM_NAME} free for ${trialText}` : `Get ${PREMIUM_NAME}`}</Text>
-          <Text style={s.meta}>Route planning, imports, proof photos, reports and priority support.</Text>
+          <Text style={s.planName}>{PREMIUM_NAME}</Text>
+          <Text style={s.meta}>{trial ? `${trialText} free${price ? `, then ${price}/month` : ''}. Cancel anytime.` : price ? `${price}/month. Cancel anytime.` : 'Route planning, imports, proof photos, reports and priority support.'}</Text>
         </View>
       </View>
-      <LightButton title={trial ? 'Start free trial' : `See ${PREMIUM_NAME}`} onPress={onOpen} style={{ marginTop: 16 }} />
+      <LightButton title={trial ? `Start ${trialAdjective(trialDays)} free trial` : `Get ${PREMIUM_NAME}`} onPress={onOpen} style={{ marginTop: 16 }} />
     </View>
   );
 }

@@ -8,7 +8,7 @@ import { get, ApiRequestError } from '../lib/api';
 import { queryClient } from '../lib/query';
 import type { SubscriptionInfo } from '../lib/types';
 import { money } from '../lib/format';
-import { buy, loadStoreConfig, openStoreSubscriptions, pickStore, PREMIUM_NAME, PREMIUM_PLAN_KEY, restore, STORE_LABEL, trialAdjective, trialLabel } from '../lib/billing';
+import { buy, loadStoreConfig, openStoreSubscriptions, pickStore, PREMIUM_NAME, PREMIUM_PLAN_KEY, restore, STORE_LABEL, trialLabel } from '../lib/billing';
 import { availableTrialDays, buyPackage, isCancelled, loadPremiumPackage, purchaseErrorMessage, restorePurchases } from '../lib/revenuecat';
 import { Screen } from '../components/Kit';
 import { LightButton, LightError, LightPill } from '../components/LightKit';
@@ -153,7 +153,7 @@ export default function Paywall() {
 
           <View style={s.footer}>
             <LightButton
-              title={loaded.offer.trialDays > 0 ? `Start ${trialAdjective(loaded.offer.trialDays)} free trial` : `Subscribe for ${loaded.offer.price}/month`}
+              title={loaded.offer.trialDays > 0 ? `${trialLabel(loaded.offer.trialDays)} free, then ${loaded.offer.price}/month` : `Subscribe · ${loaded.offer.price}/month`}
               onPress={() => (loaded.offer.store === 'mock' ? setConfirming(true) : void purchase(loaded.offer))}
               loading={busy === 'buy'} disabled={busy === 'restore'} />
             <Text style={s.terms}>
