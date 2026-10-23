@@ -1,230 +1,302 @@
-import { useCallback, useMemo, useState } from 'react';
-import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useCallback, useState } from 'react';
+import { ActivityIndicator, Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
+import type { PurchasesPackage } from 'react-native-purchases';
 import { useFocusEffect } from '../lib/useFocusEffect';
 import { useNav } from '../lib/nav';
 import { get, ApiRequestError } from '../lib/api';
-import type { BillingCycle, PaidPlanKey, Plan, StoreConfig, SubscriptionInfo } from '../lib/types';
+import { queryClient } from '../lib/query';
+import type { SubscriptionInfo } from '../lib/types';
 import { money } from '../lib/format';
-import { annualSaving, buy, loadStoreConfig, pickStore, restore, STORE_LABEL, trialLabel } from '../lib/billing';
+import { buy, loadStoreConfig, openStoreSubscriptions, pickStore, PREMIUM_NAME, PREMIUM_PLAN_KEY, restore, STORE_LABEL, trialAdjective, trialLabel } from '../lib/billing';
+import { availableTrialDays, buyPackage, isCancelled, loadPremiumPackage, purchaseErrorMessage, restorePurchases } from '../lib/revenuecat';
 import { Screen } from '../components/Kit';
-import RevenueCatPaywall from '../components/RevenueCatPaywall';
-import { DARK_ON_PRIMARY, ErrorBanner, PButton, Pill, PRIMARY_GRADIENT, gradient, type McName } from '../components/Premium';
-import { premium as c, premiumRadius as r } from '../lib/theme';
+import { LightButton, LightError, LightPill } from '../components/LightKit';
+import { light as c } from '../lib/theme';
 
-type PaidPlan = Plan & { key: PaidPlanKey };
-
-const FEATURE_ICONS: Record<string, McName> = {
-  'PDF import': 'file-document-outline', 'Route planning': 'map-marker-path', 'Daily reports': 'calendar-check-outline', 'Priority support': 'headset',
+/** What the page sells, from whichever store this phone buys through. */
+type Offer = {
+  store: 'revenuecat' | 'mock';
+  price: string; // "€30.00", from the store (RevenueCat) or the API's plan (test store)
+  trialDays: number; // 0: no free trial for this rider
+  pkg?: PurchasesPackage;
+  billedTo: string;
 };
+
+type Loaded =
+  | { kind: 'offer'; offer: Offer }
+  | { kind: 'subscribed'; info: SubscriptionInfo }
+  | { kind: 'unavailable'; text: string };
+
+const FEATURES: { icon: React.ComponentProps<typeof MaterialCommunityIcons>['name']; text: string }[] = [
+  { icon: 'map-marker-path', text: 'Route planning and optimising' },
+  { icon: 'file-document-outline', text: 'Import stops from PDF and photos' },
+  { icon: 'camera-outline', text: 'Proof of delivery photos' },
+  { icon: 'calendar-check-outline', text: 'Daily delivery reports' },
+  { icon: 'cloud-off-outline', text: 'Works offline, syncs when back online' },
+  { icon: 'headset', text: 'Priority support' },
+];
+
 const errorText = (err: unknown, fallback: string) => (err instanceof ApiRequestError || err instanceof Error ? err.message : fallback);
 
-/** The store paywall, on its own screen like WhatsApp's: choose a plan, then buy through the phone's store. */
+async function loadOffer(): Promise<Loaded> {
+  const [me, config] = await Promise.all([get<SubscriptionInfo>('/subscriptions/me'), loadStoreConfig()]);
+  const info = me.data;
+  const sub = info.subscription;
+  if (sub?.storeManaged && info.store && (sub.status === 'active' || sub.status === 'trialing' || sub.status === 'past_due')) {
+    return { kind: 'subscribed', info };
+  }
+  const store = pickStore(config);
+  if (store === 'revenuecat') {
+    const pkg = await loadPremiumPackage();
+    if (!pkg) return { kind: 'unavailable', text: `${PREMIUM_NAME} is not set up in the store yet.` };
+    return { kind: 'offer', offer: { store, pkg, price: pkg.product.priceString, trialDays: await availableTrialDays(pkg), billedTo: STORE_LABEL.revenuecat } };
+  }
+  if (store === 'mock') {
+    const plan = info.plans.find((p) => p.key === PREMIUM_PLAN_KEY);
+    if (!plan) return { kind: 'unavailable', text: `${PREMIUM_NAME} is not available right now.` };
+    return { kind: 'offer', offer: { store, price: money(plan.monthlyPrice, plan.currency), trialDays: config.trialEligible.mock ? config.trialDays : 0, billedTo: 'the test store' } };
+  }
+  return { kind: 'unavailable', text: 'In-app purchases are not available on this version of the app.' };
+}
+
+/** Routify Premium: one monthly plan with the store's free trial, on one page. Bought through Google Play / the App
+ * Store via RevenueCat (the test store where RevenueCat cannot run, e.g. Expo Go). */
 export default function Paywall() {
   const { goBack } = useNav();
-  const [info, setInfo] = useState<SubscriptionInfo | null>(null);
-  const [config, setConfig] = useState<StoreConfig | null>(null);
+  const [loaded, setLoaded] = useState<Loaded | null>(null);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState<'buy' | 'restore' | null>(null);
-  const [planKey, setPlanKey] = useState<PaidPlanKey>('pro');
-  const [cycle, setCycle] = useState<BillingCycle>('monthly');
   const [confirming, setConfirming] = useState(false);
 
-  useFocusEffect(useCallback(() => {
-    Promise.all([get<SubscriptionInfo>('/subscriptions/me'), loadStoreConfig()])
-      .then(([me, storeConfig]) => {
-        setInfo(me.data);
-        setConfig(storeConfig);
-        const current = me.data.subscription;
-        // Someone changing plan starts from the other plan, so the screen opens on a real change.
-        if (current?.storeManaged && current.planKey === 'pro') setPlanKey('starter');
-      })
-      .catch((err) => setError(errorText(err, 'Could not load the plans')));
-  }, []));
+  const load = useCallback(() => {
+    setError('');
+    loadOffer().then(setLoaded).catch((err) => setError(errorText(err, 'Could not load Routify Premium')));
+  }, []);
+  useFocusEffect(load);
 
-  const plans = useMemo(() => (info?.plans ?? []).filter((p): p is PaidPlan => p.key !== 'trial'), [info]);
-  const selected = plans.find((p) => p.key === planKey) ?? plans[plans.length - 1];
-  const store = config ? pickStore(config) : null;
+  // Home's chip and the Subscription screen read the plan from the API: refresh them, then close.
+  const done = async () => {
+    await queryClient.invalidateQueries({ queryKey: ['home'] });
+    goBack();
+  };
 
-  if (!info || !config) {
-    return (
-      <Screen style={{ padding: 22, backgroundColor: c.background }}>
-        {error ? <ErrorBanner text={error} /> : <Text style={{ color: c.textSecondary }}>Loading…</Text>}
-      </Screen>
-    );
-  }
-  // RevenueCat: its own paywall, designed in the RevenueCat dashboard (offering, prices and trial come from the store).
-  if (store === 'revenuecat') {
-    return <Screen style={{ backgroundColor: c.background }}><RevenueCatPaywall onDone={goBack} /></Screen>;
-  }
-  if (!store || !selected) {
-    return (
-      <Screen style={{ padding: 22, backgroundColor: c.background }}>
-        <ErrorBanner text="In-app purchases are not available right now." />
-      </Screen>
-    );
-  }
-
-  const changing = Boolean(info.subscription?.storeManaged && info.store);
-  const trial = !changing && Boolean(config.trialEligible[store]);
-  const trialText = trialLabel(config.trialDays);
-  const price = cycle === 'annual' ? selected.annualPrice : selected.monthlyPrice;
-  const unit = cycle === 'annual' ? 'year' : 'month';
-  const saving = annualSaving(selected.monthlyPrice, selected.annualPrice);
-  const isCurrent = changing && info.subscription?.planKey === selected.key && info.subscription?.billingCycle === cycle;
-  const features: { icon: McName; text: string }[] = [
-    { icon: 'truck-fast-outline', text: `${selected.limits.deliveriesPerMonth.toLocaleString()} deliveries a month` },
-    { icon: 'file-chart-outline', text: `${selected.limits.reportsPerMonth.toLocaleString()} reports a month` },
-    ...selected.features.map((f) => ({ icon: FEATURE_ICONS[f] ?? 'check-circle-outline', text: f })),
-  ];
-  const cta = isCurrent ? 'Your current plan' : trial ? `Try for ${money(0, selected.currency)}` : changing ? `Switch to ${selected.name}` : `Subscribe for ${money(price, selected.currency)}`;
-
-  const purchase = async () => {
+  const purchase = async (offer: Offer) => {
     setBusy('buy');
     setError('');
     try {
-      await buy(store, selected.key, cycle, { trial });
+      if (offer.store === 'revenuecat') await buyPackage(offer.pkg!);
+      else await buy('mock', PREMIUM_PLAN_KEY, 'monthly', { trial: offer.trialDays > 0 });
       setConfirming(false);
-      goBack(); // the Subscription screen reloads and shows the new plan
-    } catch (err) { setError(errorText(err, 'The purchase did not go through')); setConfirming(false); }
-    finally { setBusy(null); }
+      await done();
+    } catch (err) {
+      setConfirming(false);
+      if (!isCancelled(err)) setError(offer.store === 'revenuecat' ? purchaseErrorMessage(err) : errorText(err, 'The purchase did not go through'));
+    } finally { setBusy(null); }
   };
-  const restorePurchases = async () => {
+
+  const onRestore = async (offer: Offer) => {
     setBusy('restore');
     setError('');
-    try { await restore(store); goBack(); } catch (err) { setError(errorText(err, 'Nothing to restore')); } finally { setBusy(null); }
+    try {
+      const info = offer.store === 'revenuecat' ? await restorePurchases() : await restore('mock');
+      const status = info.subscription?.status;
+      if (status === 'active' || status === 'trialing') await done();
+      else setError(`No active ${PREMIUM_NAME} subscription was found for this account.`);
+    } catch (err) { setError(offer.store === 'revenuecat' ? purchaseErrorMessage(err) : errorText(err, 'Nothing to restore')); }
+    finally { setBusy(null); }
   };
-  // Real stores show their own purchase sheet; the test store shows ours so the flow feels the same.
-  const onBuy = () => (store === 'mock' ? setConfirming(true) : void purchase());
+
+  const offer = loaded?.kind === 'offer' ? loaded.offer : null;
 
   return (
     <Screen style={{ backgroundColor: c.background }}>
-      <ScrollView contentContainerStyle={{ padding: 18, paddingTop: 4, paddingBottom: 24 }}>
-        {store === 'mock' ? <Pill text="Test store · no real payment" tone="blue" icon="flask-outline" style={{ alignSelf: 'center' }} /> : null}
-
-        <View style={{ alignItems: 'center', marginTop: 14 }}>
-          <View style={s.heroIcon}><MaterialCommunityIcons name="crown" size={34} color={c.primary} /></View>
-          <Text style={s.heroTitle}>
-            {trial ? 'Try ' : changing ? 'Switch to ' : 'Get '}<Text style={{ color: c.primary }}>Routify {selected.name}</Text>{trial ? `\nfree for ${trialText}` : ''}
-          </Text>
-          <Text style={s.heroSub}>Plan routes faster and handle more drops every day</Text>
-          <Text style={s.price}>{money(price, selected.currency)}/{unit} · Price may include taxes</Text>
-        </View>
-
-        <ErrorBanner text={error} />
-
-        <View style={s.segment}>
-          {plans.map((p) => (
-            <Pressable key={p.key} onPress={() => setPlanKey(p.key)} style={[s.segmentItem, p.key === selected.key && s.segmentActive]}>
-              <Text style={[s.segmentText, p.key === selected.key && s.segmentTextActive]}>{p.name}</Text>
-            </Pressable>
-          ))}
-        </View>
-        <View style={[s.segment, { marginTop: 8 }]}>
-          {(['monthly', 'annual'] as const).map((value) => (
-            <Pressable key={value} onPress={() => setCycle(value)} style={[s.segmentItem, value === cycle && s.segmentActive]}>
-              <Text style={[s.segmentText, value === cycle && s.segmentTextActive]}>{value === 'monthly' ? 'Monthly' : 'Yearly'}</Text>
-              {value === 'annual' && saving ? <Text style={[s.save, value === cycle && { color: DARK_ON_PRIMARY }]}>Save {saving}%</Text> : null}
-            </Pressable>
-          ))}
-        </View>
-
-        <View style={s.features}>
-          {features.map((f, i) => (
-            <View key={f.text} style={[s.featureRow, i > 0 && s.featureDivider]}>
-              <MaterialCommunityIcons name={f.icon} size={20} color={c.text} />
-              <Text style={s.featureText}>{f.text}</Text>
-            </View>
-          ))}
-        </View>
-      </ScrollView>
-
-      {/* Pinned to the bottom, like the stores' own paywalls. */}
-      <View style={s.footer}>
-        <Text style={s.terms}>
-          {trial ? `Free for ${trialText}, then ${money(price, selected.currency)}/${unit}. ` : ''}
-          Charged to your {store === 'apple' ? 'Apple ID' : store === 'google' ? 'Google Play account' : 'test account'}. Renews until cancelled in {STORE_LABEL[store]}.
-        </Text>
-        <Pressable onPress={onBuy} disabled={Boolean(busy) || isCurrent}
-          style={({ pressed }) => [s.cta, !isCurrent && gradient(PRIMARY_GRADIENT), isCurrent && s.ctaDisabled, (pressed || busy === 'buy') && { opacity: 0.85 }]}>
-          <Text style={[s.ctaText, isCurrent && { color: c.textSecondary }]}>{busy === 'buy' ? 'Please wait…' : cta}</Text>
+      <View style={s.topBar}>
+        <Pressable onPress={goBack} hitSlop={12} accessibilityLabel="Close" style={s.close}>
+          <Ionicons name="close" size={24} color={c.text} />
         </Pressable>
-        <View style={s.footerLinks}>
-          <Text style={s.cancelAnytime}>Cancel anytime.</Text>
-          {!changing ? (
-            <Pressable onPress={restorePurchases} disabled={Boolean(busy)} hitSlop={8}>
-              <Text style={s.restore}>{busy === 'restore' ? 'Restoring…' : 'Restore purchases'}</Text>
-            </Pressable>
-          ) : null}
-        </View>
+        {offer ? (
+          <Pressable onPress={() => void onRestore(offer)} disabled={Boolean(busy)} hitSlop={10}>
+            <Text style={s.restore}>{busy === 'restore' ? 'Restoring…' : 'Restore'}</Text>
+          </Pressable>
+        ) : null}
       </View>
 
-      {store === 'mock' ? (
-        <MockStoreSheet visible={confirming} plan={selected} cycle={cycle} trial={trial} trialText={trialText} busy={busy === 'buy'} onConfirm={purchase} onClose={() => setConfirming(false)} />
-      ) : null}
+      {!loaded ? (
+        <View style={s.center}>
+          {error ? (
+            <>
+              <LightError text={error} />
+              <LightButton title="Try again" variant="outline" onPress={load} style={{ alignSelf: 'stretch', marginTop: 16 }} />
+            </>
+          ) : <ActivityIndicator color={c.link} />}
+        </View>
+      ) : loaded.kind === 'unavailable' ? (
+        <View style={s.center}><LightError text={loaded.text} /></View>
+      ) : loaded.kind === 'subscribed' ? (
+        <Subscribed info={loaded.info} onManage={() => { if (loaded.info.store) void openStoreSubscriptions(loaded.info.store.store, loaded.info.store.productId).then(load); }} />
+      ) : (
+        <>
+          <ScrollView contentContainerStyle={s.body}>
+            <Hero offer={loaded.offer} />
+            <LightError text={error} />
+            <PlanCard offer={loaded.offer} />
+            {loaded.offer.trialDays > 0 ? <TrialSteps offer={loaded.offer} /> : null}
+            <Text style={s.section}>Everything in Premium</Text>
+            {FEATURES.map((f) => (
+              <View key={f.text} style={s.feature}>
+                <MaterialCommunityIcons name={f.icon} size={22} color={c.link} />
+                <Text style={s.featureText}>{f.text}</Text>
+              </View>
+            ))}
+          </ScrollView>
+
+          <View style={s.footer}>
+            <LightButton
+              title={loaded.offer.trialDays > 0 ? `Start ${trialAdjective(loaded.offer.trialDays)} free trial` : `Subscribe for ${loaded.offer.price}/month`}
+              onPress={() => (loaded.offer.store === 'mock' ? setConfirming(true) : void purchase(loaded.offer))}
+              loading={busy === 'buy'} disabled={busy === 'restore'} />
+            <Text style={s.terms}>
+              {loaded.offer.trialDays > 0 ? `Free for ${trialLabel(loaded.offer.trialDays)}, then ${loaded.offer.price}/month. ` : `${loaded.offer.price}/month. `}
+              Billed through {loaded.offer.billedTo}. Renews every month until you cancel. Cancel anytime.
+            </Text>
+          </View>
+
+          {loaded.offer.store === 'mock' ? (
+            <TestStoreSheet visible={confirming} offer={loaded.offer} busy={busy === 'buy'} onConfirm={() => void purchase(loaded.offer)} onClose={() => setConfirming(false)} />
+          ) : null}
+        </>
+      )}
     </Screen>
   );
 }
 
-function MockStoreSheet({ visible, plan, cycle, trial, trialText, busy, onConfirm, onClose }: {
-  visible: boolean; plan: Plan; cycle: BillingCycle; trial: boolean; trialText: string; busy: boolean; onConfirm: () => void; onClose: () => void;
-}) {
-  const price = cycle === 'annual' ? plan.annualPrice : plan.monthlyPrice;
-  const unit = cycle === 'annual' ? 'year' : 'month';
+function Hero({ offer }: { offer: Offer }) {
+  return (
+    <View style={{ alignItems: 'center' }}>
+      <View style={s.crown}><MaterialCommunityIcons name="crown" size={34} color={c.link} /></View>
+      <Text style={s.title}>{PREMIUM_NAME}</Text>
+      {offer.trialDays > 0 ? (
+        <>
+          <Text style={s.headline}>Try it free for {trialLabel(offer.trialDays)}</Text>
+          <Text style={s.sub}>then {offer.price} a month. Cancel anytime.</Text>
+        </>
+      ) : <Text style={s.sub}>Plan routes faster and deliver more every day.</Text>}
+      {offer.store === 'mock' ? <View style={{ marginTop: 12 }}><LightPill text="Test store · no real payment" tone="blue" /></View> : null}
+    </View>
+  );
+}
+
+function PlanCard({ offer }: { offer: Offer }) {
+  return (
+    <View style={s.plan}>
+      <Ionicons name="checkmark-circle" size={24} color={c.link} />
+      <View style={{ flex: 1 }}>
+        <Text style={s.planName}>Monthly</Text>
+        <Text style={s.planPrice}><Text style={s.planAmount}>{offer.price}</Text> / month</Text>
+      </View>
+      {offer.trialDays > 0 ? <LightPill text={`${trialLabel(offer.trialDays).toUpperCase()} FREE`} tone="green" /> : null}
+    </View>
+  );
+}
+
+/** When the trial ends and what is charged, so nobody is surprised by the first payment. */
+function TrialSteps({ offer }: { offer: Offer }) {
+  const steps = [
+    { icon: 'lock-open-variant-outline' as const, title: 'Today', text: 'Full access to Routify Premium, free.' },
+    { icon: 'bell-outline' as const, title: `After ${trialLabel(offer.trialDays)}`, text: `Your first ${offer.price} is charged, then every month.` },
+    { icon: 'close-circle-outline' as const, title: 'Anytime', text: `Cancel in ${offer.billedTo} before the trial ends and pay nothing.` },
+  ];
+  return (
+    <View style={s.steps}>
+      {steps.map((step, i) => (
+        <View key={step.title} style={[s.step, i > 0 && s.stepDivider]}>
+          <MaterialCommunityIcons name={step.icon} size={20} color={c.textLabel} />
+          <View style={{ flex: 1 }}>
+            <Text style={s.stepTitle}>{step.title}</Text>
+            <Text style={s.stepText}>{step.text}</Text>
+          </View>
+        </View>
+      ))}
+    </View>
+  );
+}
+
+function Subscribed({ info, onManage }: { info: SubscriptionInfo; onManage: () => void }) {
+  const sub = info.subscription!;
+  const trialing = sub.status === 'trialing';
+  const ends = new Date(sub.currentPeriodEnd).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
+  return (
+    <View style={[s.body, { alignItems: 'center' }]}>
+      <View style={s.crown}><MaterialCommunityIcons name="crown" size={34} color={c.link} /></View>
+      <Text style={s.title}>You have {PREMIUM_NAME}</Text>
+      <Text style={s.sub}>
+        {sub.status === 'past_due' ? `Your last payment failed. Update it in ${info.store ? STORE_LABEL[info.store.store] : 'the store'} to keep Premium.`
+          : sub.cancelAtPeriodEnd ? `Your plan ends on ${ends}.`
+            : trialing ? `Your free trial ends on ${ends}, then it renews monthly.` : `Renews on ${ends}.`}
+      </Text>
+      {info.store?.store !== 'mock' ? <LightButton title="Manage subscription" variant="outline" onPress={onManage} style={{ alignSelf: 'stretch', marginTop: 28 }} /> : null}
+    </View>
+  );
+}
+
+function TestStoreSheet({ visible, offer, busy, onConfirm, onClose }: { visible: boolean; offer: Offer; busy: boolean; onConfirm: () => void; onClose: () => void }) {
+  const trial = offer.trialDays > 0;
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
       <Pressable style={s.backdrop} onPress={onClose} />
       <View style={s.sheet}>
         <View style={s.grabber} />
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
-          <MaterialCommunityIcons name="flask-outline" size={20} color="#7FB2FF" />
-          <Text style={{ flex: 1, color: c.text, fontSize: 15, fontWeight: '800' }}>Test store</Text>
+          <MaterialCommunityIcons name="flask-outline" size={20} color={c.link} />
+          <Text style={{ flex: 1, color: c.text, fontSize: 16, fontWeight: '700' }}>Test store</Text>
           <Pressable onPress={onClose} hitSlop={10}><Ionicons name="close" size={22} color={c.textSecondary} /></Pressable>
         </View>
         <View style={s.sheetRow}>
-          <Text style={s.sheetLabel}>Routify {plan.name} ({cycle === 'annual' ? 'yearly' : 'monthly'})</Text>
-          <Text style={s.sheetValue}>{trial ? money(0, plan.currency) : money(price, plan.currency)}</Text>
+          <Text style={{ flex: 1, color: c.text, fontSize: 15, fontWeight: '600' }}>{PREMIUM_NAME} (monthly)</Text>
+          <Text style={{ color: c.text, fontSize: 16, fontWeight: '700' }}>{trial ? 'Free' : offer.price}</Text>
         </View>
-        {trial ? <Text style={s.sheetNote}>Free for {trialText}, then {money(price, plan.currency)}/{unit}. You can cancel before the trial ends.</Text> : null}
-        <Text style={s.sheetNote}>This is a test purchase. No money is charged. On a real phone this is where Google Play or the App Store asks you to confirm.</Text>
-        <PButton title={trial ? 'Start free trial' : 'Subscribe'} onPress={onConfirm} loading={busy} style={{ marginTop: 16 }} />
+        {trial ? <Text style={s.sheetNote}>Free for {trialLabel(offer.trialDays)}, then {offer.price}/month.</Text> : null}
+        <Text style={s.sheetNote}>A test purchase: no money is charged. On a store build, Google Play or the App Store asks you to confirm here.</Text>
+        <LightButton title={trial ? 'Start free trial' : 'Subscribe'} onPress={onConfirm} loading={busy} style={{ marginTop: 18 }} />
       </View>
     </Modal>
   );
 }
 
-
-
 const s = StyleSheet.create({
-  heroIcon: { width: 68, height: 68, borderRadius: 34, alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(255,170,50,0.14)', borderWidth: 1, borderColor: 'rgba(255,170,50,0.35)' },
-  heroTitle: { color: c.text, fontSize: 22, fontWeight: '800', textAlign: 'center', marginTop: 14, lineHeight: 29 },
-  heroSub: { color: c.textSecondary, fontSize: 13, textAlign: 'center', marginTop: 6 },
-  price: { color: c.textMuted, fontSize: 12, textAlign: 'center', marginTop: 6, marginBottom: 4 },
-  segment: { flexDirection: 'row', backgroundColor: c.surfaceSoft, borderRadius: r.pill, padding: 4, marginTop: 16 },
-  segmentItem: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingVertical: 9, borderRadius: r.pill },
-  segmentActive: { backgroundColor: c.primary },
-  segmentText: { color: c.textSecondary, fontSize: 13, fontWeight: '700' },
-  segmentTextActive: { color: DARK_ON_PRIMARY },
-  save: { color: c.success, fontSize: 10, fontWeight: '800', marginTop: 1 },
-  features: { marginTop: 16, borderRadius: r.large, borderWidth: 1, borderColor: c.border, overflow: 'hidden', backgroundColor: c.surface },
-  featureRow: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 14, paddingVertical: 13 },
-  featureDivider: { borderTopWidth: 1, borderTopColor: c.divider },
-  featureText: { flex: 1, color: c.text, fontSize: 14, fontWeight: '600' },
+  topBar: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingTop: 8, paddingBottom: 4 },
+  close: { width: 40, height: 40, borderRadius: 20, alignItems: 'center', justifyContent: 'center', backgroundColor: c.soft },
+  restore: { color: c.link, fontSize: 15, fontWeight: '600' },
+  center: { flex: 1, justifyContent: 'center', padding: 24 },
+  body: { paddingHorizontal: 24, paddingTop: 8, paddingBottom: 24 },
 
-  footer: { paddingHorizontal: 18, paddingTop: 12, paddingBottom: 14, borderTopWidth: 1, borderTopColor: c.divider, backgroundColor: c.background },
-  terms: { color: c.textMuted, fontSize: 11, lineHeight: 16, textAlign: 'center' },
-  cta: { marginTop: 10, borderRadius: r.pill, paddingVertical: 14, alignItems: 'center', backgroundColor: c.primary },
-  ctaDisabled: { backgroundColor: c.surfaceSoft },
-  ctaText: { color: DARK_ON_PRIMARY, fontSize: 16, fontWeight: '800' },
-  footerLinks: { flexDirection: 'row', justifyContent: 'center', alignItems: 'center', gap: 16, marginTop: 10 },
-  cancelAnytime: { color: c.textSecondary, fontSize: 12 },
-  restore: { color: c.primary, fontSize: 12, fontWeight: '700' },
+  crown: { width: 72, height: 72, borderRadius: 22, alignItems: 'center', justifyContent: 'center', backgroundColor: c.linkBg },
+  title: { color: c.text, fontSize: 30, fontWeight: '800', textAlign: 'center', marginTop: 16, letterSpacing: -0.5 },
+  headline: { color: c.link, fontSize: 18, fontWeight: '700', textAlign: 'center', marginTop: 8 },
+  sub: { color: c.textSecondary, fontSize: 15, lineHeight: 22, textAlign: 'center', marginTop: 6 },
 
-  backdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.55)' },
-  sheet: { backgroundColor: c.surfaceElevated, borderTopLeftRadius: r.xlarge, borderTopRightRadius: r.xlarge, padding: 20, paddingBottom: 34, borderWidth: 1, borderColor: c.border },
+  plan: { flexDirection: 'row', alignItems: 'center', gap: 12, marginTop: 24, padding: 16, borderRadius: 16, borderWidth: 2, borderColor: c.link, backgroundColor: c.linkBg },
+  planName: { color: c.text, fontSize: 16, fontWeight: '700' },
+  planPrice: { color: c.textSecondary, fontSize: 14, marginTop: 2 },
+  planAmount: { color: c.text, fontSize: 18, fontWeight: '800' },
+
+  steps: { marginTop: 16, borderRadius: 16, borderWidth: 1, borderColor: c.border },
+  step: { flexDirection: 'row', gap: 12, padding: 14 },
+  stepDivider: { borderTopWidth: 1, borderTopColor: c.border },
+  stepTitle: { color: c.text, fontSize: 14, fontWeight: '700' },
+  stepText: { color: c.textSecondary, fontSize: 13, lineHeight: 19, marginTop: 2 },
+
+  section: { color: c.textSecondary, fontSize: 13, fontWeight: '600', marginTop: 24, marginBottom: 4 },
+  feature: { flexDirection: 'row', alignItems: 'center', gap: 14, paddingVertical: 10 },
+  featureText: { flex: 1, color: c.text, fontSize: 15 },
+
+  footer: { paddingHorizontal: 24, paddingTop: 12, paddingBottom: 16, borderTopWidth: 1, borderTopColor: c.border, backgroundColor: c.background },
+  terms: { color: c.textSecondary, fontSize: 12, lineHeight: 17, textAlign: 'center', marginTop: 10 },
+
+  backdrop: { flex: 1, backgroundColor: 'rgba(24,24,27,0.45)' },
+  sheet: { backgroundColor: c.surface, borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 20, paddingBottom: 34 },
   grabber: { alignSelf: 'center', width: 40, height: 4, borderRadius: 2, backgroundColor: c.border, marginBottom: 14 },
-  sheetRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 16, paddingVertical: 12, borderTopWidth: 1, borderBottomWidth: 1, borderColor: c.divider },
-  sheetLabel: { color: c.text, fontSize: 14, fontWeight: '600', flex: 1 },
-  sheetValue: { color: c.text, fontSize: 15, fontWeight: '800' },
-  sheetNote: { color: c.textSecondary, fontSize: 12, lineHeight: 17, marginTop: 10 },
+  sheetRow: { flexDirection: 'row', alignItems: 'center', marginTop: 16, paddingVertical: 12, borderTopWidth: 1, borderBottomWidth: 1, borderColor: c.border },
+  sheetNote: { color: c.textSecondary, fontSize: 13, lineHeight: 18, marginTop: 10 },
 });

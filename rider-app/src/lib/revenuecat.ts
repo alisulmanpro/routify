@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react';
 import { Platform } from 'react-native';
 import Constants, { ExecutionEnvironment } from 'expo-constants';
-import Purchases, { LOG_LEVEL, PURCHASES_ERROR_CODE, type CustomerInfo, type PurchasesError } from 'react-native-purchases';
+import Purchases, {
+  INTRO_ELIGIBILITY_STATUS, LOG_LEVEL, PURCHASES_ERROR_CODE, type CustomerInfo, type PurchasesError, type PurchasesPackage, type PurchasesStoreProduct,
+} from 'react-native-purchases';
 import { post } from './api';
 import type { SubscriptionInfo } from './types';
 
@@ -77,6 +79,51 @@ export function useCustomerInfo() {
     return () => { alive = false; Purchases.removeCustomerInfoUpdateListener(listener); };
   }, []);
   return { customerInfo, isPro: hasPro(customerInfo), error };
+}
+
+/** The one package sold: Routify Premium, monthly, from the current offering set up in the RevenueCat dashboard. */
+export async function loadPremiumPackage(): Promise<PurchasesPackage | null> {
+  const offerings = await Purchases.getOfferings();
+  const offering = offerings.current;
+  return offering?.monthly ?? offering?.availablePackages[0] ?? null;
+}
+
+/** The store's free trial on this product, in days (0 when none). Google Play: the default option's free phase;
+ * App Store and the Test Store: an introductory price of 0. The length is whatever the store product says. */
+export function freeTrialDays(product: PurchasesStoreProduct): number {
+  const free = product.defaultOption?.freePhase?.billingPeriod;
+  if (free) return periodDays(free.unit, free.value);
+  const intro = product.introPrice;
+  return intro && intro.price === 0 ? periodDays(intro.periodUnit, intro.periodNumberOfUnits) : 0;
+}
+
+/** The free trial this rider can still get. Google Play only lists offers the account is eligible for; the App Store
+ * lists the introductory offer to everyone, so iPhone asks RevenueCat whether this rider already used it. */
+export async function availableTrialDays(pkg: PurchasesPackage): Promise<number> {
+  const days = freeTrialDays(pkg.product);
+  if (!days || Platform.OS !== 'ios') return days;
+  try {
+    const id = pkg.product.identifier;
+    const eligibility = (await Purchases.checkTrialOrIntroductoryPriceEligibility([id]))[id];
+    return eligibility?.status === INTRO_ELIGIBILITY_STATUS.INTRO_ELIGIBILITY_STATUS_INELIGIBLE ? 0 : days;
+  } catch {
+    return days; // unknown: the store sheet shows the real terms before anything is charged
+  }
+}
+
+function periodDays(unit: string, value: number): number {
+  switch (unit) {
+    case 'WEEK': return value * 7;
+    case 'MONTH': return value * 30;
+    case 'YEAR': return value * 365;
+    default: return value; // DAY
+  }
+}
+
+/** Opens the store's purchase sheet, then has the API re-read the rider so the plan is active before the screen closes. */
+export async function buyPackage(pkg: PurchasesPackage) {
+  await Purchases.purchasePackage(pkg);
+  return syncWithServer();
 }
 
 export async function restorePurchases() {

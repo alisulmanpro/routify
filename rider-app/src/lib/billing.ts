@@ -20,10 +20,13 @@ const ANDROID_PACKAGE = 'com.azaan890.routify';
 
 const PHONE_STORE = Platform.OS === 'ios' ? 'the App Store' : 'Google Play';
 export const STORE_LABEL: Record<StoreName, string> = { apple: 'the App Store', google: 'Google Play', revenuecat: PHONE_STORE, mock: 'the test store' };
-/** The free-trial length the admin chose (7, 14 or 30 days): "free for 7 days" / "free for one month". */
-export const trialLabel = (days: number) => (days === 30 ? 'one month' : `${days} days`);
-/** The same length as an adjective: "your 7-day free trial" / "your one-month free trial". */
+/** A free-trial length: "free for 1 day" / "free for 7 days" / "free for one month". */
+export const trialLabel = (days: number) => (days === 30 ? 'one month' : days === 1 ? '1 day' : `${days} days`);
+/** The same length as an adjective: "your 1-day free trial" / "your one-month free trial". */
 export const trialAdjective = (days: number) => (days === 30 ? 'one-month' : `${days}-day`);
+/** The one plan the app sells (the API's `pro` plan, named in Admin → Plans). */
+export const PREMIUM_PLAN_KEY = 'pro';
+export const PREMIUM_NAME = 'Routify Premium';
 
 export const loadStoreConfig = async () => (await get<StoreConfig>('/subscriptions/store')).data;
 
@@ -73,5 +76,3 @@ export async function openStoreSubscriptions(store: StoreName, productId?: strin
   return Promise.resolve();
 }
 
-/** How much cheaper a year is than twelve months, as a whole percentage. */
-export const annualSaving = (monthly: number, annual: number) => (monthly > 0 ? Math.max(0, Math.round((1 - annual / (monthly * 12)) * 100)) : 0);

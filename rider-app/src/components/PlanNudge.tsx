@@ -1,16 +1,17 @@
 import { useState } from 'react';
 import { Modal, Pressable, StyleSheet, Text, View } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
+import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useQuery } from '@tanstack/react-query';
 import { useNav } from '../lib/nav';
 import { useHome } from '../lib/queries';
-import { loadStoreConfig, pickStore, trialAdjective } from '../lib/billing';
+import { loadStoreConfig, pickStore, PREMIUM_NAME, trialAdjective } from '../lib/billing';
 import { LightButton } from './LightKit';
 import { light as c } from '../lib/theme';
 
 /**
- * Home's top-right "Free trial" / "Upgrade" button, shown while the rider has no working plan (new riders start without
- * one, since the free trial needs a card). Tapping it opens a sheet that leads to the paywall.
+ * Home's top-right plan button. Without a working plan: "Free trial" / "Upgrade", which opens a sheet that leads to the
+ * paywall (new riders start without one, since the free trial needs a card). With Routify Premium (also during its free
+ * trial): a "Premium" badge in the same place, which opens the Subscription screen.
  */
 export default function PlanNudge() {
   const { navigate } = useNav();
@@ -18,9 +19,18 @@ export default function PlanNudge() {
   // The plan status comes with Home's own request (GET /v2/rider/home), so the chip costs no request of its own.
   const status = useHome({ refreshOnFocus: false }).data?.planStatus ?? null;
   const nudge = !!status && ['inactive', 'expired', 'cancelled'].includes(status);
+  const premium = status === 'active' || status === 'trialing' || status === 'past_due';
   // Which store and trial to offer: only needed while the chip shows, and it rarely changes.
   const { data: config = null } = useQuery({ queryKey: ['store-config'], queryFn: () => loadStoreConfig().catch(() => null), enabled: nudge, staleTime: 24 * 60 * 60 * 1000 });
 
+  if (premium) {
+    return (
+      <Pressable onPress={() => navigate('SubscriptionScreen')} hitSlop={6} style={({ pressed }) => [s.chip, s.premium, pressed && { opacity: 0.8 }]} accessibilityLabel={PREMIUM_NAME}>
+        <MaterialCommunityIcons name="crown" size={15} color={c.onInk} />
+        <Text style={[s.chipText, { color: c.onInk }]}>Premium</Text>
+      </Pressable>
+    );
+  }
   if (!nudge) return null;
   const store = config ? pickStore(config) : null;
   const trial = Boolean(store && config?.trialEligible[store]);
@@ -46,12 +56,12 @@ export default function PlanNudge() {
               <Ionicons name={isNew ? 'sparkles' : 'alert-circle-outline'} size={26} color={c.link} />
             </View>
             <Text style={s.title}>
-              {trial && config ? `Start your ${trialAdjective(config.trialDays)} free trial` : isNew ? 'Choose a plan to get started' : 'Your plan has ended'}
+              {trial && config ? `Start your ${trialAdjective(config.trialDays)} free trial` : isNew ? `Get ${PREMIUM_NAME}` : 'Your plan has ended'}
             </Text>
             <Text style={s.sub}>
               {isNew ? 'Add deliveries and plan routes once your plan is active.' : 'Renew to keep adding deliveries.'}
             </Text>
-            <LightButton title={trial ? 'Start free trial' : 'See plans'} onPress={go} style={{ alignSelf: 'stretch', marginTop: 24 }} />
+            <LightButton title={trial ? 'Start free trial' : `See ${PREMIUM_NAME}`} onPress={go} style={{ alignSelf: 'stretch', marginTop: 24 }} />
             <Pressable onPress={() => setOpen(false)} hitSlop={8} style={{ marginTop: 16 }}>
               <Text style={{ color: c.textSecondary, fontSize: 15, fontWeight: '500' }}>Not now</Text>
             </Pressable>
@@ -65,6 +75,7 @@ export default function PlanNudge() {
 const s = StyleSheet.create({
   chip: { flexDirection: 'row', alignItems: 'center', gap: 6, height: 34, paddingHorizontal: 12, borderRadius: 999, backgroundColor: c.linkBg },
   chipText: { color: c.link, fontSize: 14, fontWeight: '600' },
+  premium: { backgroundColor: c.link },
 
   backdrop: { flex: 1, backgroundColor: 'rgba(24,24,27,0.45)', alignItems: 'center', justifyContent: 'center', padding: 24 },
   card: { width: '100%', maxWidth: 400, alignItems: 'center', backgroundColor: c.surface, borderRadius: 24, paddingHorizontal: 24, paddingTop: 32, paddingBottom: 20 },

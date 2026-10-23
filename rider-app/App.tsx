@@ -49,7 +49,7 @@ const TABS: { key: TabName; label: string; icon: IconName }[] = [
 
 // Screens already redesigned on the light design_pref theme: the strip above them goes light too, and they draw their
 // own back arrow, so the Back bar is hidden (the Android back button still works).
-const LIGHT_SCREENS = new Set(['Dashboard', 'AddStops', 'NewRoute', 'RoutePreview', 'RouteMapScreen', 'DeliveryDetail', 'RouteComplete', 'LiveNavigation', 'RouteDetail', 'History', 'Reports', 'Account']);
+const LIGHT_SCREENS = new Set(['Dashboard', 'AddStops', 'NewRoute', 'RoutePreview', 'RouteMapScreen', 'DeliveryDetail', 'RouteComplete', 'LiveNavigation', 'RouteDetail', 'History', 'Reports', 'Account', 'Paywall']);
 
 // Every screen can be opened in any tab's stack (navigate() pushes onto the current tab), as with the old navigator.
 const SCREENS = ['Dashboard', 'RouteMapScreen', 'NewRoute', 'RouteDetail', 'AddStops', 'RoutePreview', 'LiveNavigation', 'DeliveryDetail',
