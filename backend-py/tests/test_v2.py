@@ -358,3 +358,34 @@ async def test_config_tells_the_app_which_versions_are_supported(client):
     assert {"routePreference", "minPasswordLength", "platformName", "supportEmail", "privacyUrl", "paymentInstructions", "trialDays"} <= set(data)
     assert data["minAppVersion"] == "1.0.0" and data["latestAppVersion"] == "1.0.0"
     assert set(data["storeUrls"]) == {"android", "ios"}
+
+
+# ---------------------------------------------------------------- route lists and the current route (ISSUE-08, ISSUE-15)
+
+async def test_current_route_is_the_light_route_or_null(client):
+    _, auth = await rider(client, "v2-current@example.com")
+    none = await client.get("/api/v2/routes/current", headers=auth, params={"date": TODAY})
+    assert none.status_code == 200 and none.json()["data"] is None
+    built = await route_with_stops(client, auth, 3)
+    data = (await client.get("/api/v2/routes/current", headers=auth, params={"date": TODAY})).json()["data"]
+    assert data["id"] == built["id"] and data["status"] == "active" and len(data["stops"]) == 3
+    assert set(data["stops"][0]) == STOP_KEYS
+
+
+async def test_finished_routes_are_summaries_paged_newest_first(client):
+    _, auth = await rider(client, "v2-history@example.com")
+    finished = []
+    for _ in range(3):
+        built = await route_with_stops(client, auth, 2)
+        for stop in built["stops"]:
+            res = await client.post(f"/api/v2/stops/{stop['delivery']['id']}/events", headers={**auth, **key()}, json={"type": "deliver"})
+            assert res.status_code == 200, res.text
+        finished.append(built["id"])
+    first = (await client.get("/api/v2/routes", headers=auth, params={"limit": 2})).json()["data"]
+    assert [r["id"] for r in first["routes"]] == finished[::-1][:2] and first["next"]
+    assert "stops" not in first["routes"][0] and first["routes"][0]["progress"] == {"total": 2, "done": 2, "remaining": 0}
+    assert first["routes"][0]["summary"]["delivered"] == 2 and first["routes"][0]["completedAt"]
+    rest = (await client.get("/api/v2/routes", headers=auth, params={"limit": 2, "before": first["next"]})).json()["data"]
+    assert [r["id"] for r in rest["routes"]] == [finished[0]] and rest["next"] is None
+    bad = await client.get("/api/v2/routes", headers=auth, params={"limit": 500})
+    assert bad.status_code == 400

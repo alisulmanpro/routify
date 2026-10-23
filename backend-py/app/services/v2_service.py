@@ -20,7 +20,7 @@ from ..uploads import UploadedFile
 from . import delivery_service as deliveries
 from . import routing_service
 from .geocoding_service import find_eircode, normalize_eircodes
-from .route_service import OPEN, _left_over_where, _stop_counts, on_stop_finished, summarize_counts
+from .route_service import OPEN, _left_over_where, _stop_counts, find_current, on_stop_finished, route_summaries, summarize_counts
 from .serializers import clean_delivery_address
 from .stop_event_service import event_time
 from .stop_event_service import record as record_event
@@ -136,6 +136,25 @@ async def get_route(actor: dict, route_id: str) -> dict:
         counts[s["status"]] = counts.get(s["status"], 0) + 1
     next_stop = next((s["id"] for s in stops if s["status"] in OPEN), None)
     return {**_header(route, counts, next_stop), "stops": stops}
+
+
+async def current_route(actor: dict, date: str) -> dict | None:
+    """The route underway, else the latest one planned for `date` or earlier (as v1 /routes/current), light; None if none."""
+    route = await find_current(actor, date)
+    return await get_route(actor, route.id) if route else None
+
+
+async def completed_routes(actor: dict, before: str | None, limit: int) -> dict:
+    """Finished routes, newest first, without their stops (History, Reports). `next` is the `before` of the next page."""
+    _require_rider(actor)
+    where: dict[str, Any] = {"riderId": actor["id"], "status": "completed", "completedAt": {"not": None}}
+    if before:
+        at, _, last_id = before.partition("_")
+        at_time = parse_cursor(at)
+        where["OR"] = [{"completedAt": {"lt": at_time}}, {"completedAt": at_time, "id": {"lt": last_id}}]
+    rows = await db.route.find_many(where=where, order=[{"completedAt": "desc"}, {"id": "desc"}], take=limit + 1)
+    page = rows[:limit]
+    return {"routes": await route_summaries(page), "next": f"{iso(page[-1].completedAt)}_{page[-1].id}" if len(rows) > limit else None}
 
 
 def parse_cursor(value: str) -> datetime:

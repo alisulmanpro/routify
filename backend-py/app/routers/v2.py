@@ -41,6 +41,29 @@ def _etag_matches(request: Request, etag: str) -> bool:
     return any(tag.strip().removeprefix("W/") == etag.removeprefix("W/") for tag in sent.split(",")) or sent.strip() == "*"
 
 
+class CompletedQuery(Schema):
+    status: Literal["completed"] = "completed"
+    # The `next` of the previous page.
+    before: Annotated[str, Field(min_length=10, max_length=80)] | None = None
+    limit: Annotated[int, Field(ge=1, le=100)] = 30
+
+
+@router.get("/routes")
+async def list_routes(request: Request):
+    """Finished routes as summaries (counts, distance, times; no stops), newest first, paged with `before`."""
+    actor = await authenticate(request, "rider")
+    query = (await validate(request, query=CompletedQuery))["query"]
+    return respond(await v2.completed_routes(actor, query.before, query.limit))
+
+
+@router.get("/routes/current")
+async def current_route(request: Request):
+    """The route underway, else the latest one planned for `date` (default today) or earlier, light; null when none."""
+    actor = await authenticate(request, "rider")
+    query = (await validate(request, query=DayQuery))["query"]
+    return respond(await v2.current_route(actor, query.date or today_key()))
+
+
 @router.get("/routes/{id}")
 async def get_route(request: Request):
     """The route with all its stops (light). Send If-None-Match with the last ETag: 304 and no body when nothing changed."""

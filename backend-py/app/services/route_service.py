@@ -434,10 +434,7 @@ async def get_by_id(actor: dict, route_id: str) -> dict:
 
 async def get_current(actor: dict, date: str | None = None) -> dict | None:
     """The route underway, else the one planned for today (routes planned for later days are "upcoming")."""
-    _require_rider(actor)
-    route = (await db.route.find_first(where={"riderId": actor["id"], "status": "active"})
-             or await db.route.find_first(where={"riderId": actor["id"], "status": "planned", "serviceDate": {"lte": date or today_key()}},
-                                          order=[{"createdAt": "desc"}, {"id": "desc"}]))
+    route = await find_current(actor, date)
     return await serialize_route(route) if route else None
 
 
@@ -456,6 +453,11 @@ async def list_by_date(actor: dict, date_from: str, date_to: str | None = None, 
     service_date: dict[str, str] = {"gte": date_from} | ({"lte": date_to} if date_to else {})
     routes = await db.route.find_many(where={"riderId": actor["id"], "serviceDate": service_date},
                                       order=[{"serviceDate": "asc"}, {"createdAt": "asc"}, {"id": "asc"}], take=limit)
+    return await route_summaries(routes)
+
+
+async def route_summaries(routes: list[Any]) -> list[dict]:
+    """Routes without their stop lists (counts only): two queries however many routes there are."""
     counts = await _stop_counts([r.id for r in routes])
     items = []
     for route in routes:
@@ -519,6 +521,14 @@ async def list_completed(actor: dict, limit: int = 30) -> list[dict]:
     _require_rider(actor)
     routes = await db.route.find_many(where={"riderId": actor["id"], "status": "completed"}, order=[{"completedAt": "desc"}, {"id": "desc"}], take=limit)
     return await serialize_routes(routes)
+
+
+async def find_current(actor: dict, date: str | None = None) -> Any:
+    """The route underway, else the latest one planned for `date` or earlier (get_current's choice, without loading it)."""
+    _require_rider(actor)
+    return (await db.route.find_first(where={"riderId": actor["id"], "status": "active"})
+            or await db.route.find_first(where={"riderId": actor["id"], "status": "planned", "serviceDate": {"lte": date or today_key()}},
+                                         order=[{"createdAt": "desc"}, {"id": "desc"}]))
 
 
 # ---- Open stops left from earlier days ----
