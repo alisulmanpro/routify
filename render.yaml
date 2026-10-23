@@ -19,6 +19,10 @@ services:
     envVars:
       - key: NODE_ENV
         value: production
+      # Prisma downloads its query engine during the build. Render keeps only the project folder for the running
+      # service, so the engine must go there (the default ~/.cache is gone at start: BinaryNotFoundError).
+      - key: PRISMA_BINARY_CACHE_DIR
+        value: /opt/render/project/src/backend-py/.prisma-binaries
       - key: LOG_LEVEL
         value: info
       # Render keeps only the project folder between build and runtime, so Prisma's engines must be downloaded there.
