@@ -752,7 +752,7 @@ async def test_a_build_may_list_a_whole_day_of_stops_but_not_more(client):
 
 
 async def test_every_response_says_how_long_it_took_and_how_many_db_queries(client):
-    _, auth = await rider(client, "timing@example.com")
+    _, auth = await rider(client, "server-timing@example.com")
     res = await client.get("/api/v1/auth/me", headers=auth)
     timing = res.headers["server-timing"]
     match = re.fullmatch(r'app;dur=([\d.]+), db;dur=([\d.]+);desc="(\d+) queries"', timing)
