@@ -6,7 +6,7 @@ import { useNav } from '../lib/nav';
 import { get, post, ApiRequestError } from '../lib/api';
 import type { BillingCycle, PaidPlanKey, StoreConfig, SubscriptionInfo } from '../lib/types';
 import { money, titleCase, shortDate } from '../lib/format';
-import { loadStoreConfig, mockEvent, openStoreSubscriptions, pickStore, STORE_LABEL, trialLabel, type MockEvent } from '../lib/billing';
+import { loadStoreConfig, mockEvent, openStoreSubscriptions, pickStore, PREMIUM_NAME, STORE_LABEL, trialLabel, type MockEvent } from '../lib/billing';
 import { Screen } from '../components/Kit';
 import { ErrorBanner, Header, IconCircle, PButton, PCard, Pill } from '../components/Premium';
 import { premium as c, premiumRadius as r } from '../lib/theme';
@@ -69,8 +69,7 @@ export default function Subscription() {
         {sub && sub.status !== 'inactive' ? (
           <CurrentPlan info={info} storeManaged={storeManaged} manualMode={manualMode} busy={busy}
             onCancel={() => run('cancel', async () => { await post('/subscriptions/cancel'); return reloadMine(); }, 'Could not cancel')}
-            onManage={() => { if (info.store) void openStoreSubscriptions(info.store.store, info.store.productId).then(load); }}
-            onChangePlan={() => navigate('Paywall')} />
+            onManage={() => { if (info.store) void openStoreSubscriptions(info.store.store, info.store.productId).then(load); }} />
         ) : null}
 
         {storeManaged && info.store?.store === 'mock' ? (
@@ -93,9 +92,9 @@ export default function Subscription() {
 
 // ---------------------------------------------------------------- current plan
 
-function CurrentPlan({ info, storeManaged, manualMode, busy, onCancel, onManage, onChangePlan }: {
+function CurrentPlan({ info, storeManaged, manualMode, busy, onCancel, onManage }: {
   info: SubscriptionInfo; storeManaged: boolean; manualMode: boolean; busy: string | null;
-  onCancel: () => void; onManage: () => void; onChangePlan: () => void;
+  onCancel: () => void; onManage: () => void;
 }) {
   const sub = info.subscription!;
   const healthy = sub.status === 'active' || sub.status === 'trialing';
@@ -140,10 +139,7 @@ function CurrentPlan({ info, storeManaged, manualMode, busy, onCancel, onManage,
       {sub.pending && manualMode ? <Text style={[s.note, { color: '#7FB2FF' }]}>Upgrade to {titleCase(sub.pending.planKey)} is waiting for payment confirmation.</Text> : null}
 
       {storeManaged ? (
-        <View style={{ flexDirection: 'row', gap: 10, marginTop: 14 }}>
-          <PButton title="Change plan" variant="secondary" onPress={onChangePlan} style={{ flex: 1 }} />
-          {purchase?.store !== 'mock' ? <PButton title="Manage" icon="open-outline" variant="secondary" onPress={onManage} style={{ flex: 1 }} /> : null}
-        </View>
+        purchase?.store !== 'mock' ? <PButton title="Manage subscription" icon="open-outline" variant="secondary" onPress={onManage} style={{ marginTop: 14 }} /> : null
       ) : manualMode && sub.planKey !== 'trial' && !sub.cancelAtPeriodEnd ? (
         <PButton title="Cancel at period end" variant="secondary" onPress={onCancel} loading={busy === 'cancel'} style={{ marginTop: 14 }} />
       ) : null}
@@ -157,11 +153,11 @@ function UpgradeCard({ trial, trialText, onOpen }: { trial: boolean; trialText: 
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
         <IconCircle icon="rocket-launch-outline" />
         <View style={{ flex: 1 }}>
-          <Text style={s.planName}>{trial ? `Try Pro free for ${trialText}` : 'Choose a plan'}</Text>
-          <Text style={s.meta}>More deliveries, more reports and priority support.</Text>
+          <Text style={s.planName}>{trial ? `Try ${PREMIUM_NAME} free for ${trialText}` : `Get ${PREMIUM_NAME}`}</Text>
+          <Text style={s.meta}>Route planning, imports, proof photos, reports and priority support.</Text>
         </View>
       </View>
-      <PButton title={trial ? 'See plans & start free trial' : 'See plans'} icon="sparkles-outline" onPress={onOpen} chevron style={{ marginTop: 14 }} />
+      <PButton title={trial ? 'Start free trial' : `See ${PREMIUM_NAME}`} icon="sparkles-outline" onPress={onOpen} chevron style={{ marginTop: 14 }} />
     </PCard>
   );
 }

@@ -24,7 +24,7 @@ function greeting() {
 }
 
 export default function Dashboard() {
-  const { navigate, switchTab } = useNav();
+  const { navigate } = useNav();
   const { user } = useAuth();
   // Sends what the phone saved offline (stop updates, new stops, photos) while the rider is signed in (P4.2).
   useSyncLoop(user?.id);
@@ -81,9 +81,6 @@ export default function Dashboard() {
           </View>
         </View>
         <PlanNudge />
-        <Pressable onPress={() => switchTab('account')} hitSlop={10} style={{ marginLeft: 12 }} accessibilityLabel="Settings">
-          <Ionicons name="settings-outline" size={26} color={c.text} />
-        </Pressable>
       </View>
     );
   };
