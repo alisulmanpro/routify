@@ -759,3 +759,22 @@ async def test_every_response_says_how_long_it_took_and_how_many_db_queries(clie
     assert match, timing
     assert float(match.group(1)) >= float(match.group(2)) and int(match.group(3)) >= 1
     assert re.fullmatch(r'app;dur=[\d.]+, db;dur=0\.0;desc="0 queries"', (await client.get("/health")).headers["server-timing"])
+
+
+async def test_an_admin_can_put_a_deleted_stop_back(client):
+    body, auth = await rider(client, "restore-me@example.com")
+    admin_auth, _ = await make_admin(client, "restore-admin@example.com")
+    created = (await client.post("/api/v1/deliveries/manual", headers=auth, json=delivery("RESTORE-1", "5 Gone Street, Dublin", note="Ring twice"))).json()["data"]
+    assert (await client.delete(f"/api/v1/deliveries/{created['id']}", headers=auth)).status_code in (200, 204)
+    assert (await client.get(f"/api/v1/deliveries/{created['id']}", headers=auth)).status_code == 404
+
+    listed = (await client.get("/api/v1/admin/deleted-deliveries", headers=admin_auth, params={"riderId": body["user"]["id"]})).json()["data"]
+    assert [(d["id"], d["trackingId"], d["reason"]) for d in listed] == [(created["id"], "RESTORE-1", "delete")]
+    assert (await client.get("/api/v1/admin/deleted-deliveries", headers=auth, params={"riderId": body["user"]["id"]})).status_code == 403
+
+    restored = await client.post(f"/api/v1/admin/deleted-deliveries/{created['id']}/restore", headers=admin_auth)
+    assert restored.status_code == 200, restored.text
+    back = (await client.get(f"/api/v1/deliveries/{created['id']}", headers=auth)).json()["data"]
+    assert back["trackingId"] == "RESTORE-1" and back["note"] == "Ring twice" and back["status"] == "pending" and back["routeId"] is None
+    again = await client.post(f"/api/v1/admin/deleted-deliveries/{created['id']}/restore", headers=admin_auth)
+    assert again.status_code == 404

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
 from ..db import as_json, db, lock_rider, transaction
@@ -183,6 +184,40 @@ async def archive_deleted(client: Any, rows: list[Any], reason: str) -> None:
         await client.deleteddelivery.create_many(data=[
             {"id": d.id, "riderId": d.riderId, "routeId": d.routeId, "reason": reason, "snapshot": as_json(d.model_dump(mode="json"))} for d in rows
         ], skip_duplicates=True)
+
+
+# Not copied back from a snapshot: relations, the route it was on (it may be gone or planned again) and bookkeeping.
+_NOT_RESTORED = {"rider", "route", "stops", "routeId", "stopOrder", "version", "createdAt", "updatedAt"}
+_DATETIMES = {"proofCapturedAt", "arrivedAt", "deliveredAt", "failedAt", "lastEventAt"}
+
+
+async def list_deleted(rider_id: str, limit: int = 100) -> list[dict]:
+    """A rider's deleted stops, newest first (admin console: what can be restored)."""
+    rows = await db.deleteddelivery.find_many(where={"riderId": rider_id}, order={"deletedAt": "desc"}, take=limit)
+    return [{"id": r.id, "riderId": r.riderId, "routeId": r.routeId, "reason": r.reason, "deletedAt": r.deletedAt,
+             "trackingId": (r.snapshot or {}).get("trackingId"), "address": (r.snapshot or {}).get("addressRaw"),
+             "serviceDate": (r.snapshot or {}).get("serviceDate"), "status": (r.snapshot or {}).get("status")} for r in rows]
+
+
+async def restore_deleted(deleted_id: str) -> Any:
+    """Puts a deleted stop back as it was (ISSUE-24), on no route: the rider plans it again. An arrived stop comes back open."""
+    async with transaction() as tx:
+        row = await tx.deleteddelivery.find_unique(where={"id": deleted_id})
+        if not row:
+            raise not_found("Deleted delivery")
+        await lock_rider(tx, row.riderId)
+        if await tx.delivery.find_unique(where={"id": row.id}):
+            raise conflict("This delivery is already back", "ALREADY_RESTORED")
+        data: dict[str, Any] = {k: v for k, v in dict(row.snapshot).items() if k not in _NOT_RESTORED and v is not None}
+        for key in _DATETIMES & data.keys():
+            data[key] = datetime.fromisoformat(data[key])
+        if "payment" in data:
+            data["payment"] = as_json(data["payment"])
+        if data.get("status") == "in_progress":
+            data["status"] = "pending"
+        restored = await tx.delivery.create(data={**data, "id": row.id, "riderId": row.riderId})
+        await tx.deleteddelivery.delete(where={"id": row.id})
+    return restored
 
 
 async def remove(actor: dict, delivery_id: str) -> None:

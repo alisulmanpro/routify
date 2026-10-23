@@ -127,6 +127,27 @@ async def get_delivery(request: Request):
     return respond((await admin.decorate_deliveries([delivery]))[0])
 
 
+# Deleted stops (kept in deleted_deliveries since P4.6) and putting one back (ISSUE-24)
+class DeletedQuery(Schema):
+    riderId: ObjectId
+
+
+@router.get("/deleted-deliveries")
+async def list_deleted_deliveries(request: Request):
+    await _admin(request)
+    query = (await validate(request, query=DeletedQuery))["query"]
+    return respond(await deliveries.list_deleted(query.riderId))
+
+
+@router.post("/deleted-deliveries/{id}/restore")
+async def restore_deleted_delivery(request: Request):
+    await _admin(request)
+    params = (await validate(request, params=IdParams))["params"]
+    restored = await deliveries.restore_deleted(params.id)
+    await _log(request, "delivery.restore", "delivery", restored.id, {"riderId": restored.riderId})
+    return respond((await admin.decorate_deliveries([restored]))[0])
+
+
 # Reports
 class ReportsQuery(Pagination):
     dateFrom: DateKey | None = None
