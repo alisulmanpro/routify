@@ -118,6 +118,7 @@ class Settings:
     REDIS_KEY_PREFIX: str
     WEB_CONCURRENCY: int
     GRACEFUL_SHUTDOWN_SECONDS: int
+    WORKER_CONCURRENCY: int
     LOG_SHIP_URL: str
     LOG_SHIP_TOKEN: str
     ALERT_WEBHOOK_URL: str
@@ -235,6 +236,8 @@ def load_settings() -> Settings:
         # Uvicorn worker processes per instance, and how long a stopping instance lets running requests finish.
         WEB_CONCURRENCY=_int("WEB_CONCURRENCY", 1, lo=1, hi=32),
         GRACEFUL_SHUTDOWN_SECONDS=_int("GRACEFUL_SHUTDOWN_SECONDS", 25, lo=1, hi=300),
+        # Jobs one worker process runs at a time (emails and PDFs wait on the network; plans use a thread each).
+        WORKER_CONCURRENCY=_int("WORKER_CONCURRENCY", 2, lo=1, hi=16),
         # Log shipping: JSON lines POSTed in batches (e.g. Better Stack / Logtail HTTP source). Empty = stdout only.
         LOG_SHIP_URL=_str("LOG_SHIP_URL") or "",
         LOG_SHIP_TOKEN=_str("LOG_SHIP_TOKEN") or "",

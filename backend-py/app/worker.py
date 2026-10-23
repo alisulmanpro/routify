@@ -3,7 +3,9 @@ emails, report PDFs and (P7.3) the single scheduler for hourly maintenance.
 
     python -m app.worker
 
-Several can run at once (each job is claimed once). SIGTERM/SIGINT: finishes the job in hand, then exits.
+Several can run at once (each job is claimed once), and each runs WORKER_CONCURRENCY jobs at a time (P7.4).
+SIGTERM/SIGINT: takes no new job, lets the running ones finish for up to GRACEFUL_SHUTDOWN_SECONDS, then puts any
+still unfinished back in the queue for another worker, and exits.
 """
 from __future__ import annotations
 
@@ -11,6 +13,7 @@ import asyncio
 import logging
 import signal
 
+from .config import env
 from .db import connect, disconnect
 from .logger import log
 from .observability import init_sentry
@@ -52,15 +55,29 @@ async def run(stop: asyncio.Event, *, poll: float = IDLE_POLL_SECONDS, schedule:
                 pass
 
 
+async def serve(stop: asyncio.Event, *, concurrency: int, grace: float, poll: float = IDLE_POLL_SECONDS, schedule: bool = True) -> None:
+    """`concurrency` job loops (one of them schedules); after `stop`, waits up to `grace` s for them, then releases what is left."""
+    loops = [asyncio.create_task(run(stop, poll=poll, schedule=schedule and i == 0)) for i in range(concurrency)]
+    await stop.wait()
+    _, unfinished = await asyncio.wait(loops, timeout=grace)
+    if unfinished:
+        interrupted = set(jobs.running)
+        for task in unfinished:
+            task.cancel()
+        await asyncio.gather(*unfinished, return_exceptions=True)
+        released = await jobs.release(interrupted)
+        log(logging.WARNING, "Worker stopped in the middle of jobs; they are queued again", jobs=sorted(interrupted), released=released)
+
+
 async def main() -> None:
     stop = asyncio.Event()
     for sig in (signal.SIGTERM, signal.SIGINT):
         asyncio.get_running_loop().add_signal_handler(sig, stop.set)
     init_sentry("worker")
     await connect()
-    log(logging.INFO, "Worker started")
+    log(logging.INFO, "Worker started", concurrency=env.WORKER_CONCURRENCY)
     try:
-        await run(stop)
+        await serve(stop, concurrency=env.WORKER_CONCURRENCY, grace=env.GRACEFUL_SHUTDOWN_SECONDS)
     finally:
         await disconnect()
         log(logging.INFO, "Worker stopped")

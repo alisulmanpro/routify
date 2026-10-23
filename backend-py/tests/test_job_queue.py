@@ -87,3 +87,29 @@ async def test_report_pdfs_are_made_by_the_worker_and_its_refusals_reach_the_rid
     monkeypatch.setattr(report_service, "_render_and_save", refuse)  # e.g. the limit re-check under the lock, in the worker
     res = await client.post("/api/v1/reports/generate", headers=auth, json={"date": built["serviceDate"]})
     assert res.status_code == 403 and res.json()["error"]["code"] == "PLAN_LIMIT_REACHED"
+
+
+async def test_a_stopping_worker_puts_its_unfinished_jobs_back_at_once(client):
+    """P7.4: not after STALE_AFTER (10 min), and the interrupted run does not count as an attempt."""
+    from app.db import as_json
+    from app.ids import new_id
+
+    job_id = new_id()
+    await db.job.create(data={"id": job_id, "type": "send_email", "input": as_json({}), "status": "running", "attempts": 1, "startedAt": now()})
+    assert await jobs.release({job_id}) == 1
+    job = await db.job.find_unique(where={"id": job_id})
+    assert job.status == "queued" and job.attempts == 0 and job.startedAt is None
+    await db.job.delete(where={"id": job_id})
+    assert await jobs.release(set()) == 0
+
+
+async def test_an_idle_worker_with_several_loops_stops_at_once(client):
+    import asyncio
+
+    from app import worker
+
+    stop = asyncio.Event()
+    task = asyncio.create_task(worker.serve(stop, concurrency=3, grace=5, poll=0.02, schedule=False))
+    await asyncio.sleep(0.1)
+    stop.set()
+    await asyncio.wait_for(task, timeout=2)

@@ -10,6 +10,7 @@ later (runAfter) when it fails; scheduled jobs use a unique dedupKey so that, wi
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from collections.abc import Awaitable, Callable
 from contextvars import ContextVar
@@ -32,6 +33,9 @@ STALE_AFTER = timedelta(minutes=10)
 MAX_ATTEMPTS = 3
 WAIT_POLL_SECONDS = 0.25
 RETRY_AFTER = timedelta(minutes=1)  # times the attempt number
+
+# Jobs this process is running now: a stopping worker puts the ones it could not finish back in the queue (P7.4).
+running: set[str] = set()
 
 Handler = Callable[[dict], Awaitable[Any]]
 HANDLERS: dict[str, Handler] = {}
@@ -116,6 +120,7 @@ async def run_one() -> bool:
     if not rows:
         return False
     job = await db.job.find_unique(where={"id": rows[0]["id"]})
+    running.add(job.id)
     token = in_worker.set(True)
     rider_token = current_rider.set(job.riderId)  # Google calls made for this job count for its rider
     try:
@@ -138,9 +143,20 @@ async def run_one() -> bool:
             log(logging.ERROR, "Job failed", jobId=job.id, type=job.type, exc_info=True)
             await db.job.update(where={"id": job.id}, data={"status": "failed", "error": "The job failed", "finishedAt": now()})
     finally:
+        running.discard(job.id)
         in_worker.reset(token)
         current_rider.reset(rider_token)
     return True
+
+
+async def release(job_ids: set[str]) -> int:
+    """Puts jobs a stopping worker was in the middle of back in the queue at once (not after STALE_AFTER), without
+    counting the interrupted run as an attempt. Another worker (or this one after its restart) picks them up."""
+    if not job_ids:
+        return 0
+    return await db.execute_raw("""UPDATE "jobs" SET "status" = 'queued', "startedAt" = NULL, "attempts" = GREATEST(0, "attempts" - 1)
+                                   WHERE "id" IN (SELECT jsonb_array_elements_text($1::jsonb)) AND "status" = 'running'""",
+                                json.dumps(sorted(job_ids)))
 
 
 async def requeue_stale() -> None:
