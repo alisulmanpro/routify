@@ -12,9 +12,9 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent
 
 # Configure before the app is imported: a separate database and upload folder for tests.
-from urllib.parse import urlsplit, urlunsplit  # noqa: E402
+from urllib.parse import urlsplit, urlunsplit
 
-from dotenv import dotenv_values  # noqa: E402
+from dotenv import dotenv_values
 
 _dotenv = dotenv_values(ROOT / ".env")
 

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Annotated, Literal, Optional, Union
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Request
 from pydantic import Field, StringConstraints, model_validator
@@ -19,11 +19,11 @@ from ..validation import DateKey, IdParams, Pagination, Phone, Schema, Trimmed, 
 
 router = APIRouter(prefix="/deliveries")
 
-Text = lambda hi: Annotated[str, StringConstraints(strip_whitespace=True, max_length=hi)]  # noqa: E731
+Text = lambda hi: Annotated[str, StringConstraints(strip_whitespace=True, max_length=hi)]
 # Customer name and phone are optional: a scanned label often only has the address and parcel ID.
-OptionalPhone = Optional[Union[Literal[""], Phone]]
+OptionalPhone = Literal[""] | Phone | None
 # The parcel ID is optional too: a stop can be just an address. "" means none.
-OptionalParcel = Optional[Union[Literal[""], Trimmed(3, 80)]]
+OptionalParcel = Literal[""] | Trimmed(3, 80) | None
 
 
 class Coordinates(Schema):
@@ -32,14 +32,14 @@ class Coordinates(Schema):
 
 
 class CustomerInput(Schema):
-    name: Optional[Text(160)] = None
+    name: Text(160) | None = None
     phone: OptionalPhone = None
 
 
 class AddressInput(Schema):
     raw: Trimmed(5, 400)
     # The address the map found for `raw` (with `location`), e.g. the street of a place name the rider typed.
-    normalized: Optional[Trimmed(1, 400)] = None
+    normalized: Trimmed(1, 400) | None = None
 
 
 class DeliveryInput(Schema):
@@ -47,9 +47,9 @@ class DeliveryInput(Schema):
     customer: CustomerInput = Field(default_factory=CustomerInput)
     address: AddressInput
     # Set when the rider picked a suggested address or dropped a pin: the stop is saved already located.
-    location: Optional[Coordinates] = None
-    note: Optional[Text(1000)] = None
-    serviceDate: Optional[DateKey] = None
+    location: Coordinates | None = None
+    note: Text(1000) | None = None
+    serviceDate: DateKey | None = None
 
 
 class BulkBody(Schema):
@@ -59,9 +59,9 @@ class BulkBody(Schema):
 class PatchBody(Schema):
     nullable_fields = frozenset({"note"})
     trackingId: OptionalParcel = None
-    customer: Optional[CustomerInput] = None
-    address: Optional[AddressInput] = None
-    note: Optional[Text(1000)] = None
+    customer: CustomerInput | None = None
+    address: AddressInput | None = None
+    note: Text(1000) | None = None
 
     @model_validator(mode="after")
     def not_empty(self):
@@ -71,38 +71,38 @@ class PatchBody(Schema):
 
 
 class ListQuery(Pagination):
-    status: Optional[Literal["pending", "in_progress", "delivered", "failed"]] = None
-    date: Optional[DateKey] = None
-    dateFrom: Optional[DateKey] = None
-    dateTo: Optional[DateKey] = None
-    search: Optional[Text(100)] = None
-    sort: Optional[Literal["route", "recent"]] = None
+    status: Literal["pending", "in_progress", "delivered", "failed"] | None = None
+    date: DateKey | None = None
+    dateFrom: DateKey | None = None
+    dateTo: DateKey | None = None
+    search: Text(100) | None = None
+    sort: Literal["route", "recent"] | None = None
 
 
 class GeocodeCheckBody(Schema):
     address: Trimmed(5, 400)
     # The rider's GPS position, used to pick their city when they have not confirmed one yet.
-    latitude: Optional[Annotated[float, Field(ge=-90, le=90)]] = None
-    longitude: Optional[Annotated[float, Field(ge=-180, le=180)]] = None
+    latitude: Annotated[float, Field(ge=-90, le=90)] | None = None
+    longitude: Annotated[float, Field(ge=-180, le=180)] | None = None
 
 
 class SuggestBody(Schema):
     query: Trimmed(2, 400)
-    latitude: Optional[Annotated[float, Field(ge=-90, le=90)]] = None
-    longitude: Optional[Annotated[float, Field(ge=-180, le=180)]] = None
+    latitude: Annotated[float, Field(ge=-90, le=90)] | None = None
+    longitude: Annotated[float, Field(ge=-180, le=180)] | None = None
 
 
 LocationBody = Coordinates
 
 
 class DeliverBody(Schema):
-    note: Optional[Text(1000)] = None
-    allowSkip: Optional[bool] = None
+    note: Text(1000) | None = None
+    allowSkip: bool | None = None
 
 
 class FailBody(Schema):
     reason: Literal["customer_unavailable", "customer_refused", "wrong_address", "phone_unreachable", "business_closed", "other"]
-    note: Optional[Text(1000)] = None
+    note: Text(1000) | None = None
 
     @model_validator(mode="after")
     def describe_other(self):

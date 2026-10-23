@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import io
 import re
-from typing import Any, Optional
+from typing import Any
 
 from ..db import db
 from ..errors import unprocessable
@@ -24,11 +24,11 @@ COD_WORD = re.compile(r"\b(cod|cash\s*on\s*delivery)\b", I)
 PREPAID_WORD = re.compile(r"\b(pre-?paid|paid\s*online|already\s*paid|payment\s*received)\b", I)
 
 
-def _amount(s: Optional[str]) -> Optional[float]:
+def _amount(s: str | None) -> float | None:
     return None if s is None else float(str(s).replace(",", ""))
 
 
-def _group(pattern: re.Pattern, text: str) -> Optional[str]:
+def _group(pattern: re.Pattern, text: str) -> str | None:
     m = pattern.search(text)
     return m.group(1) if m else None
 
@@ -50,7 +50,7 @@ def _normalize(text: str) -> list[str]:
     return out
 
 
-def _detect_payment(block: str) -> tuple[Optional[str], Optional[float]]:
+def _detect_payment(block: str) -> tuple[str | None, float | None]:
     explicit = (_group(PAYMENT_TYPE, block) or "").lower() or None
     cod_amount = _amount(_group(COD_AMOUNT, block))
     cod_word = bool(COD_WORD.search(block))
@@ -70,7 +70,7 @@ def _detect_payment(block: str) -> tuple[Optional[str], Optional[float]]:
     return kind, (cod_amount if kind == "cod" and cod_amount and cod_amount > 0 else None)
 
 
-def _extract_table_rows(lines: list[str]) -> Optional[list[dict]]:
+def _extract_table_rows(lines: list[str]) -> list[dict] | None:
     header = next((i for i, line in enumerate(lines) if re.search(r"\border\s*id\b", line, I) and re.search(r"\bcustomer\b", line, I)
                    and re.search(r"\bphone\b", line, I) and re.search(r"\bdelivery\s*address\b", line, I)), -1)
     if header < 0:
@@ -185,7 +185,7 @@ def extract_pdf_text(data: bytes) -> tuple[str, int]:
         if pages > 100:
             raise unprocessable("PDFs longer than 100 pages are not supported", "PDF_TOO_LARGE")
         text = "\n".join((page.extract_text() or "") for page in reader.pages)
-    except Exception as error:  # noqa: BLE001
+    except Exception as error:
         if getattr(error, "code", None) == "PDF_TOO_LARGE":
             raise
         raise unprocessable("This PDF could not be read. Check that the file is a valid, unprotected PDF.", "INVALID_PDF") from None
@@ -219,7 +219,7 @@ async def flag_duplicates(actor: dict, items: list[dict]) -> None:
         seen.add(item["trackingId"])
 
 
-async def build_draft(actor: dict, file: Optional[UploadedFile]) -> dict[str, Any]:
+async def build_draft(actor: dict, file: UploadedFile | None) -> dict[str, Any]:
     detect_file_type(file.data if file else None, ["pdf"])
     await assert_can_create_deliveries(actor, 1)
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import Any, Optional
+from typing import Any
 
 from prisma.errors import UniqueViolationError
 
@@ -46,7 +46,7 @@ def summarize_counts(counts: dict[str, int], route: Any = None) -> dict:
     }
 
 
-def _origin(route: Any) -> Optional[dict]:
+def _origin(route: Any) -> dict | None:
     if route.originLatitude is None:
         return None
     return {"latitude": route.originLatitude, "longitude": route.originLongitude}
@@ -104,14 +104,14 @@ async def _release_planned(client: Any, route_ids: list[str]) -> None:
     await client.route.delete_many(where={"id": {"in": route_ids}})
 
 
-def area_of_user(user: Any) -> Optional[dict]:
+def area_of_user(user: Any) -> dict | None:
     if not user or not user.areaCity or not user.areaCountryCode:
         return None
     return {"city": user.areaCity, "country": user.areaCountry, "countryCode": user.areaCountryCode, "latitude": user.areaLatitude,
             "longitude": user.areaLongitude, "source": str(user.areaSource) if user.areaSource else None, "confirmedAt": user.areaConfirmedAt}
 
 
-async def service_area_for(actor: dict, origin: Optional[dict]) -> Optional[dict]:
+async def service_area_for(actor: dict, origin: dict | None) -> dict | None:
     """The rider's service area. Riders who never confirmed a city get one detected from the route's start point."""
     from .auth_service import area_columns
 
@@ -147,7 +147,7 @@ _GEOCODE_COLUMNS = ("addressRaw", "addressNormalized", "addressLatitude", "addre
                     "geocodeStatus", "postalCode")
 
 
-async def _refresh_delivery_geocodes(deliveries: list[Any], *, retry_approximate: bool = False, area: Optional[dict] = None) -> list[Any]:
+async def _refresh_delivery_geocodes(deliveries: list[Any], *, retry_approximate: bool = False, area: dict | None = None) -> list[Any]:
     """Looks up stops without coordinates. Returns the deliveries as saved (same order).
     A stop whose lookup failed (provider error) keeps its state, so a later retry looks it up again."""
     out = list(deliveries)
@@ -201,7 +201,7 @@ async def _refresh_delivery_geocodes(deliveries: list[Any], *, retry_approximate
     return [saved.get(d.id, d) for d in out]
 
 
-async def _plan(deliveries: list[Any], origin: Optional[dict], preference: str, settings: dict, first_order: int = 1) -> tuple[list[dict], float, float, str]:
+async def _plan(deliveries: list[Any], origin: dict | None, preference: str, settings: dict, first_order: int = 1) -> tuple[list[dict], float, float, str]:
     """Orders the stops. Only verified locations are optimised; unresolved (or approximate) ones go last.
     Returns (stops, distanceKm, durationMin, optimization) where optimization is "road" or "straight_line"."""
     located = [d for d in deliveries if d.addressGeocoded]
@@ -252,8 +252,8 @@ def _stops_changed() -> AppError:
     return conflict("Your stops changed while the route was being planned. Please try again.", "ROUTE_STALE")
 
 
-async def build(actor: dict, *, preference: Optional[str] = None, origin: Optional[dict] = None, delivery_ids: Optional[list[str]] = None,
-                date: Optional[str] = None, name: Optional[str] = None) -> dict:
+async def build(actor: dict, *, preference: str | None = None, origin: dict | None = None, delivery_ids: list[str] | None = None,
+                date: str | None = None, name: str | None = None) -> dict:
     _require_rider(actor)
     date = date or today_key()
     await _assert_no_active_route(db, actor, date)
@@ -376,7 +376,7 @@ async def retry_geocoding(actor: dict, route_id: str) -> dict:
     return await serialize_route(route)
 
 
-async def optimize(actor: dict, route_id: str, origin: Optional[dict] = None) -> dict:
+async def optimize(actor: dict, route_id: str, origin: dict | None = None) -> dict:
     """Re-optimises the open stops of a planned or active route from `origin` (the rider's position;
     defaults to the route's start). Only the route's own stops: stops on no route are never pulled in, since they
     belong to a route that is still being added. Finished stops keep their place."""
@@ -432,7 +432,7 @@ async def get_by_id(actor: dict, route_id: str) -> dict:
     return await serialize_route(await _find_mine(actor, route_id))
 
 
-async def get_current(actor: dict, date: Optional[str] = None) -> Optional[dict]:
+async def get_current(actor: dict, date: str | None = None) -> dict | None:
     """The route underway, else the one planned for today (routes planned for later days are "upcoming")."""
     _require_rider(actor)
     route = (await db.route.find_first(where={"riderId": actor["id"], "status": "active"})
@@ -441,7 +441,7 @@ async def get_current(actor: dict, date: Optional[str] = None) -> Optional[dict]
     return await serialize_route(route) if route else None
 
 
-async def list_upcoming(actor: dict, date: Optional[str] = None) -> list[dict]:
+async def list_upcoming(actor: dict, date: str | None = None) -> list[dict]:
     """Routes planned for days after `date` (default today), soonest first."""
     _require_rider(actor)
     routes = await db.route.find_many(where={"riderId": actor["id"], "status": "planned", "serviceDate": {"gt": date or today_key()}},
@@ -449,7 +449,7 @@ async def list_upcoming(actor: dict, date: Optional[str] = None) -> list[dict]:
     return await serialize_routes(routes)
 
 
-async def list_by_date(actor: dict, date_from: str, date_to: Optional[str] = None, limit: int = 200) -> list[dict]:
+async def list_by_date(actor: dict, date_from: str, date_to: str | None = None, limit: int = 200) -> list[dict]:
     """Every route (planned, active or completed) with a service date from `date_from` to `date_to` (open-ended when
     omitted), soonest first. Summaries only, without the stop list: two queries however many routes there are."""
     _require_rider(actor)
@@ -537,7 +537,7 @@ async def left_over(actor: dict, date: str) -> dict:
     return {"total": sum(days.values()), "days": [{"date": k, "count": days[k]} for k in sorted(days, reverse=True)]}
 
 
-async def carry_over(actor: dict, date: str, origin: Optional[dict] = None) -> dict:
+async def carry_over(actor: dict, date: str, origin: dict | None = None) -> dict:
     """Moves every open stop left from earlier days to `date`, as a route of their own (named after the route they
     were on). Other routes of that day are left alone. Nothing is deleted: the old routes are closed (completed, so
     they stay in History with the stops that were done) and keep their stop rows."""

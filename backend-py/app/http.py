@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import math
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from enum import Enum
 from typing import Any
 
@@ -25,11 +25,11 @@ def page_meta(page: int, limit: int, total: int) -> dict:
 
 
 def now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def today_key(at: datetime | None = None) -> str:
-    return (at or now()).astimezone(timezone.utc).strftime("%Y-%m-%d")
+    return (at or now()).astimezone(UTC).strftime("%Y-%m-%d")
 
 
 def js_round(n: float) -> int:
@@ -46,7 +46,7 @@ def iso(value: datetime | None) -> str | None:
     """Dates are sent exactly as the Node API sent them: 2026-01-31T09:15:00.000Z."""
     if value is None:
         return None
-    value = value.astimezone(timezone.utc) if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    value = value.astimezone(UTC) if value.tzinfo else value.replace(tzinfo=UTC)
     return value.strftime("%Y-%m-%dT%H:%M:%S.") + f"{value.microsecond // 1000:03d}Z"
 
 

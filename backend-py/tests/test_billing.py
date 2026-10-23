@@ -363,7 +363,7 @@ async def test_store_trial_length_follows_the_admin_setting(client):
         assert (await client.get("/api/v1/config")).json()["data"]["trialDays"] == 7
         res = await client.post("/api/v1/subscriptions/purchases", headers=auth, json={"store": "mock", "productId": "pro.monthly", "trial": True})
         sub = res.json()["data"]["subscription"]
-        days = (datetime.fromisoformat(sub["currentPeriodEnd"].replace("Z", "+00:00")) - now()).total_seconds() / 86400
+        days = (datetime.fromisoformat(sub["currentPeriodEnd"]) - now()).total_seconds() / 86400
         assert sub["status"] == "trialing" and 6.9 < days <= 7
         blocked_before = await client.post("/api/v1/deliveries/manual", headers=auth, json=delivery("TRIAL7-1"))
         assert blocked_before.status_code == 201  # the store trial unlocks the app
@@ -380,7 +380,7 @@ async def test_google_products_name_the_trial_offer(client, stores):
 
 # ---------------------------------------------------------------- RevenueCat (REST API stubbed)
 
-from app.services.billing import revenuecat  # noqa: E402
+from app.services.billing import revenuecat
 
 RC_AUTH = "Bearer test-webhook-secret-123456"
 

@@ -10,10 +10,9 @@ from dotenv import load_dotenv
 
 load_dotenv(".env")
 
-from prisma import Prisma  # noqa: E402 - needs DATABASE_URL from .env first
+from prisma import Prisma
 
-TABLES = ("users deliveries routes route_stops reports plans subscriptions payments refresh_tokens store_purchases "
-          "password_resets audit_logs settings geocode_cache rate_limits").split()
+TABLES = ["users", "deliveries", "routes", "route_stops", "reports", "plans", "subscriptions", "payments", "refresh_tokens", "store_purchases", "password_resets", "audit_logs", "settings", "geocode_cache", "rate_limits"]
 
 
 async def main() -> None:

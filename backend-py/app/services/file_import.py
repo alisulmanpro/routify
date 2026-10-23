@@ -5,7 +5,7 @@ import csv
 import io
 import zipfile
 from datetime import date, datetime
-from typing import Any, Optional
+from typing import Any
 
 from ..errors import unprocessable
 from ..uploads import UploadedFile, detect_document_type
@@ -123,7 +123,7 @@ def _extract_text(data: bytes, ext: str) -> str:
     raise unprocessable("Unsupported file type", "UNSUPPORTED_FILE")
 
 
-async def build_draft_from_file(actor: dict, file: Optional[UploadedFile]) -> dict:
+async def build_draft_from_file(actor: dict, file: UploadedFile | None) -> dict:
     ext = detect_document_type(file.data if file else None, file.filename if file else None)
     await assert_can_create_deliveries(actor, 1)
 

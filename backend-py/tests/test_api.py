@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from app.db import db
 from app.ids import new_id
@@ -26,7 +26,7 @@ async def rider(client, email, *, subscribed=True, **kw):
     body = res.json()["data"]
     if subscribed:
         await db.subscription.update_many(where={"userId": body["user"]["id"]},
-                                          data={"status": "trialing", "currentPeriodEnd": datetime.now(timezone.utc) + timedelta(days=14)})
+                                          data={"status": "trialing", "currentPeriodEnd": datetime.now(UTC) + timedelta(days=14)})
     return body, {"Authorization": f"Bearer {body['accessToken']}"}
 
 
@@ -177,7 +177,7 @@ async def test_other_failure_requires_a_description(client):
 
 async def test_report_for_a_past_service_date_downloads_as_pdf(client):
     _, auth = await rider(client, "report-rider@example.com")
-    past = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%d")
+    past = (datetime.now(UTC) - timedelta(days=1)).strftime("%Y-%m-%d")
     created = await client.post("/api/v1/deliveries/manual", headers=auth, json=delivery("REPORT-PAST-1", "Real address for report test", serviceDate=past))
     assert created.status_code == 201
 
@@ -642,7 +642,7 @@ async def test_optimize_reorders_open_stops_never_pulls_in_other_stops_and_puts_
 
         async def matrix(points):
             calls.append(len(points))
-            return None  # router down: straight-line fallback
+            # router down: straight-line fallback
         routing_service.set_matrix_for_tests(matrix)
 
         for tid, raw in (("OPT-1", "Far street 2"), ("OPT-2", "Near street 1"), ("OPT-3", "Unknown place 9")):

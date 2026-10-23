@@ -44,7 +44,7 @@ def _render_pdf(*, rider_name: str, date: str, summary: dict, deliveries: list[A
     body = ParagraphStyle("body", fontName="Helvetica", fontSize=10, leading=13)
     bold = ParagraphStyle("bold", fontName="Helvetica-Bold", fontSize=11, leading=14)
     error = ParagraphStyle("error", parent=body, textColor=HexColor("#bb0000"))
-    t = lambda s: escape(str(s))  # noqa: E731
+    t = lambda s: escape(str(s))
 
     story: list = [Paragraph("Daily delivery report", title), Spacer(0, 3),
                    Paragraph(f"Rider: {t(rider_name)}&nbsp;&nbsp;&nbsp;|&nbsp;&nbsp;&nbsp;Date: {t(date)}", muted), Spacer(0, 12),

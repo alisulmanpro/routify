@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any
 
 from ..db import as_json, db, lock_rider, transaction
 from ..errors import conflict, forbidden, not_found
@@ -242,7 +242,7 @@ async def arrive(actor: dict, delivery_id: str, *, at: Any = None, audit: bool =
     return serialize_delivery(saved)
 
 
-async def attach_proof(actor: dict, delivery_id: str, file: Optional[UploadedFile], *, allow_delivered: bool = False) -> dict:
+async def attach_proof(actor: dict, delivery_id: str, file: UploadedFile | None, *, allow_delivered: bool = False) -> dict:
     """`allow_delivered` (v2): the photo may also arrive after the stop was marked delivered, e.g. uploaded once back online."""
     _require_rider(actor)
     delivery = await find_visible(actor, delivery_id)
@@ -261,7 +261,7 @@ async def attach_proof(actor: dict, delivery_id: str, file: Optional[UploadedFil
     return serialize_delivery(saved)
 
 
-async def deliver(actor: dict, delivery_id: str, note: Optional[str] = None, allow_skip: bool = False, *, at: Any = None, audit: bool = True) -> dict:
+async def deliver(actor: dict, delivery_id: str, note: str | None = None, allow_skip: bool = False, *, at: Any = None, audit: bool = True) -> dict:
     _require_rider(actor)
     delivery = await find_visible(actor, delivery_id)
     if delivery.status != "in_progress":
@@ -289,7 +289,7 @@ async def deliver(actor: dict, delivery_id: str, note: Optional[str] = None, all
     return serialize_delivery(saved)
 
 
-async def fail(actor: dict, delivery_id: str, reason: str, note: Optional[str] = None, *, at: Any = None, audit: bool = True) -> dict:
+async def fail(actor: dict, delivery_id: str, reason: str, note: str | None = None, *, at: Any = None, audit: bool = True) -> dict:
     _require_rider(actor)
     delivery = await find_visible(actor, delivery_id)
     if delivery.status != "in_progress":

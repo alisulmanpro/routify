@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Awaitable, Callable, Optional
+from collections.abc import Awaitable, Callable
 
 import httpx
 
@@ -58,7 +58,7 @@ async def _google_block(client: httpx.AsyncClient, points: list[dict], rows: lis
         durations[i][j] = float(str(el.get("duration", "0s")).rstrip("s") or 0)
 
 
-async def _google_matrix(points: list[dict]) -> Optional[dict]:
+async def _google_matrix(points: list[dict]) -> dict | None:
     n = len(points)
     durations: list[list] = [[0.0 if i == j else None for j in range(n)] for i in range(n)]
     distances: list[list] = [[0.0 if i == j else None for j in range(n)] for i in range(n)]
@@ -72,7 +72,7 @@ def _coords(points: list[dict]) -> str:
     return ";".join(f"{p['longitude']:.6f},{p['latitude']:.6f}" for p in points)
 
 
-async def _osrm_matrix(points: list[dict]) -> Optional[dict]:
+async def _osrm_matrix(points: list[dict]) -> dict | None:
     if not env.OSRM_URL:
         return None
     url = f"{env.OSRM_URL}/table/v1/{env.OSRM_PROFILE}/{_coords(points)}"
@@ -86,11 +86,11 @@ async def _osrm_matrix(points: list[dict]) -> Optional[dict]:
     return {"durations": body["durations"], "distances": body["distances"]}
 
 
-async def _no_matrix(points: list[dict]) -> Optional[dict]:
+async def _no_matrix(points: list[dict]) -> dict | None:
     return None
 
 
-async def _google_then_osrm(points: list[dict]) -> Optional[dict]:
+async def _google_then_osrm(points: list[dict]) -> dict | None:
     if len(points) > GOOGLE_MAX_POINTS:
         return await _osrm_matrix(points)
     try:
@@ -100,7 +100,7 @@ async def _google_then_osrm(points: list[dict]) -> Optional[dict]:
         return await _osrm_matrix(points)
 
 
-PROVIDERS: dict[str, Callable[[list[dict]], Awaitable[Optional[dict]]]] = {"google": _google_then_osrm, "osrm": _osrm_matrix, "none": _no_matrix}
+PROVIDERS: dict[str, Callable[[list[dict]], Awaitable[dict | None]]] = {"google": _google_then_osrm, "osrm": _osrm_matrix, "none": _no_matrix}
 # Tests never call the network unless they swap a fake in.
 _lookup = PROVIDERS["none" if env.is_test else env.ROUTING_PROVIDER]
 
@@ -110,7 +110,7 @@ def set_matrix_for_tests(fn=None) -> None:
     _lookup = fn or PROVIDERS["none" if env.is_test else env.ROUTING_PROVIDER]
 
 
-async def road_matrix(ids: list[str], points: list[dict]) -> Optional[dict]:
+async def road_matrix(ids: list[str], points: list[dict]) -> dict | None:
     """{"ids", "durations" (s), "distances" (m)} between every pair of points, or None to fall back
     to straight-line planning (provider off, too many points, or the router is unreachable)."""
     limit = GOOGLE_MAX_POINTS if env.ROUTING_PROVIDER == "google" and not env.OSRM_URL else OSRM_MAX_POINTS

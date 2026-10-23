@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from ..auth import invalidate_user
@@ -42,7 +42,7 @@ async def overview(days: int = 7) -> dict:
     today = today_key()
     since = day_key(-(days - 1))
     current = now()
-    month_start = datetime(current.year, current.month, 1, tzinfo=timezone.utc)
+    month_start = datetime(current.year, current.month, 1, tzinfo=UTC)
     day30 = current - timedelta(days=29)
 
     (rider_count, new_riders7, new_riders_prev7, active_riders24h, active_routes, deliveries_today, del7, del_prev7,

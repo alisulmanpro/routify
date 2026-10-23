@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
 
 from starlette.datastructures import UploadFile
 from starlette.requests import Request
@@ -44,7 +43,7 @@ def _ext(name: str | None) -> str:
     return (name or "").rsplit(".", 1)[-1].lower() if "." in (name or "") else (name or "").lower()
 
 
-async def receive(request: Request, spec: UploadSpec) -> Optional[UploadedFile]:
+async def receive(request: Request, spec: UploadSpec) -> UploadedFile | None:
     """Returns the single uploaded file (or None when the request carries none)."""
     if "multipart/form-data" not in request.headers.get("content-type", "").lower():
         return None
@@ -55,7 +54,7 @@ async def receive(request: Request, spec: UploadSpec) -> Optional[UploadedFile]:
     except Exception as error:  # noqa: BLE001
         raise AppError(400, "UPLOAD_ERROR", str(error) or "Malformed multipart body") from None
 
-    found: Optional[UploadedFile] = None
+    found: UploadedFile | None = None
     try:
         for name, value in form.multi_items():
             if not isinstance(value, UploadFile):
@@ -86,7 +85,7 @@ _SIGNATURES = {
 }
 
 
-def detect_file_type(data: Optional[bytes], allowed: list[str]) -> str:
+def detect_file_type(data: bytes | None, allowed: list[str]) -> str:
     """Never trust the client's mimetype: verify the magic bytes and return the canonical extension."""
     if not data:
         raise unprocessable("No file was uploaded", "FILE_REQUIRED")
@@ -96,7 +95,7 @@ def detect_file_type(data: Optional[bytes], allowed: list[str]) -> str:
     return kind
 
 
-def detect_document_type(data: Optional[bytes], filename: Optional[str]) -> str:
+def detect_document_type(data: bytes | None, filename: str | None) -> str:
     """Detects the document type from the extension plus a basic content check."""
     if not data:
         raise unprocessable("No file was uploaded", "FILE_REQUIRED")

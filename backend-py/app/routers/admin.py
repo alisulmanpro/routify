@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Annotated, Literal, Optional, Union
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Request
 from pydantic import Field, StringConstraints, field_validator, model_validator
@@ -18,7 +18,7 @@ from ..validation import Currency, DateKey, Email, IdParams, Money, ObjectId, Pa
 
 router = APIRouter(prefix="/admin")
 
-Search = Optional[Annotated[str, StringConstraints(strip_whitespace=True, max_length=100)]]
+Search = Annotated[str, StringConstraints(strip_whitespace=True, max_length=100)] | None
 SubStatus = Literal["inactive", "trialing", "active", "past_due", "expired", "cancelled"]
 PlanKey = Literal["trial", "starter", "pro"]
 Cycle = Literal["monthly", "annual"]
@@ -41,7 +41,7 @@ async def _log(request: Request, action: str, target_type: str, target_id, meta)
 
 
 class OverviewQuery(Schema):
-    days: Optional[int] = None
+    days: int | None = None
 
     @field_validator("days")
     @classmethod
@@ -76,7 +76,7 @@ async def google_usage_report(request: Request):
 # Riders: every rider is an independent account that signs up, subscribes and runs their own deliveries.
 class RidersQuery(Pagination):
     search: Search = None
-    status: Optional[Literal["active", "suspended"]] = None
+    status: Literal["active", "suspended"] | None = None
 
 
 class RiderPatch(Schema):
@@ -103,11 +103,11 @@ async def update_rider(request: Request):
 
 # Deliveries
 class DeliveriesQuery(Pagination):
-    dateFrom: Optional[DateKey] = None
-    dateTo: Optional[DateKey] = None
+    dateFrom: DateKey | None = None
+    dateTo: DateKey | None = None
     search: Search = None
-    date: Optional[DateKey] = None
-    status: Optional[Literal["pending", "in_progress", "delivered", "failed"]] = None
+    date: DateKey | None = None
+    status: Literal["pending", "in_progress", "delivered", "failed"] | None = None
     riderId: ObjectId | None = None
 
 
@@ -129,8 +129,8 @@ async def get_delivery(request: Request):
 
 # Reports
 class ReportsQuery(Pagination):
-    dateFrom: Optional[DateKey] = None
-    dateTo: Optional[DateKey] = None
+    dateFrom: DateKey | None = None
+    dateTo: DateKey | None = None
     search: Search = None
     riderId: ObjectId | None = None
 
@@ -146,16 +146,16 @@ async def list_reports(request: Request):
 # Subscriptions, plans and payments: always billed directly to the rider.
 class SubscriptionsQuery(Pagination):
     search: Search = None
-    status: Optional[SubStatus] = None
-    planKey: Optional[PlanKey] = None
-    billingCycle: Optional[Cycle] = None
+    status: SubStatus | None = None
+    planKey: PlanKey | None = None
+    billingCycle: Cycle | None = None
 
 
 class SubscriptionPatch(NotEmpty):
-    status: Optional[SubStatus] = None
-    planKey: Optional[PlanKey] = None
-    billingCycle: Optional[Cycle] = None
-    extendDays: Optional[Annotated[int, Field(ge=1, le=3660)]] = None
+    status: SubStatus | None = None
+    planKey: PlanKey | None = None
+    billingCycle: Cycle | None = None
+    extendDays: Annotated[int, Field(ge=1, le=3660)] | None = None
 
 
 @router.get("/subscriptions")
@@ -187,18 +187,18 @@ class PlanParams(Schema):
 
 
 class PlanLimits(Schema):
-    deliveriesPerMonth: Optional[Annotated[int, Field(ge=0)]] = None
-    reportsPerMonth: Optional[Annotated[int, Field(ge=0)]] = None
+    deliveriesPerMonth: Annotated[int, Field(ge=0)] | None = None
+    reportsPerMonth: Annotated[int, Field(ge=0)] | None = None
 
 
 class PlanPatch(NotEmpty):
-    name: Optional[Trimmed(2, 60)] = None
-    monthlyPrice: Optional[Money] = None
-    annualPrice: Optional[Money] = None
-    currency: Optional[Currency] = None
-    active: Optional[bool] = None
-    features: Optional[Annotated[list[Trimmed(1, 120)], Field(max_length=20)]] = None
-    limits: Optional[PlanLimits] = None
+    name: Trimmed(2, 60) | None = None
+    monthlyPrice: Money | None = None
+    annualPrice: Money | None = None
+    currency: Currency | None = None
+    active: bool | None = None
+    features: Annotated[list[Trimmed(1, 120)], Field(max_length=20)] | None = None
+    limits: PlanLimits | None = None
 
 
 @router.patch("/plans/{key}")
@@ -213,7 +213,7 @@ async def update_plan(request: Request):
 
 class PaymentsQuery(Pagination):
     search: Search = None
-    status: Optional[Literal["pending", "succeeded", "failed", "refunded"]] = None
+    status: Literal["pending", "succeeded", "failed", "refunded"] | None = None
     riderId: ObjectId | None = None
 
 
@@ -221,10 +221,10 @@ class PaymentBody(Schema):
     riderId: ObjectId
     planKey: Literal["starter", "pro"]
     billingCycle: Cycle
-    amount: Optional[Money] = None
-    currency: Optional[Currency] = None
-    status: Optional[Literal["pending", "succeeded"]] = None
-    providerRef: Optional[Annotated[str, StringConstraints(strip_whitespace=True, max_length=120)]] = None
+    amount: Money | None = None
+    currency: Currency | None = None
+    status: Literal["pending", "succeeded"] | None = None
+    providerRef: Annotated[str, StringConstraints(strip_whitespace=True, max_length=120)] | None = None
 
 
 class PaymentPatch(Schema):
@@ -263,20 +263,20 @@ async def update_payment(request: Request):
 
 # Settings + audit
 class RouteSettings(Schema):
-    defaultPreference: Optional[Preference] = None
-    avgSpeedKmh: Optional[Annotated[float, Field(ge=5, le=120)]] = None
-    stopServiceMinutes: Optional[Annotated[float, Field(ge=0, le=60)]] = None
+    defaultPreference: Preference | None = None
+    avgSpeedKmh: Annotated[float, Field(ge=5, le=120)] | None = None
+    stopServiceMinutes: Annotated[float, Field(ge=0, le=60)] | None = None
 
 
 class ReportSettings(Schema):
-    includePhotos: Optional[bool] = None
+    includePhotos: bool | None = None
 
 
 class PlatformSettings(Schema):
-    name: Optional[Trimmed(1, 80)] = None
-    supportEmail: Optional[Union[Literal[""], Email]] = None
-    privacyUrl: Optional[Annotated[str, StringConstraints(strip_whitespace=True, max_length=500)]] = None
-    paymentInstructions: Optional[Annotated[str, StringConstraints(strip_whitespace=True, max_length=1000)]] = None
+    name: Trimmed(1, 80) | None = None
+    supportEmail: Literal[""] | Email | None = None
+    privacyUrl: Annotated[str, StringConstraints(strip_whitespace=True, max_length=500)] | None = None
+    paymentInstructions: Annotated[str, StringConstraints(strip_whitespace=True, max_length=1000)] | None = None
 
     @field_validator("privacyUrl")
     @classmethod
@@ -292,41 +292,41 @@ class PlatformSettings(Schema):
 
 
 class SecuritySettings(Schema):
-    minPasswordLength: Optional[Annotated[int, Field(ge=6, le=64)]] = None
-    maxFailedLogins: Optional[Annotated[int, Field(ge=3, le=20)]] = None
-    lockoutMinutes: Optional[Annotated[int, Field(ge=1, le=1440)]] = None
+    minPasswordLength: Annotated[int, Field(ge=6, le=64)] | None = None
+    maxFailedLogins: Annotated[int, Field(ge=3, le=20)] | None = None
+    lockoutMinutes: Annotated[int, Field(ge=1, le=1440)] | None = None
 
 
 class StoreProductIds(Schema):
-    apple: Optional[Annotated[str, StringConstraints(strip_whitespace=True, pattern=r"^[A-Za-z0-9._-]{1,200}$")]] = None
-    google: Optional[Annotated[str, StringConstraints(strip_whitespace=True, pattern=r"^[a-z0-9_.]{1,100}:[a-z0-9-]{1,63}$")]] = None
-    revenuecat: Optional[Annotated[str, StringConstraints(strip_whitespace=True, pattern=r"^[A-Za-z0-9._:-]{1,200}$")]] = None
+    apple: Annotated[str, StringConstraints(strip_whitespace=True, pattern=r"^[A-Za-z0-9._-]{1,200}$")] | None = None
+    google: Annotated[str, StringConstraints(strip_whitespace=True, pattern=r"^[a-z0-9_.]{1,100}:[a-z0-9-]{1,63}$")] | None = None
+    revenuecat: Annotated[str, StringConstraints(strip_whitespace=True, pattern=r"^[A-Za-z0-9._:-]{1,200}$")] | None = None
 
 
 class CycleProducts(Schema):
-    monthly: Optional[StoreProductIds] = None
-    annual: Optional[StoreProductIds] = None
+    monthly: StoreProductIds | None = None
+    annual: StoreProductIds | None = None
 
 
 class ProductCatalog(Schema):
-    starter: Optional[CycleProducts] = None
-    pro: Optional[CycleProducts] = None
+    starter: CycleProducts | None = None
+    pro: CycleProducts | None = None
 
 
 class BillingSettings(Schema):
-    products: Optional[ProductCatalog] = None
+    products: ProductCatalog | None = None
 
 
 class SettingsBody(NotEmpty):
-    currencies: Optional[Annotated[list[Currency], Field(min_length=1)]] = None
-    defaultCurrency: Optional[Currency] = None
+    currencies: Annotated[list[Currency], Field(min_length=1)] | None = None
+    defaultCurrency: Currency | None = None
     # Free-trial length for store subscriptions. Match it in Play Console (offer free-trial-<days>d) and App Store Connect.
-    trialDays: Optional[Literal[7, 14, 30]] = None
-    route: Optional[RouteSettings] = None
-    reports: Optional[ReportSettings] = None
-    platform: Optional[PlatformSettings] = None
-    security: Optional[SecuritySettings] = None
-    billing: Optional[BillingSettings] = None
+    trialDays: Literal[7, 14, 30] | None = None
+    route: RouteSettings | None = None
+    reports: ReportSettings | None = None
+    platform: PlatformSettings | None = None
+    security: SecuritySettings | None = None
+    billing: BillingSettings | None = None
 
 
 @router.get("/settings")
@@ -345,11 +345,11 @@ async def put_platform_settings(request: Request):
 
 
 class AuditQuery(Pagination):
-    dateFrom: Optional[DateKey] = None
-    dateTo: Optional[DateKey] = None
+    dateFrom: DateKey | None = None
+    dateTo: DateKey | None = None
     search: Search = None
-    action: Optional[Annotated[str, StringConstraints(strip_whitespace=True, max_length=60)]] = None
-    status: Optional[Literal["success", "failure"]] = None
+    action: Annotated[str, StringConstraints(strip_whitespace=True, max_length=60)] | None = None
+    status: Literal["success", "failure"] | None = None
 
 
 @router.get("/audit-logs")

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Annotated, Literal, Optional
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Request
 from pydantic import StringConstraints, model_validator
@@ -40,18 +40,18 @@ class LoginBody(Schema):
 
 
 class RefreshBody(Schema):
-    refreshToken: Optional[Annotated[str, StringConstraints(min_length=20, max_length=200)]] = None
+    refreshToken: Annotated[str, StringConstraints(min_length=20, max_length=200)] | None = None
     client: Literal["mobile", "web"] = "mobile"
 
 
 class ProfileBody(Schema):
     nullable_fields = frozenset({"city", "phone"})
-    fullName: Optional[Trimmed(2, 120)] = None
-    phone: Optional[Phone] = None  # optional; null removes it
-    routePreference: Optional[Literal["smart", "nearest_first", "shortest"]] = None
-    notificationsEnabled: Optional[bool] = None
+    fullName: Trimmed(2, 120) | None = None
+    phone: Phone | None = None  # optional; null removes it
+    routePreference: Literal["smart", "nearest_first", "shortest"] | None = None
+    notificationsEnabled: bool | None = None
     # A city name sets the rider's service area by hand; null clears it so GPS detection takes over.
-    city: Optional[Annotated[str, StringConstraints(strip_whitespace=True, max_length=120)]] = None
+    city: Annotated[str, StringConstraints(strip_whitespace=True, max_length=120)] | None = None
 
     @model_validator(mode="after")
     def not_empty(self):

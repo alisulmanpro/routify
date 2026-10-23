@@ -17,9 +17,10 @@ import asyncio
 import os
 import shutil
 import sys
-from datetime import date, datetime, timezone
+from collections.abc import Callable, Iterable
+from datetime import UTC, date, datetime
 from pathlib import Path
-from typing import Any, Callable, Iterable
+from typing import Any
 
 from bson import ObjectId
 from pymongo import MongoClient
@@ -48,9 +49,9 @@ def dt(value: Any) -> datetime | None:
     if value is None:
         return None
     if isinstance(value, datetime):
-        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+        return value if value.tzinfo else value.replace(tzinfo=UTC)
     try:
-        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        return datetime.fromisoformat(str(value))
     except ValueError:
         return None
 
@@ -159,7 +160,7 @@ async def migrate(mongo_uri: str, wipe: bool, uploads_from: str | None) -> None:
             return {"id": sid(d["_id"]), "userId": sid(d["userId"]), "planKey": enum(d.get("planKey"), "planKey", "trial"),
                     "billingCycle": enum(d.get("billingCycle"), "cycle", "monthly"), "status": enum(d.get("status"), "subStatus", "expired"),
                     "price": num(d.get("price"), 0.0), "currency": text(d.get("currency"), 3, "USD"),
-                    "startedAt": dt(d.get("startedAt")) or dt(d.get("createdAt")) or datetime.now(timezone.utc), "currentPeriodEnd": dt(d["currentPeriodEnd"]),
+                    "startedAt": dt(d.get("startedAt")) or dt(d.get("createdAt")) or datetime.now(UTC), "currentPeriodEnd": dt(d["currentPeriodEnd"]),
                     "cancelAtPeriodEnd": bool(d.get("cancelAtPeriodEnd")), "pendingPlanKey": enum(pending.get("planKey"), "planKey"),
                     "pendingBillingCycle": enum(pending.get("billingCycle"), "cycle"), "pendingPaymentId": sid(pending.get("paymentId")), **timestamps(d)}
 
@@ -236,7 +237,7 @@ async def migrate(mongo_uri: str, wipe: bool, uploads_from: str | None) -> None:
                 return None
             return {"id": sid(d["_id"]), "riderId": sid(d["riderId"]), "date": text(d.get("date"), 10, ""), "summary": as_json(plain(d.get("summary") or {})),
                     "fileKey": str(d["fileKey"]), "fileSize": int(d["fileSize"]) if isinstance(d.get("fileSize"), (int, float)) else None,
-                    "generatedAt": dt(d.get("generatedAt")) or dt(d.get("createdAt")) or datetime.now(timezone.utc), **timestamps(d)}
+                    "generatedAt": dt(d.get("generatedAt")) or dt(d.get("createdAt")) or datetime.now(UTC), **timestamps(d)}
 
         await insert(db.report, convert(source.reports, report), "reports")
 

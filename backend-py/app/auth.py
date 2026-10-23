@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import time
 from datetime import datetime, timedelta
 
@@ -12,6 +13,7 @@ from .db import db
 from .errors import forbidden, unauthorized
 from .http import now
 from .ids import is_object_id
+from .logger import log
 from .security import verify_access_token
 from .services.google_usage import current_rider
 
@@ -86,7 +88,7 @@ async def _touch(user_id: str) -> None:
     try:
         await db.user.update(where={"id": user_id}, data={"lastActiveAt": now()})
     except Exception:  # noqa: BLE001 - best effort
-        pass
+        log(logging.DEBUG, "Could not record lastActiveAt", userId=user_id, exc_info=True)
 
 
 async def authenticate(request: Request, *roles: str) -> dict:
