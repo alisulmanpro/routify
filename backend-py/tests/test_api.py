@@ -611,7 +611,8 @@ async def test_geocode_check_looks_up_an_address_without_saving(client):
         geocoding_service.set_geocoder_for_tests(found)
         hit = await client.post("/api/v1/deliveries/geocode-check", headers=auth, json={"address": "12 Mall Road Lahore"})
         assert hit.status_code == 200, hit.text
-        assert hit.json()["data"] == {"found": True, "approximate": False, "latitude": 31.52, "longitude": 74.35, "normalized": "Mall Road, Lahore"}
+        assert hit.json()["data"] == {"found": True, "approximate": False, "latitude": 31.52, "longitude": 74.35, "normalized": "Mall Road, Lahore",
+                                     "postalCode": None}
 
         async def nothing(address, area):
             return None
@@ -682,7 +683,7 @@ async def test_eircode_is_looked_up_first_and_unfound_stops_can_be_pinned(client
 
         for tid, raw in (("EIR-1", "University Road, Galway, Co. Galway, H91 TK33, Ireland"),
                          ("EIR-2", "General Post Office, O'Connell St, Dublin 1, D01 X9X9"),  # Eircode unknown → address
-                         ("EIR-3", "Nowhere Lane, Atlantis, Z99 ZZZZ")):
+                         ("EIR-3", "Nowhere Lane, Atlantis, A99 W9W9")):
             assert (await client.post("/api/v1/deliveries/manual", headers=auth, json=delivery(tid, raw))).status_code == 201
         route = (await client.post("/api/v1/routes/build", headers=auth, json={"origin": {"latitude": 53.3498, "longitude": -6.2603}})).json()["data"]
         by_tid = {s["delivery"]["trackingId"]: s["delivery"] for s in route["stops"]}
@@ -691,7 +692,7 @@ async def test_eircode_is_looked_up_first_and_unfound_stops_can_be_pinned(client
         assert by_tid["EIR-2"]["address"]["geocodeStatus"] == "found"
         assert by_tid["EIR-3"]["address"]["geocodeStatus"] == "not_found" and "location_not_found" in by_tid["EIR-3"]["flags"]
         assert [s["delivery"]["trackingId"] for s in route["stops"]] == ["EIR-2", "EIR-1", "EIR-3"]
-        assert by_tid["EIR-1"]["address"]["postalCode"] == "H91 TK33" and by_tid["EIR-3"]["address"]["postalCode"] == "Z99 ZZZZ"
+        assert by_tid["EIR-1"]["address"]["postalCode"] == "H91 TK33" and by_tid["EIR-3"]["address"]["postalCode"] == "A99 W9W9"
 
         bad = await client.post(f"/api/v1/deliveries/{by_tid['EIR-3']['id']}/location", headers=auth, json={"latitude": 95, "longitude": 0})
         assert bad.status_code == 400
@@ -699,6 +700,7 @@ async def test_eircode_is_looked_up_first_and_unfound_stops_can_be_pinned(client
         assert pinned.status_code == 200, pinned.text
         p = pinned.json()["data"]
         assert p["address"]["geocodeStatus"] == "found" and p["address"]["geocoded"] is True and p["flags"] == []
+        assert p["address"]["postalCode"] == "A99 W9W9", "a pinned stop keeps its typed Eircode"
 
         optimized = (await client.post(f"/api/v1/routes/{route['id']}/optimize", headers=auth, json={})).json()["data"]
         assert [s["delivery"]["trackingId"] for s in optimized["stops"]] == ["EIR-2", "EIR-3", "EIR-1"], "the pinned stop joins the order"
