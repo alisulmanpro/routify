@@ -12,8 +12,9 @@ services:
     # They use DIRECT_URL (Neon's direct host); until it is set in the dashboard they fall back to DATABASE_URL.
     buildCommand: pip install -r requirements.txt && prisma generate && DIRECT_URL="${DIRECT_URL:-$DATABASE_URL}" prisma migrate deploy
     # Two processes: the worker (route optimisation jobs, python -m app.worker) and the API. Heavy planning never runs
-    # in the API process. On a paid plan, move the worker to its own Render "worker" service.
-    startCommand: sh -c "python -m app.worker & exec python -m app"
+    # in the API process. If the worker dies, the loop starts it again after 5 s. On a paid plan, move the worker to its
+    # own Render "worker" service (Render then restarts it) and set this back to `python -m app` (ISSUE-32).
+    startCommand: sh -c "(while true; do python -m app.worker; echo 'worker exited; restarting in 5 s' >&2; sleep 5; done) & exec python -m app"
     healthCheckPath: /ready
     envVars:
       - key: NODE_ENV
