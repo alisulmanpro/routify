@@ -1,21 +1,23 @@
-import { useCallback, useState } from 'react';
-import { Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useCallback, useState, type ComponentProps } from 'react';
+import { ActivityIndicator, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useFocusEffect } from '../lib/useFocusEffect';
 import { useNav } from '../lib/nav';
 import { get, post, ApiRequestError } from '../lib/api';
-import type { BillingCycle, PaidPlanKey, StoreConfig, SubscriptionInfo } from '../lib/types';
+import type { StoreConfig, SubscriptionInfo } from '../lib/types';
 import { money, titleCase, shortDate } from '../lib/format';
-import { loadStoreConfig, mockEvent, openStoreSubscriptions, pickStore, PREMIUM_NAME, STORE_LABEL, trialLabel, type MockEvent } from '../lib/billing';
+import { loadStoreConfig, mockEvent, openStoreSubscriptions, pickStore, PREMIUM_NAME, PREMIUM_PLAN_KEY, STORE_LABEL, trialLabel, type MockEvent } from '../lib/billing';
 import { Screen } from '../components/Kit';
-import { ErrorBanner, Header, IconCircle, PButton, PCard, Pill } from '../components/Premium';
-import { premium as c, premiumRadius as r } from '../lib/theme';
+import { LightButton, LightError, LightPill, LightProgress, type LightTone } from '../components/LightKit';
+import { light as c } from '../lib/theme';
+
+type McName = ComponentProps<typeof MaterialCommunityIcons>['name'];
 
 const errorText = (err: unknown, fallback: string) => (err instanceof ApiRequestError || err instanceof Error ? err.message : fallback);
 
-/** The rider's current plan and usage. Choosing or changing a plan happens on the separate Paywall screen. */
+/** The rider's Routify Premium plan and usage (light theme). Buying happens on the Paywall screen. */
 export default function Subscription() {
-  const { navigate } = useNav();
+  const { navigate, goBack } = useNav();
   const [info, setInfo] = useState<SubscriptionInfo | null>(null);
   const [config, setConfig] = useState<StoreConfig | null>(null);
   const [error, setError] = useState('');
@@ -42,49 +44,49 @@ export default function Subscription() {
   };
   const reloadMine = async () => (await get<SubscriptionInfo>('/subscriptions/me')).data;
 
-  if (!info) {
-    return (
-      <Screen style={{ padding: 22, backgroundColor: c.background }}>
-        {error ? <ErrorBanner text={error} /> : <Text style={{ color: c.textSecondary }}>Loading…</Text>}
-      </Screen>
-    );
-  }
-
   const store = config ? pickStore(config) : null;
-  const sub = info.subscription;
-  const storeManaged = Boolean(sub?.storeManaged && info.store);
+  const sub = info?.subscription;
+  const storeManaged = Boolean(sub?.storeManaged && info?.store);
   const trial = Boolean(store && !storeManaged && config?.trialEligible[store]);
-  // Manual plans (admin-confirmed payments) only when the server sells through no store at all. When it does but this
-  // build cannot reach that store (e.g. RevenueCat has no key for this platform), say so instead of a dead-end request.
+  // Manual billing (an admin confirms the payment) only when the server sells through no store at all. When it does but
+  // this build cannot reach that store (e.g. RevenueCat has no key for this platform), say so instead.
   const manualMode = !store && !config?.stores.length;
   const storeUnreachable = !store && !storeManaged && Boolean(config?.stores.length);
+  const live = sub && sub.status !== 'inactive';
 
   return (
     <Screen style={{ backgroundColor: c.background }}>
-      <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 32, gap: 14 }}>
-        <Header eyebrow="Settings" eyebrowIcon="crown-outline" title="Subscription" subtitle="Your plan, usage and upgrades." />
-        <ErrorBanner text={error} />
+      <ScrollView contentContainerStyle={s.body}>
+        <Pressable onPress={goBack} hitSlop={12} accessibilityLabel="Back" style={{ alignSelf: 'flex-start' }}>
+          <Ionicons name="arrow-back" size={26} color={c.text} />
+        </Pressable>
+        <Text style={s.title}>Subscription</Text>
+        <Text style={s.subtitle}>Your plan and usage this month.</Text>
+        <LightError text={error} />
 
-        {sub && sub.status === 'inactive' ? <NoPlanYet /> : null}
-        {sub && sub.status !== 'inactive' ? (
-          <CurrentPlan info={info} storeManaged={storeManaged} manualMode={manualMode} busy={busy}
-            onCancel={() => run('cancel', async () => { await post('/subscriptions/cancel'); return reloadMine(); }, 'Could not cancel')}
-            onManage={() => { if (info.store) void openStoreSubscriptions(info.store.store, info.store.productId).then(load); }} />
-        ) : null}
+        {!info ? (
+          error ? null : <ActivityIndicator color={c.link} style={{ marginTop: 40 }} />
+        ) : (
+          <>
+            {live ? (
+              <CurrentPlan info={info} storeManaged={storeManaged} manualMode={manualMode} busy={busy}
+                onCancel={() => run('cancel', async () => { await post('/subscriptions/cancel'); return reloadMine(); }, 'Could not cancel')}
+                onManage={() => { if (info.store) void openStoreSubscriptions(info.store.store, info.store.productId).then(load); }} />
+            ) : <NoPlanYet />}
 
-        {storeManaged && info.store?.store === 'mock' ? (
-          <TestStoreControls status={info.store.status} autoRenew={info.store.autoRenew} busy={busy}
-            onEvent={(event) => run(`mock-${event}`, () => mockEvent(event), 'The test event failed')} />
-        ) : null}
+            {storeManaged && info.store?.store === 'mock' ? (
+              <TestStoreControls status={info.store.status} autoRenew={info.store.autoRenew} busy={busy}
+                onEvent={(event) => run(`mock-${event}`, () => mockEvent(event), 'The test event failed')} />
+            ) : null}
 
-        {store && !storeManaged ? <UpgradeCard trial={trial} trialText={trialLabel(config?.trialDays ?? 14)} onOpen={() => navigate('Paywall')} /> : null}
-
-        {storeUnreachable ? <StoreUnavailable /> : null}
-
-        {manualMode ? (
-          <ManualPlans info={info} busy={busy}
-            onRequest={(key, cycle) => run(`${key}-${cycle}`, async () => { await post('/subscriptions', { planKey: key, billingCycle: cycle }); return reloadMine(); }, 'Could not request this plan')} />
-        ) : null}
+            {store && !storeManaged ? <UpgradeCard trial={trial} trialText={trialLabel(config?.trialDays ?? 1)} onOpen={() => navigate('Paywall')} /> : null}
+            {storeUnreachable ? <StoreUnavailable /> : null}
+            {manualMode ? (
+              <ManualPremium info={info} busy={busy}
+                onRequest={() => run('request', async () => { await post('/subscriptions', { planKey: PREMIUM_PLAN_KEY, billingCycle: 'monthly' }); return reloadMine(); }, 'Could not request Routify Premium')} />
+            ) : null}
+          </>
+        )}
       </ScrollView>
     </Screen>
   );
@@ -92,103 +94,109 @@ export default function Subscription() {
 
 // ---------------------------------------------------------------- current plan
 
+const STATUS: Record<string, { text: string; tone: LightTone }> = {
+  active: { text: 'Active', tone: 'green' }, trialing: { text: 'Free trial', tone: 'blue' }, past_due: { text: 'Payment issue', tone: 'amber' },
+  cancelled: { text: 'Cancelled', tone: 'red' }, expired: { text: 'Expired', tone: 'red' },
+};
+
 function CurrentPlan({ info, storeManaged, manualMode, busy, onCancel, onManage }: {
-  info: SubscriptionInfo; storeManaged: boolean; manualMode: boolean; busy: string | null;
-  onCancel: () => void; onManage: () => void;
+  info: SubscriptionInfo; storeManaged: boolean; manualMode: boolean; busy: string | null; onCancel: () => void; onManage: () => void;
 }) {
   const sub = info.subscription!;
-  const healthy = sub.status === 'active' || sub.status === 'trialing';
   const limit = info.plan?.limits.deliveriesPerMonth || 0;
   const used = limit ? Math.min(100, Math.round((info.usage.deliveriesThisMonth / limit) * 100)) : 0;
   const purchase = info.store;
   const storeTrial = storeManaged && sub.status === 'trialing';
   const when = sub.cancelAtPeriodEnd ? 'Ends' : storeTrial ? 'Free trial ends' : sub.planKey === 'trial' ? 'Trial ends' : 'Renews';
+  const status = STATUS[sub.status] ?? { text: titleCase(sub.status), tone: 'muted' as LightTone };
+  const storeIcon: McName = purchase?.store === 'apple' ? 'apple' : purchase?.store === 'google' ? 'google-play'
+    : purchase?.store === 'revenuecat' ? (Platform.OS === 'ios' ? 'apple' : 'google-play') : 'flask-outline';
 
   return (
-    <PCard accent>
-      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
-        <IconCircle icon="crown" />
+    <View style={[s.card, s.cardAccent]}>
+      <View style={s.cardHead}>
+        <View style={s.icon}><MaterialCommunityIcons name="crown" size={24} color={c.link} /></View>
         <View style={{ flex: 1 }}>
-          <Text style={s.planName}>{info.plan?.name || titleCase(sub.planKey)}{sub.planKey !== 'trial' ? <Text style={s.cycle}>  · {titleCase(sub.billingCycle)}</Text> : null}</Text>
+          <Text style={s.planName}>{info.plan?.name || PREMIUM_NAME}</Text>
           <Text style={s.meta}>{when} {shortDate(sub.currentPeriodEnd)}</Text>
         </View>
-        <Pill text={sub.status === 'past_due' ? 'Payment issue' : titleCase(sub.status)} tone={healthy ? 'green' : sub.status === 'past_due' ? 'amber' : 'red'} />
+        <LightPill text={status.text} tone={status.tone} />
       </View>
 
       {limit ? (
-        <View style={{ marginTop: 16 }}>
+        <View style={{ marginTop: 18 }}>
           <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
             <Text style={s.meta}>Deliveries this month</Text>
-            <Text style={[s.meta, { color: c.text, fontWeight: '700' }]}>{info.usage.deliveriesThisMonth.toLocaleString()} / {limit.toLocaleString()}</Text>
+            <Text style={[s.meta, { color: c.text, fontWeight: '600' }]}>{info.usage.deliveriesThisMonth.toLocaleString()} / {limit.toLocaleString()}</Text>
           </View>
-          <View style={s.track}><View style={[s.fill, { width: `${used}%` }, used >= 90 && { backgroundColor: c.danger }]} /></View>
+          <LightProgress progress={used} style={{ marginTop: 8 }} />
         </View>
       ) : null}
-      <Text style={[s.meta, { marginTop: 10 }]}>{info.usage.reportsThisMonth} report{info.usage.reportsThisMonth === 1 ? '' : 's'} generated this month</Text>
+      <Text style={[s.meta, { marginTop: 10 }]}>{info.usage.reportsThisMonth} report{info.usage.reportsThisMonth === 1 ? '' : 's'} this month</Text>
 
       {storeManaged && purchase ? (
         <View style={s.billedBy}>
-          <MaterialCommunityIcons name={purchase.store === 'apple' ? 'apple' : purchase.store === 'google' ? 'google-play' : purchase.store === 'revenuecat' ? (Platform.OS === 'ios' ? 'apple' : 'google-play') : 'flask-outline'} size={15} color={c.textSecondary} />
-          <Text style={{ flex: 1, color: c.textSecondary, fontSize: 12 }}>Billed through {STORE_LABEL[purchase.store]}{purchase.autoRenew ? '' : ' · auto-renew off'}</Text>
-          {purchase.testMode ? <Pill text="Test" tone="blue" /> : null}
+          <MaterialCommunityIcons name={storeIcon} size={16} color={c.textSecondary} />
+          <Text style={[s.meta, { flex: 1, marginTop: 0 }]}>Billed through {STORE_LABEL[purchase.store]}{purchase.autoRenew ? '' : ' · auto-renew off'}</Text>
+          {purchase.testMode ? <LightPill text="Test" tone="blue" /> : null}
         </View>
       ) : null}
 
       {sub.status === 'past_due' ? <Text style={[s.note, { color: c.warning }]}>Your last payment failed. Update your payment method in {purchase ? STORE_LABEL[purchase.store] : 'the store'} to keep adding deliveries.</Text> : null}
       {sub.cancelAtPeriodEnd && sub.status !== 'past_due' ? <Text style={[s.note, { color: c.warning }]}>Your plan will not renew.</Text> : null}
-      {sub.pending && manualMode ? <Text style={[s.note, { color: '#7FB2FF' }]}>Upgrade to {titleCase(sub.pending.planKey)} is waiting for payment confirmation.</Text> : null}
+      {sub.pending && manualMode ? <Text style={[s.note, { color: c.link }]}>{PREMIUM_NAME} is waiting for payment confirmation.</Text> : null}
 
-      {storeManaged ? (
-        purchase?.store !== 'mock' ? <PButton title="Manage subscription" icon="open-outline" variant="secondary" onPress={onManage} style={{ marginTop: 14 }} /> : null
+      {storeManaged && purchase?.store !== 'mock' ? (
+        <LightButton title="Manage subscription" variant="outline" onPress={onManage} style={{ marginTop: 16 }} />
       ) : manualMode && sub.planKey !== 'trial' && !sub.cancelAtPeriodEnd ? (
-        <PButton title="Cancel at period end" variant="secondary" onPress={onCancel} loading={busy === 'cancel'} style={{ marginTop: 14 }} />
+        <LightButton title="Cancel at period end" variant="outline" onPress={onCancel} loading={busy === 'cancel'} style={{ marginTop: 16 }} />
       ) : null}
-    </PCard>
+    </View>
   );
 }
 
 function UpgradeCard({ trial, trialText, onOpen }: { trial: boolean; trialText: string; onOpen: () => void }) {
   return (
-    <PCard>
-      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
-        <IconCircle icon="rocket-launch-outline" />
+    <View style={s.card}>
+      <View style={s.cardHead}>
+        <View style={s.icon}><MaterialCommunityIcons name="crown-outline" size={24} color={c.link} /></View>
         <View style={{ flex: 1 }}>
           <Text style={s.planName}>{trial ? `Try ${PREMIUM_NAME} free for ${trialText}` : `Get ${PREMIUM_NAME}`}</Text>
           <Text style={s.meta}>Route planning, imports, proof photos, reports and priority support.</Text>
         </View>
       </View>
-      <PButton title={trial ? 'Start free trial' : `See ${PREMIUM_NAME}`} icon="sparkles-outline" onPress={onOpen} chevron style={{ marginTop: 14 }} />
-    </PCard>
+      <LightButton title={trial ? 'Start free trial' : `See ${PREMIUM_NAME}`} onPress={onOpen} style={{ marginTop: 16 }} />
+    </View>
   );
 }
 
 function NoPlanYet() {
   return (
-    <PCard>
-      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
-        <IconCircle icon="crown-outline" color={c.textSecondary} bg="rgba(170,182,207,0.12)" />
+    <View style={s.card}>
+      <View style={s.cardHead}>
+        <View style={[s.icon, { backgroundColor: c.soft }]}><MaterialCommunityIcons name="crown-outline" size={24} color={c.textSecondary} /></View>
         <View style={{ flex: 1 }}>
           <Text style={s.planName}>No plan yet</Text>
-          <Text style={s.meta}>Start a plan to add deliveries, plan routes and get reports.</Text>
+          <Text style={s.meta}>Start {PREMIUM_NAME} to add deliveries, plan routes and get reports.</Text>
         </View>
-        <Pill text="Not started" tone="muted" />
+        <LightPill text="Not started" />
       </View>
-    </PCard>
+    </View>
   );
 }
 
 function StoreUnavailable() {
   const storeName = Platform.OS === 'ios' ? 'the App Store' : 'Google Play';
   return (
-    <PCard>
-      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
-        <IconCircle icon="store-off-outline" color={c.warning} bg="rgba(255,179,64,0.12)" />
+    <View style={s.card}>
+      <View style={s.cardHead}>
+        <View style={[s.icon, { backgroundColor: c.warningBg }]}><MaterialCommunityIcons name="store-off-outline" size={24} color={c.warning} /></View>
         <View style={{ flex: 1 }}>
           <Text style={s.planName}>Purchases unavailable</Text>
-          <Text style={s.meta}>Plans are bought through {storeName}, which this version of the app cannot reach yet. Please try again after updating the app.</Text>
+          <Text style={s.meta}>{PREMIUM_NAME} is bought through {storeName}, which this version of the app cannot reach yet. Please try again after updating the app.</Text>
         </View>
       </View>
-    </PCard>
+    </View>
   );
 }
 
@@ -207,12 +215,12 @@ const TEST_EVENTS: { event: MockEvent; label: string; when: (status: string, aut
 
 function TestStoreControls({ status, autoRenew, busy, onEvent }: { status: string; autoRenew: boolean; busy: string | null; onEvent: (event: MockEvent) => void }) {
   return (
-    <PCard>
+    <View style={s.card}>
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-        <MaterialCommunityIcons name="flask-outline" size={16} color="#7FB2FF" />
-        <Text style={{ color: c.text, fontSize: 14, fontWeight: '800' }}>Test store controls</Text>
+        <MaterialCommunityIcons name="flask-outline" size={18} color={c.link} />
+        <Text style={[s.planName, { fontSize: 16 }]}>Test store controls</Text>
       </View>
-      <Text style={[s.meta, { marginTop: 4 }]}>Simulate what Google Play and the App Store do over time.</Text>
+      <Text style={s.meta}>Simulate what Google Play and the App Store do over time.</Text>
       <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 12 }}>
         {TEST_EVENTS.filter((t) => t.when(status, autoRenew)).map((t) => (
           <Pressable key={t.event} onPress={() => onEvent(t.event)} disabled={Boolean(busy)}
@@ -221,54 +229,54 @@ function TestStoreControls({ status, autoRenew, busy, onEvent }: { status: strin
           </Pressable>
         ))}
       </View>
-    </PCard>
+    </View>
   );
 }
 
 // ---------------------------------------------------------------- manual billing (no store enabled on the server)
 
-function ManualPlans({ info, busy, onRequest }: { info: SubscriptionInfo; busy: string | null; onRequest: (key: PaidPlanKey, cycle: BillingCycle) => void }) {
+function ManualPremium({ info, busy, onRequest }: { info: SubscriptionInfo; busy: string | null; onRequest: () => void }) {
+  const plan = info.plans.find((p) => p.key === PREMIUM_PLAN_KEY);
+  if (!plan) return null;
   const sub = info.subscription;
-  const healthy = sub?.status === 'active' || sub?.status === 'trialing';
+  const isCurrent = sub?.planKey === plan.key && (sub.status === 'active' || sub.status === 'trialing');
   return (
     <>
       {info.paymentInstructions ? (
         <View style={s.info}>
-          <Ionicons name="information-circle" size={18} color="#7FB2FF" />
-          <Text style={{ flex: 1, color: c.textSecondary, fontSize: 13, lineHeight: 19 }}>{info.paymentInstructions}</Text>
+          <Ionicons name="information-circle" size={18} color={c.link} />
+          <Text style={{ flex: 1, color: c.textLabel, fontSize: 14, lineHeight: 20 }}>{info.paymentInstructions}</Text>
         </View>
       ) : null}
-      <Text style={s.section}>Plans</Text>
-      {info.plans.filter((p) => p.key !== 'trial').map((p) => {
-        const isCurrent = sub?.planKey === p.key && healthy;
-        return (
-          <PCard key={p.key} accent={p.key === 'pro'}>
-            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
-              <Text style={s.planName}>{p.name}</Text>
-              {isCurrent ? <Pill text="Current plan" tone="green" icon="checkmark" /> : p.key === 'pro' ? <Pill text="Best value" tone="orange" icon="star" /> : null}
-            </View>
-            <Text style={s.meta}>{p.limits.deliveriesPerMonth.toLocaleString()} deliveries · {p.limits.reportsPerMonth.toLocaleString()} reports per month</Text>
-            <View style={{ flexDirection: 'row', gap: 10, marginTop: 14 }}>
-              <PButton title={`${money(p.monthlyPrice, p.currency)}/mo`} variant="secondary" onPress={() => onRequest(p.key as PaidPlanKey, 'monthly')} loading={busy === `${p.key}-monthly`} style={{ flex: 1 }} />
-              <PButton title={`${money(p.annualPrice, p.currency)}/yr`} variant={p.key === 'pro' ? 'primary' : 'secondary'} onPress={() => onRequest(p.key as PaidPlanKey, 'annual')} loading={busy === `${p.key}-annual`} style={{ flex: 1 }} />
-            </View>
-          </PCard>
-        );
-      })}
+      <View style={[s.card, s.cardAccent]}>
+        <View style={s.cardHead}>
+          <View style={s.icon}><MaterialCommunityIcons name="crown" size={24} color={c.link} /></View>
+          <View style={{ flex: 1 }}>
+            <Text style={s.planName}>{plan.name}</Text>
+            <Text style={s.meta}>{money(plan.monthlyPrice, plan.currency)} a month</Text>
+          </View>
+          {isCurrent ? <LightPill text="Current plan" tone="green" /> : null}
+        </View>
+        {!isCurrent ? <LightButton title={`Get ${plan.name} · ${money(plan.monthlyPrice, plan.currency)}/month`} onPress={onRequest} loading={busy === 'request'} disabled={Boolean(sub?.pending)} style={{ marginTop: 16 }} /> : null}
+      </View>
     </>
   );
 }
 
 const s = StyleSheet.create({
-  planName: { color: c.text, fontSize: 17, fontWeight: '800' },
-  cycle: { color: c.textSecondary, fontSize: 13, fontWeight: '600' },
-  meta: { color: c.textSecondary, fontSize: 12, marginTop: 3 },
-  note: { fontSize: 12, marginTop: 8, fontWeight: '600', lineHeight: 17 },
-  track: { height: 8, borderRadius: 99, backgroundColor: '#22314F', overflow: 'hidden', marginTop: 8 },
-  fill: { height: '100%', borderRadius: 99, backgroundColor: c.primary },
-  billedBy: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 12, paddingTop: 12, borderTopWidth: 1, borderTopColor: c.divider },
-  info: { flexDirection: 'row', gap: 10, padding: 14, borderRadius: r.large, backgroundColor: 'rgba(61,139,255,0.1)', borderWidth: 1, borderColor: 'rgba(61,139,255,0.3)' },
-  section: { color: c.textSecondary, fontSize: 11, fontWeight: '800', letterSpacing: 1, textTransform: 'uppercase', marginTop: 4 },
-  chip: { paddingHorizontal: 12, paddingVertical: 8, borderRadius: r.pill, backgroundColor: c.surfaceSoft, borderWidth: 1, borderColor: c.border },
-  chipText: { color: c.text, fontSize: 12, fontWeight: '700' },
+  body: { paddingHorizontal: 24, paddingTop: 16, paddingBottom: 32, gap: 14 },
+  title: { color: c.text, fontSize: 32, fontWeight: '800', letterSpacing: -0.5, marginTop: 8 },
+  subtitle: { color: c.textSecondary, fontSize: 15, marginTop: -8, marginBottom: 4 },
+
+  card: { padding: 16, borderRadius: 16, borderWidth: 1, borderColor: c.border, backgroundColor: c.surface },
+  cardAccent: { borderColor: c.link, borderWidth: 1.5 },
+  cardHead: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  icon: { width: 44, height: 44, borderRadius: 12, alignItems: 'center', justifyContent: 'center', backgroundColor: c.linkBg },
+  planName: { color: c.text, fontSize: 17, fontWeight: '700' },
+  meta: { color: c.textSecondary, fontSize: 13, lineHeight: 18, marginTop: 3 },
+  note: { fontSize: 13, marginTop: 10, fontWeight: '600', lineHeight: 18 },
+  billedBy: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 14, paddingTop: 14, borderTopWidth: 1, borderTopColor: c.border },
+  info: { flexDirection: 'row', gap: 10, padding: 14, borderRadius: 14, backgroundColor: c.linkBg },
+  chip: { paddingHorizontal: 12, paddingVertical: 8, borderRadius: 999, backgroundColor: c.soft, borderWidth: 1, borderColor: c.border },
+  chipText: { color: c.text, fontSize: 13, fontWeight: '600' },
 });
