@@ -1,48 +1,57 @@
-import { useCallback, useState } from 'react';
-import { Alert, FlatList, Platform, Pressable, RefreshControl, Text, View } from 'react-native';
-import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { useCallback, useMemo, useState } from 'react';
+import { Alert, Platform, Pressable, RefreshControl, SectionList, StyleSheet, Text, View } from 'react-native';
+import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
+import { StatusBar } from 'expo-status-bar';
 import { useFocusEffect } from '../lib/useFocusEffect';
-import { del, get, post, ApiRequestError } from '../lib/api';
-import type { HistoryDay } from '../lib/types';
-import { shortDate } from '../lib/format';
+import { del, get, ApiRequestError } from '../lib/api';
+import type { Route } from '../lib/types';
+import { dayKey, fromDayKey } from '../lib/format';
 import { Screen } from '../components/Kit';
-import { Empty, ErrorBanner, Header, PButton, PCard, Pill } from '../components/Premium';
-import { premium as c } from '../lib/theme';
+import { LightError } from '../components/LightKit';
+import { useNav } from '../lib/nav';
+import { light as c } from '../lib/theme';
 
+type Filter = 'all' | 'completed' | 'failures';
+const FILTERS: { key: Filter; label: string }[] = [
+  { key: 'all', label: 'All' },
+  { key: 'completed', label: 'Completed' },
+  { key: 'failures', label: 'With failures' },
+];
+
+/** "Today", "Yesterday", then "18 Oct". */
+const dayHeading = (key: string) => {
+  if (key === dayKey(0)) return 'Today';
+  if (key === dayKey(-1)) return 'Yesterday';
+  return fromDayKey(key).toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
+};
+
+/** History (design_pref "History"): finished routes by day, newest first. Tapping one opens its summary. */
 export default function History() {
-  const [days, setDays] = useState<HistoryDay[]>([]);
+  const { navigate } = useNav();
+  const [routes, setRoutes] = useState<Route[] | null>(null);
+  const [filter, setFilter] = useState<Filter>('all');
   const [error, setError] = useState('');
   const [refreshing, setRefreshing] = useState(false);
-  const [generatingDate, setGeneratingDate] = useState('');
 
   const load = useCallback(async () => {
-    try { setDays((await get<HistoryDay[]>('/rider/history')).data); setError(''); }
-    catch (err) { setError(err instanceof ApiRequestError ? err.message : 'Could not load history'); }
+    try { setRoutes((await get<Route[]>('/routes')).data); setError(''); }
+    catch (err) { setError(err instanceof ApiRequestError ? err.message : 'Could not load history'); setRoutes((r) => r ?? []); }
   }, []);
   useFocusEffect(useCallback(() => { load(); }, [load]));
 
-  const generateReport = async (date: string) => {
-    setGeneratingDate(date);
-    setError('');
-    try {
-      await post('/reports/generate', { date });
-      await load();
-    } catch (err) {
-      setError(err instanceof ApiRequestError ? err.message : `Could not generate the ${shortDate(date)} report`);
-    } finally {
-      setGeneratingDate('');
-    }
-  };
+  const sections = useMemo(() => {
+    const shown = (routes || []).filter((r) => filter === 'all' || (filter === 'failures' ? r.summary.failed > 0 : r.summary.failed === 0));
+    const byDay = new Map<string, Route[]>();
+    for (const r of shown) byDay.set(r.serviceDate, [...(byDay.get(r.serviceDate) || []), r]);
+    return [...byDay.keys()].sort().reverse().map((key) => ({ key, title: dayHeading(key), data: byDay.get(key)! }));
+  }, [routes, filter]);
 
   const clearHistory = async () => {
     setRefreshing(true);
     setError('');
-    try {
-      await del('/rider/history');
-      await load();
-    } catch (err) {
-      setError(err instanceof ApiRequestError ? err.message : 'Could not clear history');
-    } finally { setRefreshing(false); }
+    try { await del('/rider/history'); await load(); }
+    catch (err) { setError(err instanceof ApiRequestError ? err.message : 'Could not clear history'); }
+    finally { setRefreshing(false); }
   };
 
   const confirmClearHistory = () => {
@@ -59,83 +68,89 @@ export default function History() {
 
   return (
     <Screen style={{ backgroundColor: c.background }}>
-      <FlatList
-        data={days}
-        keyExtractor={(d) => d.date}
-        contentContainerStyle={{ padding: 16, paddingBottom: 28, gap: 14 }}
-        refreshControl={<RefreshControl tintColor={c.primary} colors={[c.primary]} refreshing={refreshing} onRefresh={async () => { setRefreshing(true); await load(); setRefreshing(false); }} />}
+      <StatusBar style="dark" />
+      <SectionList
+        sections={sections}
+        keyExtractor={(r) => r.id}
+        stickySectionHeadersEnabled={false}
+        contentContainerStyle={{ paddingHorizontal: 24, paddingTop: 24, paddingBottom: 28 }}
+        refreshControl={<RefreshControl tintColor={c.ink} colors={[c.ink]} refreshing={refreshing} onRefresh={async () => { setRefreshing(true); await load(); setRefreshing(false); }} />}
         ListHeaderComponent={(
           <>
-            <Header
-              eyebrow="Delivery desk"
-              eyebrowIcon="truck-fast-outline"
-              title="History"
-              subtitle="Track your past deliveries and their status."
-              right={days.length > 0 ? (
-                <Pressable onPress={confirmClearHistory} hitSlop={8} style={({ pressed }) => [{ paddingHorizontal: 12, paddingVertical: 6, borderRadius: 99, backgroundColor: 'rgba(255,83,104,0.12)' }, pressed && { opacity: 0.8 }]}>
-                  <Text style={{ color: c.danger, fontWeight: '800', fontSize: 12 }}>Clear</Text>
+            <View style={s.titleRow}>
+              <Text style={s.title}>History</Text>
+              {/* Not in the design: clearing finished work, as before. */}
+              {routes?.length ? (
+                <Pressable onPress={confirmClearHistory} hitSlop={8} accessibilityLabel="Clear history">
+                  <Text style={{ color: c.danger, fontSize: 15, fontWeight: '600' }}>Clear</Text>
                 </Pressable>
               ) : null}
-            />
-            <ErrorBanner text={error} />
+            </View>
+            <View style={s.filters}>
+              {FILTERS.map((f) => {
+                const on = filter === f.key;
+                return (
+                  <Pressable key={f.key} onPress={() => setFilter(f.key)} style={[s.chip, on && s.chipOn]} accessibilityRole="tab" accessibilityState={{ selected: on }}>
+                    <Text style={[s.chipText, on && { color: c.onInk }]}>{f.label}</Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+            <LightError text={error} />
           </>
         )}
-        ListEmptyComponent={<Empty icon="history" title="No history yet" subtitle="Days you've delivered on will show up here." />}
-        renderItem={({ item }) => <DayCard day={item} generating={generatingDate === item.date} onGenerate={() => generateReport(item.date)} />}
+        renderSectionHeader={({ section }) => <Text style={s.day}>{section.title}</Text>}
+        renderItem={({ item, index }) => {
+          const stops = item.progress.total;
+          return (
+            <Pressable onPress={() => navigate('RouteDetail', { id: item.id })} style={({ pressed }) => [s.row, index > 0 && s.divider, pressed && { opacity: 0.7 }]}>
+              <View style={{ flex: 1, marginRight: 12 }}>
+                <Text style={s.name} numberOfLines={1}>{item.name || 'Route'}</Text>
+                <Text style={s.meta}>{stops} stop{stops === 1 ? '' : 's'}{item.distanceKm > 0 ? ` · ${Math.round(item.distanceKm)} km` : ''}</Text>
+                <View style={s.counts}>
+                  <Dot color={c.success} text={`${item.summary.delivered} delivered`} />
+                  {item.summary.failed ? <Dot color={c.danger} text={`${item.summary.failed} failed`} /> : null}
+                </View>
+              </View>
+              <Ionicons name="chevron-forward" size={22} color={c.placeholder} />
+            </Pressable>
+          );
+        }}
+        ListEmptyComponent={routes ? (
+          <View style={{ alignItems: 'center', paddingTop: 48 }}>
+            <MaterialCommunityIcons name="history" size={48} color={c.placeholder} />
+            <Text style={{ color: c.text, fontSize: 18, fontWeight: '700', marginTop: 12 }}>{filter === 'all' ? 'No history yet' : 'Nothing here'}</Text>
+            <Text style={{ color: c.textSecondary, fontSize: 15, marginTop: 6, textAlign: 'center' }}>
+              {filter === 'all' ? 'Finished routes will show up here.' : filter === 'failures' ? 'No finished routes with failed stops.' : 'No routes finished without failures yet.'}
+            </Text>
+          </View>
+        ) : null}
+        SectionSeparatorComponent={() => <View style={{ height: 8 }} />}
       />
     </Screen>
   );
 }
 
-function DayCard({ day, generating, onGenerate }: { day: HistoryDay; generating: boolean; onGenerate: () => void }) {
-  const done = day.pending === 0;
+function Dot({ color, text }: { color: string; text: string }) {
   return (
-    <PCard>
-      <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-          <MaterialCommunityIcons name="calendar-blank-outline" size={18} color={c.primary} />
-          <Text style={{ color: c.text, fontSize: 17, fontWeight: '800' }}>{shortDate(day.date)}</Text>
-        </View>
-        {day.hasReport
-          ? <Pill text="Report ready" tone="blue" icon="document-text" />
-          : <Pill text={done ? 'Completed' : 'In progress'} tone={done ? 'green' : 'amber'} />}
-      </View>
-
-      <View style={{ flexDirection: 'row', gap: 8, marginTop: 14 }}>
-        <Stat label="Delivered" value={day.delivered} color={c.success} />
-        <Stat label="Failed" value={day.failed} color={day.failed ? c.danger : c.textSecondary} />
-        <Stat label="Total" value={day.total} color={c.text} />
-      </View>
-
-      <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 12 }}>
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexShrink: 1 }}>
-          <MaterialCommunityIcons name="clock-outline" size={16} color={c.primary} />
-          <Text style={{ color: c.textSecondary, fontSize: 13 }} numberOfLines={1}>{day.pending ? `${day.pending} not completed` : 'All stops finished'}</Text>
-        </View>
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
-          <MaterialCommunityIcons name="map-marker-distance" size={16} color={c.primary} />
-          <Text style={{ color: c.textSecondary, fontSize: 13 }}>{day.distanceKm} km</Text>
-        </View>
-      </View>
-
-      <PButton
-        title={day.hasReport ? 'Regenerate report' : 'Generate report'}
-        icon={day.hasReport ? 'refresh' : 'document-text-outline'}
-        variant={day.hasReport ? 'secondary' : 'primary'}
-        onPress={onGenerate}
-        loading={generating}
-        chevron
-        style={{ marginTop: 14 }}
-      />
-    </PCard>
-  );
-}
-
-function Stat({ label, value, color }: { label: string; value: number; color: string }) {
-  return (
-    <View style={{ flex: 1, backgroundColor: c.surfaceSoft, borderRadius: 14, paddingVertical: 10, alignItems: 'center' }}>
-      <Text style={{ color, fontSize: 18, fontWeight: '800' }}>{value}</Text>
-      <Text style={{ color: c.textSecondary, fontSize: 11, marginTop: 1 }}>{label}</Text>
+    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+      <View style={{ width: 10, height: 10, borderRadius: 5, backgroundColor: color }} />
+      <Text style={{ color: c.textLabel, fontSize: 15 }}>{text}</Text>
     </View>
   );
 }
+
+const s = StyleSheet.create({
+  titleRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  title: { color: c.text, fontSize: 32, fontWeight: '800', letterSpacing: -0.5 },
+  filters: { flexDirection: 'row', gap: 10, marginTop: 18, marginBottom: 12 },
+  chip: { paddingHorizontal: 18, height: 40, borderRadius: 20, backgroundColor: c.soft, justifyContent: 'center' },
+  chipOn: { backgroundColor: c.ink },
+  chipText: { color: c.textLabel, fontSize: 15, fontWeight: '600' },
+  day: { color: c.textSecondary, fontSize: 15, fontWeight: '600', marginTop: 16, marginBottom: 2 },
+  row: { flexDirection: 'row', alignItems: 'center', paddingVertical: 16 },
+  divider: { borderTopWidth: 1, borderTopColor: c.border },
+  name: { color: c.text, fontSize: 18, fontWeight: '600' },
+  meta: { color: c.textSecondary, fontSize: 15, marginTop: 4 },
+  counts: { flexDirection: 'row', gap: 18, marginTop: 8 },
+});

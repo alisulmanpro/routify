@@ -29,6 +29,7 @@ import RouteMapScreen from './src/screens/RouteMapScreen';
 import NewRoute from './src/screens/NewRoute';
 import AddStops from './src/screens/AddStops';
 import RoutePreview from './src/screens/RoutePreview';
+import RouteDetail from './src/screens/RouteDetail';
 import LiveNavigation from './src/screens/LiveNavigation';
 import DeliveryDetail from './src/screens/DeliveryDetail';
 import RouteComplete from './src/screens/RouteComplete';
@@ -48,7 +49,7 @@ const TABS: { key: TabName; label: string; icon: IconName }[] = [
 
 // Screens already redesigned on the light design_pref theme: the strip above them goes light too, and they draw their
 // own back arrow, so the Back bar is hidden (the Android back button still works).
-const LIGHT_SCREENS = new Set(['Dashboard', 'AddStops', 'NewRoute', 'RoutePreview', 'RouteMapScreen', 'DeliveryDetail', 'RouteComplete', 'LiveNavigation']);
+const LIGHT_SCREENS = new Set(['Dashboard', 'AddStops', 'NewRoute', 'RoutePreview', 'RouteMapScreen', 'DeliveryDetail', 'RouteComplete', 'LiveNavigation', 'RouteDetail', 'History', 'Reports', 'Account']);
 
 // Every screen can be opened in any tab's stack (navigate() pushes onto the current tab), as with the old navigator.
 const SCREENS = ['Dashboard', 'RouteMapScreen', 'NewRoute', 'RouteDetail', 'AddStops', 'RoutePreview', 'LiveNavigation', 'DeliveryDetail',
@@ -61,8 +62,8 @@ function ScreenRouter() {
     case 'Dashboard': return <Dashboard />;
     case 'RouteMapScreen': return <RouteMapScreen reveal={!!current.params?.reveal} routeId={current.params?.routeId as string | undefined} />;
     case 'NewRoute': return <NewRoute initialDate={current.params?.date as string | undefined} />;
-    // The old route detail screen is replaced by Review stops for that route.
-    case 'RouteDetail': return <RoutePreview routeId={current.params!.id as string} />;
+    // A finished route's summary, from History.
+    case 'RouteDetail': return <RouteDetail id={current.params!.id as string} />;
     case 'AddStops': return <AddStops name={current.params!.name as string} date={current.params!.date as string} routeId={current.params?.routeId as string | undefined} />;
     case 'RoutePreview': return <RoutePreview name={current.params?.name as string | undefined} date={current.params?.date as string | undefined} ids={current.params?.ids as string[] | undefined} routeId={current.params?.routeId as string | undefined} />;
     case 'LiveNavigation': return <LiveNavigation />;
