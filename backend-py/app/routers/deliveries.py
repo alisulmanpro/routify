@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Request
 from pydantic import Field, StringConstraints, model_validator
 
 from ..auth import authenticate
+from ..errors import AppError
 from ..http import respond
 from ..middleware import geocode_daily_limiter, geocode_limiter, limit, limit_rider, suggest_daily_limiter, suggest_limiter, upload_limiter
 from ..services import delivery_service as deliveries
@@ -86,6 +88,18 @@ class GeocodeCheckBody(Schema):
     longitude: Annotated[float, Field(ge=-180, le=180)] | None = None
 
 
+class GeocodeCheckBatchBody(Schema):
+    # As many as one bulk add takes (BulkBody), so a file is checked in the same chunks it is added in.
+    addresses: Annotated[list[Trimmed(5, 400)], Field(min_length=1, max_length=300)]
+    latitude: Annotated[float, Field(ge=-90, le=90)] | None = None
+    longitude: Annotated[float, Field(ge=-180, le=180)] | None = None
+
+
+# Lookups at the same time for one batch: quick for a file of 200, gentle on the provider's per-second limits.
+BATCH_LOOKUPS_AT_ONCE = 6
+_NOT_FOUND = {"found": False, "approximate": False, "latitude": None, "longitude": None, "normalized": None, "postalCode": None}
+
+
 class SuggestBody(Schema):
     query: Trimmed(2, 400)
     latitude: Annotated[float, Field(ge=-90, le=90)] | None = None
@@ -158,6 +172,35 @@ async def geocode_check(request: Request):
         return respond({"found": False, "approximate": False, "latitude": None, "longitude": None, "normalized": None, "postalCode": None})
     return respond({"found": True, "approximate": bool(hit.get("approximate")), "latitude": hit["latitude"],
                     "longitude": hit["longitude"], "normalized": hit.get("normalized"), "postalCode": hit.get("postalCode")})
+
+
+@router.post("/geocode-check-batch")
+async def geocode_check_batch(request: Request):
+    """Looks up the addresses of an imported file without saving anything, so the rider can fix the ones the map cannot
+    place before they become stops. One request against the per-IP limit; each different address counts once against
+    the rider's daily lookups. A lookup the provider fails is reported for that address ("error": true), not for all."""
+    actor = await authenticate(request, "rider")
+    await limit(request, geocode_limiter)
+    body = (await validate(request, body=GeocodeCheckBatchBody))["body"]
+    unique = list(dict.fromkeys(body.addresses))
+    await limit_rider(actor, geocode_daily_limiter, len(unique))
+    origin = {"latitude": body.latitude, "longitude": body.longitude} if body.latitude is not None and body.longitude is not None else None
+    area = await service_area_for(actor, origin)
+    gate = asyncio.Semaphore(BATCH_LOOKUPS_AT_ONCE)
+
+    async def check(address: str) -> dict:
+        async with gate:
+            try:
+                hit = await geocoding.geocode_address(address, area=area)
+            except AppError:
+                return {**_NOT_FOUND, "error": True}
+        if not hit or hit.get("latitude") is None or hit.get("longitude") is None:
+            return {**_NOT_FOUND, "error": False}
+        return {"found": True, "approximate": bool(hit.get("approximate")), "latitude": hit["latitude"], "longitude": hit["longitude"],
+                "normalized": hit.get("normalized"), "postalCode": hit.get("postalCode"), "error": False}
+
+    found = dict(zip(unique, await asyncio.gather(*(check(address) for address in unique)), strict=True))
+    return respond({"results": [found[address] for address in body.addresses]})
 
 
 @router.post("/geocode-suggest")

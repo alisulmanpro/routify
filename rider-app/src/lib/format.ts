@@ -1,3 +1,5 @@
+import { expandForSearch } from './scan/address';
+
 export const money = (amount: number | null | undefined, currency?: string | null) =>
   amount == null ? '—' : new Intl.NumberFormat('en', { style: 'currency', currency: currency || 'USD', currencyDisplay: 'narrowSymbol', maximumFractionDigits: 2 }).format(amount);
 
@@ -47,7 +49,8 @@ export const normalizeEircodes = (text: string) => text.replace(EIRCODES, (_, ke
 export const isOnlyEircode = (text: string) =>
   !!findEircode(text) && !text.replace(EIRCODES, ' ').replace(/\b(ireland|eire)\b|éire|[\s,.;:/-]+/gi, '');
 
-const comparable = (text: string) => text.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+// Short forms written out first, so "Church St, Co. Offaly" and "Church Street, County Offaly" count as the same text.
+const comparable = (text: string) => expandForSearch(text).toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 /** The address without its postcode or a trailing "Ireland", for the line under the postcode. */
 const withoutPostcode = (text: string, code: string | null) => {
   let out = text.replace(EIRCODES, '');

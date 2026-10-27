@@ -3,12 +3,31 @@ import { findDuplicate, type Duplicate } from './duplicates';
 import { findEircode } from './format';
 import type { Delivery, GeocodeCheck } from './types';
 import { submitStops } from './outbox';
+import type { AddressCheck } from './importCheck';
 
 type Point = { latitude: number; longitude: number };
 
 /** Looks an address up on the map (Ireland, biased to `near` or the rider's service area) without saving anything. */
 export async function checkAddress(address: string, near: Point | null): Promise<GeocodeCheck> {
   return (await post<GeocodeCheck>('/deliveries/geocode-check', { address, ...(near || {}) })).data;
+}
+
+/** As many addresses as one batch check takes (the server's limit, the same as one bulk add). */
+const CHECK_BATCH = 100;
+
+/**
+ * Looks many addresses up without saving anything (Import), in batches of 100 so `onProgress` can move a bar. Each
+ * result lines up with its address; one the map could not be asked about has `error: true`.
+ */
+export async function checkAddresses(addresses: readonly string[], near: Point | null, onProgress?: (done: number) => void): Promise<AddressCheck[]> {
+  const out: AddressCheck[] = [];
+  for (let i = 0; i < addresses.length; i += CHECK_BATCH) {
+    const chunk = addresses.slice(i, i + CHECK_BATCH);
+    const res = await post<{ results: AddressCheck[] }>('/deliveries/geocode-check-batch', { addresses: chunk, ...(near || {}) });
+    out.push(...res.data.results);
+    onProgress?.(out.length);
+  }
+  return out;
 }
 
 /** Thrown by createStop instead of saving a stop that is already on the list. */

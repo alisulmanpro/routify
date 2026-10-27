@@ -24,6 +24,7 @@ import type { Delivery } from '../lib/types';
 import { newPlaceSession, pickPlace, searchPlaces, type PlaceSuggestion } from '../lib/places';
 import { expandForSearch, issueText, rankSuggestions, suggestionIssues } from '../lib/scan/address';
 import type { PickedAddress } from '../lib/scan/photoLines';
+import { voiceToAddress } from '../lib/voice';
 import { useAuth } from '../lib/auth';
 import { useFocusEffect } from '../lib/useFocusEffect';
 import { useNav } from '../lib/nav';
@@ -250,7 +251,8 @@ export default function AddStops({ name, date, routeId }: { name: string; date: 
 
   const onVoice = (text: string) => {
     setVoice(false);
-    typeAddress(normalizeEircodes(text.trim()));
+    // An Eircode said character by character comes back in pieces ("P1 2 FY 70"): joined into one code first.
+    typeAddress(normalizeEircodes(voiceToAddress(text.trim())));
   };
 
   // The scanner read an Eircode: the same as typing it into the address field. A stop already on the list is
@@ -383,16 +385,15 @@ export default function AddStops({ name, date, routeId }: { name: string; date: 
         <View style={s.modes}>
           <Mode icon="line-scan" label="Scan" onPress={() => openScanner('batch')} />
           <Mode icon="microphone-outline" label="Voice" active={voice} onPress={() => setVoice((v) => !v)} />
-          <Mode icon="map-marker-outline" label="Pin" onPress={() => setSheet('pin')} />
           <Mode icon="file-download-outline" label="Import" onPress={() => setSheet('import')} />
         </View>
 
         {voice ? (
           <View style={s.voice}>
-            {VoicePanel ? <VoicePanel compact onText={onVoice} /> : (
+            {VoicePanel ? <VoicePanel compact light onText={onVoice} /> : (
               <Text style={{ color: c.textSecondary, fontSize: 14, lineHeight: 20, textAlign: 'center' }}>Voice input is unavailable here. {NATIVE_BUILD_HINT}</Text>
             )}
-            <Text style={{ color: c.placeholder, fontSize: 13, textAlign: 'center', marginTop: 6 }}>Say the street and number, the town, or the postcode.</Text>
+            <Text style={{ color: c.textSecondary, fontSize: 13, textAlign: 'center', marginTop: 6 }}>Say the house number, street and town, or the Eircode one character at a time.</Text>
           </View>
         ) : null}
 
@@ -432,7 +433,9 @@ export default function AddStops({ name, date, routeId }: { name: string; date: 
         onClose={() => setConfirming(null)} />
       <BarcodeSheet visible={sheet === 'barcode'} onClose={() => setSheet(null)} onResult={(value) => { setSheet(null); setParcel(value); }} />
       <PinSheet visible={sheet === 'pin'} position={origin} center={picked || area} onClose={() => setSheet(null)} onPick={onPin} />
-      <ImportSheet visible={sheet === 'import'} date={date} stops={stops} onClose={() => setSheet(null)} onImported={(created) => { setSheet(null); setStops((list) => [...list, ...created]); }} />
+      {/* Stops come in while the import runs; the sheet stays open until the rider has dealt with the rows it could not add. */}
+      <ImportSheet visible={sheet === 'import'} date={date} stops={stops} near={origin || area} onClose={() => setSheet(null)}
+        onImported={(created) => setStops((list) => [...list, ...created])} />
     </Screen>
   );
 }
