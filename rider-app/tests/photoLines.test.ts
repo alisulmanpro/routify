@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { containFit, photoLines, pickAddress } from '../src/lib/scan/photoLines';
+import { containFit, photoEircodes, photoLines, pickAddress } from '../src/lib/scan/photoLines';
 
 const line = (lineText: string, cx: number, cy: number, width = 400, height = 40) => ({ lineText, lineFrame: { boundingCenterX: cx, boundingCenterY: cy, width, height } });
 
@@ -46,4 +46,32 @@ test('an Eircode in the chosen lines wins; two different ones do not', () => {
 test('contain fit: the photo is centred and scaled to fit the view', () => {
   assert.deepEqual(containFit({ width: 1440, height: 1920 }, { width: 360, height: 640 }), { scale: 0.25, left: 0, top: 80 });
   assert.deepEqual(containFit({ width: 1920, height: 1440 }, { width: 360, height: 640 }), { scale: 0.1875, left: 0, top: 185 });
+});
+
+const word = (elementText: string, cx: number, cy: number, width = 90, height = 40) =>
+  ({ elementText, elementFrame: { boundingCenterX: cx, boundingCenterY: cy, width, height } });
+const wordLine = (words: ReturnType<typeof word>[]) => ({
+  lineText: words.map((w) => w.elementText).join(' '),
+  lineFrame: { boundingCenterX: 300, boundingCenterY: words[0].elementFrame.boundingCenterY, width: 500, height: 40 },
+  elements: words,
+});
+
+test('every Eircode on a sheet, once each, boxed on its own words, in reading order', () => {
+  const sheet = { blocks: [{ lines: [
+    wordLine([word('2.', 60, 200, 20), word('1', 100, 200, 20), word('Church', 200, 200), word('View', 300, 200), word('P12FY70', 450, 200)]),
+    wordLine([word('1.', 60, 100, 20), word('Eircode:', 160, 100), word('D15', 300, 100, 60), word('DK4A', 380, 100, 80)]),
+    wordLine([word('3.', 60, 300, 20), word('R93', 300, 300, 60), word('Y2O1', 380, 300, 80)]),
+    wordLine([word('again', 160, 400), word('D15', 300, 400, 60), word('DK4A', 380, 400, 80)]),
+    wordLine([word('Order', 160, 500), word('SP-867925', 300, 500)]),
+  ] }] };
+  const codes = photoEircodes(sheet);
+  assert.deepEqual(codes.map((c) => c.eircode), ['D15 DK4A', 'P12 FY70', 'R93 Y201']);
+  assert.deepEqual(codes[0].box, { left: 270, top: 80, width: 150, height: 40 }, 'just the two words of the code');
+  assert.deepEqual(codes[1].box, { left: 405, top: 180, width: 90, height: 40 });
+});
+
+test('without word boxes, the line box stands in', () => {
+  const codes = photoEircodes({ blocks: [{ lines: [line('Deliver to A63 P489 today', 300, 100)] }] });
+  assert.deepEqual(codes.map((c) => c.eircode), ['A63 P489']);
+  assert.deepEqual(codes[0].box, { left: 100, top: 80, width: 400, height: 40 });
 });

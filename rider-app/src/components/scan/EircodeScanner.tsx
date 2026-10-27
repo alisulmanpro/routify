@@ -93,7 +93,7 @@ function Scanner({ onAddress, ...props }: Omit<Props, 'visible'>) {
   const setMode = (next: Mode) => { lastMode = next; setModeState(next); };
   const modeSwitch = onAddress ? <ModeSwitch mode={mode} onChange={setMode} /> : null;
   if (mode === 'address' && onAddress) {
-    return <AddressScan onPicked={onAddress} onTypeInstead={props.onTypeInstead} onClose={props.onClose} modeSwitch={modeSwitch} />;
+    return <AddressScan kind="address" onPicked={onAddress} onTypeInstead={props.onTypeInstead} onClose={props.onClose} modeSwitch={modeSwitch} />;
   }
   return <ScannerBody {...props} modeSwitch={modeSwitch} onAddressMode={onAddress ? () => setMode('address') : undefined} />;
 }
