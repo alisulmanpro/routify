@@ -135,9 +135,9 @@ class EdgeMiddleware:
 # One atomic upsert per hit: the count lives in PostgreSQL, so all API workers (and restarts) share it.
 _HIT_SQL = """
 INSERT INTO "rate_limits" ("key", "count", "resetAt")
-VALUES ($1, 1, timezone('utc', now()) + make_interval(secs => $2::int))
+VALUES ($1, $3::int, timezone('utc', now()) + make_interval(secs => $2::int))
 ON CONFLICT ("key") DO UPDATE SET
-  "count"   = CASE WHEN "rate_limits"."resetAt" <= timezone('utc', now()) THEN 1 ELSE "rate_limits"."count" + 1 END,
+  "count"   = CASE WHEN "rate_limits"."resetAt" <= timezone('utc', now()) THEN $3::int ELSE "rate_limits"."count" + $3::int END,
   "resetAt" = CASE WHEN "rate_limits"."resetAt" <= timezone('utc', now()) THEN EXCLUDED."resetAt" ELSE "rate_limits"."resetAt" END
 RETURNING "count", GREATEST(0, CEIL(EXTRACT(EPOCH FROM ("resetAt" - timezone('utc', now())))))::int AS "resetIn"
 """
@@ -152,15 +152,15 @@ class _MemoryWindows:
     def __init__(self):
         self._windows: dict[str, tuple[int, float]] = {}  # key -> (count, resets at, monotonic seconds)
 
-    def hit(self, key: str, window: int) -> tuple[int, int]:
+    def hit(self, key: str, window: int, cost: int = 1) -> tuple[int, int]:
         at = time.monotonic()
         if len(self._windows) >= _MEMORY_PRUNE_AT:
             self._windows = {k: v for k, v in self._windows.items() if v[1] > at}
         count, reset_at = self._windows.get(key, (0, 0.0))
         if reset_at <= at:
             count, reset_at = 0, at + window
-        self._windows[key] = (count + 1, reset_at)
-        return count + 1, max(0, math.ceil(reset_at - at))
+        self._windows[key] = (count + cost, reset_at)
+        return count + cost, max(0, math.ceil(reset_at - at))
 
     def count(self, key: str) -> int:
         count, reset_at = self._windows.get(key, (0, 0.0))
@@ -175,8 +175,8 @@ memory_windows = _MemoryWindows()
 
 # One atomic round trip: count the hit, start the window on the first one, say when it resets.
 _REDIS_HIT = """
-local count = redis.call('INCR', KEYS[1])
-if count == 1 then redis.call('EXPIRE', KEYS[1], ARGV[1]) end
+local count = redis.call('INCRBY', KEYS[1], ARGV[2])
+if count == tonumber(ARGV[2]) then redis.call('EXPIRE', KEYS[1], ARGV[1]) end
 local ttl = redis.call('TTL', KEYS[1])
 if ttl < 0 then redis.call('EXPIRE', KEYS[1], ARGV[1]); ttl = tonumber(ARGV[1]) end
 return {count, ttl}
@@ -198,20 +198,21 @@ class RateLimiter:
         self.enforce = enforce  # None: on everywhere except NODE_ENV=test
         self.store = store
 
-    async def hit(self, key: str) -> tuple[int, int]:
-        """Counts one hit and returns (hits in this window, seconds until the window resets)."""
+    async def hit(self, key: str, cost: int = 1) -> tuple[int, int]:
+        """Counts `cost` hits (one request, or one per address in a batch) and returns (hits in this window, seconds until
+        the window resets)."""
         from .db import db
 
         # With Redis (P7.2) every limiter is shared by all processes and instances, without a database write per hit.
         if (redis := redis_client.client()) is not None:
             try:
-                count, ttl = await redis.eval(_REDIS_HIT, 1, redis_client.key("rl", self.name, key[:200]), self.window)
+                count, ttl = await redis.eval(_REDIS_HIT, 1, redis_client.key("rl", self.name, key[:200]), self.window, cost)
                 return int(count), max(0, int(ttl))
             except Exception:  # noqa: BLE001 - fall back to this limiter's own store
                 redis_client.failed("rate limit")
         if self.store == "memory":
-            return memory_windows.hit(f"{self.name}:{key}"[:300], self.window)
-        rows = await db.query_raw(_HIT_SQL, f"{self.name}:{key}"[:300], self.window)
+            return memory_windows.hit(f"{self.name}:{key}"[:300], self.window, cost)
+        rows = await db.query_raw(_HIT_SQL, f"{self.name}:{key}"[:300], self.window, cost)
         return int(rows[0]["count"]), int(rows[0]["resetIn"])
 
     def _enforced(self) -> bool:
@@ -238,12 +239,12 @@ class RateLimiter:
             return False
         return bool(rows) and int(rows[0]["count"]) >= self.limit
 
-    async def check(self, key: str) -> dict[str, str]:
-        """Counts a hit; raises 429 when over the limit. Returns the RateLimit headers to send."""
+    async def check(self, key: str, cost: int = 1) -> dict[str, str]:
+        """Counts `cost` hits; raises 429 when over the limit. Returns the RateLimit headers to send."""
         if not self._enforced():
             return {}
         try:
-            count, reset_in = await self.hit(key)
+            count, reset_in = await self.hit(key, cost)
         except Exception:  # noqa: BLE001 - a limiter outage must not take the API down with it
             log(logging.ERROR, "Rate limiter unavailable", limiter=self.name, exc_info=True)
             return {}
@@ -269,8 +270,8 @@ geocode_daily_limiter = RateLimiter("geocode-day", DAY, 600, "You have reached t
 suggest_daily_limiter = RateLimiter("suggest-day", DAY, 4000, "You have reached today's limit of address searches. It resets within 24 hours.")
 
 
-async def limit_rider(actor: dict, limiter: RateLimiter) -> None:
-    await limiter.check(actor["id"])
+async def limit_rider(actor: dict, limiter: RateLimiter, cost: int = 1) -> None:
+    await limiter.check(actor["id"], cost)
 
 
 # Registration has to say when an email is taken (it signs the rider straight in), so cap how often one IP can learn that.

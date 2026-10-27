@@ -803,6 +803,24 @@ async def test_rate_limits_are_shared_across_workers_and_atomic(client):
         await db.ratelimit.delete_many(where={"key": {"startswith": "shared-test:"}})
 
 
+async def test_a_batch_counts_as_many_hits_as_it_costs(client):
+    """An import checks many addresses in one request: each counts against the daily allowance, in both stores."""
+    from app.middleware import RateLimiter, memory_windows
+
+    for store in ("db", "memory"):
+        limiter = RateLimiter(f"cost-test-{store}", 60, 10, enforce=True, store=store)
+        try:
+            assert "r=4;" in (await limiter.check("rider-1", 6))["RateLimit"]
+            assert "r=3;" in (await limiter.check("rider-1"))["RateLimit"]
+            with pytest.raises(Exception) as blocked:
+                await limiter.check("rider-1", 4)
+            assert getattr(blocked.value, "code", None) == "RATE_LIMITED"
+            assert "r=10;" not in (await limiter.check("rider-2", 10))["RateLimit"]
+        finally:
+            memory_windows.clear()
+            await db.ratelimit.delete_many(where={"key": {"startswith": f"cost-test-{store}:"}})
+
+
 async def test_general_limits_count_in_memory_without_db_writes(client):
     from app.middleware import RateLimiter, api_limiter, auth_limiter, memory_windows, upload_limiter
 

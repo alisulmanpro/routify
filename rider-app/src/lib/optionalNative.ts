@@ -8,7 +8,7 @@ export const hasSpeech = !!requireOptionalNativeModule('ExpoSpeechRecognition');
 
 export const NATIVE_BUILD_HINT = 'This needs the full app build (not Expo Go).';
 
-export type VoicePanelProps = { onText: (text: string) => void; compact?: boolean };
+export type VoicePanelProps = { onText: (text: string) => void; compact?: boolean; /** On a light screen (Add stops). */ light?: boolean };
 
 /** The microphone control, or null when speech recognition is not available. */
 export function loadVoicePanel(): ComponentType<VoicePanelProps> | null {

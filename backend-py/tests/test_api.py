@@ -630,6 +630,39 @@ async def test_geocode_check_looks_up_an_address_without_saving(client):
         geocoding_service.set_geocoder_for_tests()
 
 
+async def test_geocode_check_batch_checks_every_address_once_and_saves_nothing(client):
+    from app.errors import AppError
+    _, auth = await rider(client, "geocode-batch@example.com")
+    asked: list[str] = []
+    try:
+        async def lookup(address, area):
+            asked.append(address)
+            if "nowhere" in address:
+                return None
+            if "broken" in address:
+                raise AppError(503, "GEOCODING_UNAVAILABLE", "down")
+            return {"latitude": 53.3, "longitude": -6.4, "normalized": f"{address}, Ireland", "approximate": "street" not in address}
+        geocoding_service.set_geocoder_for_tests(lookup)
+        addresses = ["26 Shanecastle Grove Dublin 22", "nowhere at all 999", "26 Shanecastle Grove Dublin 22", "broken lookup here", "Main street Lucan"]
+        res = await client.post("/api/v1/deliveries/geocode-check-batch", headers=auth, json={"addresses": addresses})
+        assert res.status_code == 200, res.text
+        results = res.json()["data"]["results"]
+        assert len(results) == 5
+        assert results[0]["found"] and results[0]["approximate"] and results[0]["normalized"] == "26 Shanecastle Grove Dublin 22, Ireland"
+        assert results[2] == results[0], "the same address gets the same answer"
+        assert results[1]["found"] is False and results[1]["error"] is False
+        assert results[3]["found"] is False and results[3]["error"] is True, "a failed lookup is reported for that address only"
+        assert results[4]["found"] and results[4]["approximate"] is False
+        assert sorted(asked) == sorted(set(addresses)), "each different address is looked up once"
+
+        assert (await client.post("/api/v1/deliveries/geocode-check-batch", headers=auth, json={"addresses": []})).status_code == 400
+        assert (await client.post("/api/v1/deliveries/geocode-check-batch", headers=auth, json={"addresses": ["ab"]})).status_code == 400
+        assert (await client.post("/api/v1/deliveries/geocode-check-batch", headers=auth, json={"addresses": ["12 Main St"] * 301})).status_code == 400
+        assert (await client.get("/api/v1/deliveries", headers=auth)).json()["data"] == [], "checking must not create stops"
+    finally:
+        geocoding_service.set_geocoder_for_tests()
+
+
 async def test_optimize_reorders_open_stops_never_pulls_in_other_stops_and_puts_unresolved_last(client):
     from app.services import routing_service
     _, auth = await rider(client, "optimize-rider@example.com")
