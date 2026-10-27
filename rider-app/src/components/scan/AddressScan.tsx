@@ -4,7 +4,7 @@ import { Camera, useCameraDevice, useCameraPermission, usePhotoOutput, type Torc
 import { PhotoRecognizer } from 'react-native-vision-camera-ocr-plus';
 import { ImageManipulator, SaveFormat } from 'expo-image-manipulator';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
-import { containFit, photoLines, pickAddress, type PhotoLine, type PickedAddress } from '../../lib/scan/photoLines';
+import { containFit, photoEircodes, photoLines, pickAddress, type Box, type PickedAddress } from '../../lib/scan/photoLines';
 import { premium as c, premiumRadius as r } from '../../lib/theme';
 import { PButton } from '../Premium';
 
@@ -15,23 +15,29 @@ const PHOTO_RESOLUTION = { width: 1440, height: 1920 };
 // Torch calls the camera cancels when it stops are harmless (the Eircode scanner ignores them the same way).
 const onCameraError = (err: Error) => { if (__DEV__) console.log('[address scan] camera:', err.message); };
 
-type Photo = { uri: string; width: number; height: number; lines: PhotoLine[] };
+/** Something the rider can tap in the photo: a line of text (address) or one Eircode (sheet). */
+type Item = { id: string; text: string; box: Box };
+type Photo = { uri: string; width: number; height: number; items: Item[] };
 
 type Props = {
-  /** The rider chose lines: their address text, or the Eircode among them. */
-  onPicked: (picked: PickedAddress) => void;
   onTypeInstead: () => void;
   onClose: () => void;
   /** The Eircode / Address switch, drawn under the top bar. */
   modeSwitch: React.ReactNode;
-};
+} & (
+  /** One address: the rider taps its lines; the text (or the Eircode among them) is handed back. */
+  | { kind: 'address'; onPicked: (picked: PickedAddress) => void }
+  /** A sheet of Eircodes: every code gets a box, the rider taps the ones to add (or Select all). */
+  | { kind: 'eircodes'; onEircodes: (codes: string[]) => void }
+);
 
 /**
  * Address scanner: the rider takes one photo, every line of text in it gets a box, and the rider taps the lines that
  * make up the address (one line out of a page of addresses, or the 2-3 lines of a label). Nothing is guessed: the
  * chosen text goes to the address field, where the map search and its checks take over.
  */
-export default function AddressScan({ onPicked, onTypeInstead, onClose, modeSwitch }: Props) {
+export default function AddressScan(props: Props) {
+  const { kind, onTypeInstead, onClose, modeSwitch } = props;
   const device = useCameraDevice('back');
   const { hasPermission, canRequestPermission, requestPermission } = useCameraPermission();
   const photoOutput = usePhotoOutput({ targetResolution: PHOTO_RESOLUTION, containerFormat: 'jpeg' });
@@ -55,10 +61,13 @@ export default function AddressScan({ onPicked, onTypeInstead, onClose, modeSwit
       // Android ignores; the saved copy's pixels, size and boxes all match what is shown.
       const upright = await (await ImageManipulator.manipulate(`file://${shot.filePath}`).renderAsync()).saveAsync({ compress: 0.9, format: SaveFormat.JPEG });
       const result = await PhotoRecognizer({ uri: upright.uri });
-      const lines = photoLines(result);
+      const items: Item[] = kind === 'address' ? photoLines(result) : photoEircodes(result).map((code) => ({ id: code.id, text: code.eircode, box: code.box }));
       setChosen(new Set());
-      setPhoto({ uri: upright.uri, width: upright.width, height: upright.height, lines });
-      if (!lines.length) setError('No text found. Hold the phone closer and steady, or turn on the torch.');
+      setPhoto({ uri: upright.uri, width: upright.width, height: upright.height, items });
+      if (!items.length) {
+        setError(kind === 'address' ? 'No text found. Hold the phone closer and steady, or turn on the torch.'
+          : 'No Eircodes found. Hold the phone closer so the codes are sharp, or turn on the torch.');
+      }
     } catch (err) {
       if (__DEV__) console.warn('[address scan]', err);
       setError('Could not read the photo. Try again.');
@@ -73,7 +82,14 @@ export default function AddressScan({ onPicked, onTypeInstead, onClose, modeSwit
     if (next.has(id)) next.delete(id); else next.add(id);
     return next;
   });
-  const picked = photo ? pickAddress(photo.lines, chosen) : null;
+  const picked = photo && kind === 'address' ? pickAddress(photo.items, chosen) : null;
+  // Sheet: the codes picked, in the order they appear on the sheet.
+  const codes = photo && kind === 'eircodes' ? photo.items.filter((item) => chosen.has(item.id)).map((item) => item.text) : [];
+  const allChosen = !!photo && photo.items.length > 0 && chosen.size === photo.items.length;
+  const finish = () => {
+    if (props.kind === 'address') { if (picked) props.onPicked(picked); return; }
+    if (codes.length) props.onEircodes(codes);
+  };
   const onLayout = (e: LayoutChangeEvent) => setView({ width: e.nativeEvent.layout.width, height: e.nativeEvent.layout.height });
   const fit = photo && view.width ? containFit(photo, view) : null;
   const torchMode: TorchMode | undefined = started && !photo ? (torch ? 'on' : 'off') : undefined;
@@ -94,7 +110,7 @@ export default function AddressScan({ onPicked, onTypeInstead, onClose, modeSwit
         // The photo with a box on every line. Tapping a box adds that line to the address (tap again to remove it).
         <View style={StyleSheet.absoluteFill} onLayout={onLayout}>
           <Image source={{ uri: photo.uri }} style={StyleSheet.absoluteFill} resizeMode="contain" />
-          {fit ? photo.lines.map((line) => {
+          {fit ? photo.items.map((line) => {
             const on = chosen.has(line.id);
             return (
               <Pressable key={line.id} onPress={() => toggle(line.id)} hitSlop={4} accessibilityRole="checkbox" accessibilityState={{ checked: on }} accessibilityLabel={line.text}
@@ -111,7 +127,7 @@ export default function AddressScan({ onPicked, onTypeInstead, onClose, modeSwit
       )}
 
       <View style={[s.top, { paddingTop: Platform.OS === 'ios' ? 54 : 18 }]}>
-        <Text style={s.title}>Scan address</Text>
+        <Text style={s.title}>{kind === 'address' ? 'Scan address' : 'Scan Eircode sheet'}</Text>
         {hasPermission && device?.hasTorch && !photo ? (
           <Pressable onPress={() => setTorch((t) => !t)} disabled={!started} hitSlop={8} style={[s.round, !started && { opacity: 0.5 }]} accessibilityLabel={torch ? 'Torch off' : 'Torch on'}>
             <Ionicons name={torch ? 'flash' : 'flash-outline'} size={18} color={torch ? '#FFE27A' : '#fff'} />
@@ -130,21 +146,34 @@ export default function AddressScan({ onPicked, onTypeInstead, onClose, modeSwit
         ) : null}
         {photo ? (
           <>
-            <View style={s.note}>
-              <MaterialCommunityIcons name={picked ? 'map-marker-outline' : 'gesture-tap'} size={18} color="#fff" />
-              <Text style={s.noteText} numberOfLines={3}>
-                {picked ? (picked.kind === 'eircode' ? `Eircode ${picked.eircode}` : picked.text) : 'Tap the lines of the address you want to add.'}
-              </Text>
-            </View>
+            {kind === 'address' ? (
+              <View style={s.note}>
+                <MaterialCommunityIcons name={picked ? 'map-marker-outline' : 'gesture-tap'} size={18} color="#fff" />
+                <Text style={s.noteText} numberOfLines={3}>
+                  {picked ? (picked.kind === 'eircode' ? `Eircode ${picked.eircode}` : picked.text) : 'Tap the lines of the address you want to add.'}
+                </Text>
+              </View>
+            ) : photo.items.length ? (
+              <View style={s.note}>
+                <MaterialCommunityIcons name={codes.length ? 'checkbox-multiple-marked-outline' : 'gesture-tap'} size={18} color="#fff" />
+                <Text style={s.noteText} numberOfLines={3}>
+                  {codes.length ? `${codes.length} of ${photo.items.length} picked: ${codes.join(', ')}` : `${photo.items.length} Eircodes found. Tap the ones to add.`}
+                </Text>
+                <Pressable onPress={() => setChosen(allChosen ? new Set() : new Set(photo.items.map((item) => item.id)))} hitSlop={8}>
+                  <Text style={s.link}>{allChosen ? 'Clear' : 'Select all'}</Text>
+                </Pressable>
+              </View>
+            ) : null}
             <View style={{ flexDirection: 'row', gap: 10 }}>
               <PButton title="Retake" icon="camera-reverse-outline" variant="secondary" onPress={retake} style={{ flex: 1 }} />
-              <PButton title={picked?.kind === 'eircode' ? 'Use Eircode' : 'Use address'} icon="checkmark" disabled={!picked}
-                onPress={() => picked && onPicked(picked)} style={{ flex: 1 }} />
+              <PButton
+                title={kind === 'eircodes' ? `Add ${codes.length || ''} stop${codes.length === 1 ? '' : 's'}`.replace('  ', ' ') : picked?.kind === 'eircode' ? 'Use Eircode' : 'Use address'}
+                icon="checkmark" disabled={kind === 'eircodes' ? !codes.length : !picked} onPress={finish} style={{ flex: 1 }} />
             </View>
           </>
         ) : hasPermission && device ? (
           <>
-            <Text style={s.hint}>Fit the address in view, hold steady, then take the photo.</Text>
+            <Text style={s.hint}>{kind === 'address' ? 'Fit the address in view, hold steady, then take the photo.' : 'Fit the whole sheet in view, hold steady, then take the photo.'}</Text>
             <Pressable onPress={() => void take()} disabled={!started || reading} style={({ pressed }) => [s.shutter, (pressed || reading) && { opacity: 0.7 }]}
               accessibilityRole="button" accessibilityLabel="Take photo">
               {reading ? <ActivityIndicator color="#000" /> : <View style={s.shutterInner} />}

@@ -1,7 +1,7 @@
 // Lines of text found in a photo, for the address scanner: the rider taps the lines that make up one address.
 // Plain data only (no React Native), so it is tested on its own.
 
-import { eircodesInText } from './eircode';
+import { eircodesInText, findEircodes } from './eircode';
 import { cleanAddressText } from './address';
 
 /** A box in the photo's own pixels (top-left corner, size). */
@@ -9,7 +9,8 @@ export type Box = { left: number; top: number; width: number; height: number };
 export type PhotoLine = { id: string; text: string; box: Box };
 
 type Frame = { boundingCenterX: number; boundingCenterY: number; width: number; height: number };
-type Recognized = { blocks: { lines: { lineText: string; lineFrame: Frame }[] }[] };
+type Element = { elementText: string; elementFrame: Frame };
+type Recognized = { blocks: { lines: { lineText: string; lineFrame: Frame; elements?: Element[] }[] }[] };
 
 // The recogniser's x/y differ between Android and iOS; the centre and size are the same on both.
 const toBox = (f: Frame): Box => ({ left: f.boundingCenterX - f.width / 2, top: f.boundingCenterY - f.height / 2, width: f.width, height: f.height });
@@ -53,4 +54,47 @@ export function pickAddress(lines: readonly PhotoLine[], chosen: ReadonlySet<str
 export function containFit(image: { width: number; height: number }, view: { width: number; height: number }) {
   const scale = Math.min(view.width / image.width, view.height / image.height);
   return { scale, left: (view.width - image.width * scale) / 2, top: (view.height - image.height * scale) / 2 };
+}
+
+/** One Eircode found in a photo, with the box around just its characters. */
+export type PhotoEircode = { id: string; eircode: string; box: Box };
+
+const union = (boxes: Box[]): Box => {
+  const left = Math.min(...boxes.map((b) => b.left));
+  const top = Math.min(...boxes.map((b) => b.top));
+  const right = Math.max(...boxes.map((b) => b.left + b.width));
+  const bottom = Math.max(...boxes.map((b) => b.top + b.height));
+  return { left, top, width: right - left, height: bottom - top };
+};
+
+/**
+ * Every Eircode in a photo of a sheet, once each, in reading order: the rider taps the ones to add. A code printed in
+ * one piece ("P12FY70") or two ("P12 FY70") gets a box around just those words, not the whole line; the usual OCR
+ * look-alikes are fixed (the same rules as the live scanner).
+ */
+export function photoEircodes(result: Recognized): PhotoEircode[] {
+  const found = new Map<string, Box>();
+  for (const line of result.blocks.flatMap((block) => block.lines)) {
+    const words = (line.elements ?? []).map((e) => ({ text: e.elementText.toUpperCase().replace(/[^A-Z0-9]/g, ''), box: toBox(e.elementFrame) }))
+      .filter((w) => w.text && w.box.width > 0);
+    if (!words.length) {
+      // No word boxes from the reader: the line's box stands in.
+      for (const code of findEircodes(line.lineText)) if (!found.has(code)) found.set(code, toBox(line.lineFrame));
+      continue;
+    }
+    for (let i = 0; i < words.length; i += 1) {
+      let joined = '';
+      for (let j = i; j < Math.min(words.length, i + 3); j += 1) {
+        joined += words[j].text;
+        if (joined.length > 8) break;
+        if (joined.length < 7) continue;
+        const [code] = findEircodes(joined);
+        if (!code) continue;
+        if (!found.has(code)) found.set(code, union(words.slice(i, j + 1).map((w) => w.box)));
+        i = j;
+        break;
+      }
+    }
+  }
+  return byReadingOrder([...found].map(([eircode, box]) => ({ eircode, box }))).map((item, i) => ({ id: String(i), ...item }));
 }

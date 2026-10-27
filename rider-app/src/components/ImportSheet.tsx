@@ -1,4 +1,4 @@
-import { memo, useCallback, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useRef, useState } from 'react';
 import { Modal, Pressable, StyleSheet, Text, View } from 'react-native';
 import * as DocumentPicker from 'expo-document-picker';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
@@ -42,6 +42,8 @@ const MIME_BY_EXT: Record<string, string> = {
 
 type Props = {
   visible: boolean; date: string; stops: readonly Delivery[]; near: Point | null;
+  /** Eircodes the rider picked from a photo of a sheet: checked and added the same way as a file's rows. */
+  eircodes?: readonly string[] | null;
   onClose: () => void;
   /** Stops saved by the import (called as they are added, not only at the end). */
   onImported: (created: Delivery[]) => void;
@@ -69,14 +71,67 @@ const toNewStop = (address: string, parcel: string, date: string, point: Point |
 });
 
 // Mounted fresh each time the sheet opens, so it always starts at "Choose file".
-function ImportBody({ date, stops, near, onClose, onImported }: Omit<Props, 'visible'>) {
+function ImportBody({ date, stops, near, eircodes, onClose, onImported }: Omit<Props, 'visible'>) {
   const insets = useSafeAreaInsets();
-  const [phase, setPhase] = useState<Phase>({ kind: 'pick' });
+  const [phase, setPhase] = useState<Phase>(eircodes?.length ? { kind: 'checking', done: 0, total: eircodes.length } : { kind: 'pick' });
   const [problems, setProblems] = useState<Problem[]>([]);
   const [error, setError] = useState('');
   // Stops saved during this import, for the duplicate check of rows fixed later.
   const saved = useRef<Delivery[]>([]);
   const added = (created: Delivery[]) => { saved.current = [...saved.current, ...created]; onImported(created); };
+
+  /** Checks rows on the map, adds the good ones at once and keeps the rest for the rider. */
+  const addRows = async (items: { index: number; address: string; parcel: string }[]) => {
+    // 1. Every address on the map (only the ones long enough to look up).
+    setPhase({ kind: 'checking', done: 0, total: items.length });
+    const askable = items.filter((item) => item.address.length >= 5);
+    let checks: AddressCheck[] = [];
+    try {
+      checks = await checkAddresses(askable.map((item) => lookupText(item.address)), near, (done) => setPhase({ kind: 'checking', done, total: askable.length }));
+    } catch (err) {
+      // The check itself failed (offline, daily limit): nothing is added; every row says why and can be checked again.
+      setError(err instanceof ApiRequestError ? err.message : 'Could not check the addresses. Check your connection, then check each one again.');
+    }
+    const checkOf = new Map(askable.map((item, i) => [item.index, checks[i] ?? null]));
+
+    // 2. Sort the rows, in file order, so a repeat is caught against the rows before it.
+    const accepted: (Accepted & { parcel: string })[] = [];
+    const waiting: Problem[] = [];
+    for (const item of items) {
+      const verdict = checkRow(item.address, checkOf.get(item.index) ?? null, stops, accepted);
+      if (verdict.status === 'ready') {
+        accepted.push({ id: `row-${item.index}`, raw: item.address, normalized: verdict.normalized, eircode: verdict.eircode, point: verdict.point, precise: verdict.precise, parcel: item.parcel });
+      } else {
+        waiting.push({ key: `row-${item.index}`, index: item.index, address: item.address, parcel: item.parcel, edited: false,
+          issue: verdict.issue, detail: verdict.detail, check: verdict.check, state: 'open', error: '' });
+      }
+    }
+
+    // 3. The good rows are added at once. If the server refuses the batch (e.g. a parcel ID already used), they are
+    // added one by one so only the refused rows wait for the rider.
+    setPhase({ kind: 'adding', count: accepted.length });
+    let addedCount = 0;
+    if (accepted.length) {
+      const news = accepted.map((row) => toNewStop(row.raw, row.parcel, date, row.point, row.normalized));
+      try {
+        added(await submitStops(news));
+        addedCount = accepted.length;
+      } catch {
+        for (let i = 0; i < accepted.length; i += 1) {
+          try {
+            added(await submitStops([news[i]]));
+            addedCount += 1;
+          } catch (err) {
+            const row = accepted[i];
+            waiting.push({ key: row.id, index: Number(row.id.slice(4)), address: row.raw, parcel: row.parcel, edited: false, issue: 'lookup_failed',
+              detail: err instanceof ApiRequestError ? err.message : 'Could not save this stop.', check: null, state: 'open', error: '' });
+          }
+        }
+      }
+    }
+    setProblems(waiting.sort((a, b) => a.index - b.index));
+    setPhase({ kind: 'review', added: addedCount, total: items.length });
+  };
 
   const run = async () => {
     const result = await DocumentPicker.getDocumentAsync({ type: [...Object.values(MIME_BY_EXT)], copyToCacheDirectory: true });
@@ -89,61 +144,24 @@ function ImportBody({ date, stops, near, onClose, onImported }: Omit<Props, 'vis
       const draft = (await postFile<ImportDraft>('/deliveries/import/file', asset.uri, 'file', asset.mimeType || MIME_BY_EXT[ext] || 'application/octet-stream', asset.name)).data;
       const items = draft.items.map((item, index) => ({ index, address: item.address.trim(), parcel: item.trackingId.trim() }));
       if (!items.length) { setError('No addresses were found in this file. Check it has one address per line or row.'); setPhase({ kind: 'pick' }); return; }
-
-      // 1. Every address on the map (only the ones long enough to look up).
-      setPhase({ kind: 'checking', done: 0, total: items.length });
-      const askable = items.filter((item) => item.address.length >= 5);
-      let checks: AddressCheck[] = [];
-      try {
-        checks = await checkAddresses(askable.map((item) => lookupText(item.address)), near, (done) => setPhase({ kind: 'checking', done, total: askable.length }));
-      } catch (err) {
-        // The check itself failed (offline, daily limit): nothing is added; every row says why and can be checked again.
-        setError(err instanceof ApiRequestError ? err.message : 'Could not check the addresses. Check your connection, then check each one again.');
-      }
-      const checkOf = new Map(askable.map((item, i) => [item.index, checks[i] ?? null]));
-
-      // 2. Sort the rows, in file order, so a repeat is caught against the rows before it.
-      const accepted: (Accepted & { parcel: string })[] = [];
-      const waiting: Problem[] = [];
-      for (const item of items) {
-        const verdict = checkRow(item.address, checkOf.get(item.index) ?? null, stops, accepted);
-        if (verdict.status === 'ready') {
-          accepted.push({ id: `row-${item.index}`, raw: item.address, normalized: verdict.normalized, eircode: verdict.eircode, point: verdict.point, precise: verdict.precise, parcel: item.parcel });
-        } else {
-          waiting.push({ key: `row-${item.index}`, index: item.index, address: item.address, parcel: item.parcel, edited: false,
-            issue: verdict.issue, detail: verdict.detail, check: verdict.check, state: 'open', error: '' });
-        }
-      }
-
-      // 3. The good rows are added at once. If the server refuses the batch (e.g. a parcel ID already used), they are
-      // added one by one so only the refused rows wait for the rider.
-      setPhase({ kind: 'adding', count: accepted.length });
-      let addedCount = 0;
-      if (accepted.length) {
-        const news = accepted.map((row) => toNewStop(row.raw, row.parcel, date, row.point, row.normalized));
-        try {
-          added(await submitStops(news));
-          addedCount = accepted.length;
-        } catch {
-          for (let i = 0; i < accepted.length; i += 1) {
-            try {
-              added(await submitStops([news[i]]));
-              addedCount += 1;
-            } catch (err) {
-              const row = accepted[i];
-              waiting.push({ key: row.id, index: Number(row.id.slice(4)), address: row.raw, parcel: row.parcel, edited: false, issue: 'lookup_failed',
-                detail: err instanceof ApiRequestError ? err.message : 'Could not save this stop.', check: null, state: 'open', error: '' });
-            }
-          }
-        }
-      }
-      setProblems(waiting.sort((a, b) => a.index - b.index));
-      setPhase({ kind: 'review', added: addedCount, total: items.length });
+      await addRows(items);
     } catch (err) {
       setError(err instanceof ApiRequestError ? err.message : 'Could not read this file. Check your connection and try again.');
       setPhase({ kind: 'pick' });
     }
   };
+
+  // Eircodes from a photo: no file to read, straight to the check (once, when the sheet opens).
+  const fromPhoto = useRef(eircodes);
+  useEffect(() => {
+    const codes = fromPhoto.current;
+    if (!codes?.length) return;
+    addRows(codes.map((code, index) => ({ index, address: code, parcel: '' }))).catch((err) => {
+      setError(err instanceof ApiRequestError ? err.message : 'Could not add these stops. Check your connection and try again.');
+      setPhase({ kind: 'review', added: 0, total: codes.length });
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- runs once for the codes the sheet opened with
+  }, []);
 
   const patch = useCallback((key: string, change: Partial<Problem>) => setProblems((list) => list.map((p) => (p.key === key ? { ...p, ...change } : p))), []);
 
@@ -187,7 +205,7 @@ function ImportBody({ date, stops, near, onClose, onImported }: Omit<Props, 'vis
       <StatusBar style="dark" />
       <View style={s.header}>
         <Pressable onPress={onClose} hitSlop={12} accessibilityLabel="Close"><Ionicons name="arrow-back" size={26} color={c.text} /></Pressable>
-        <Text style={s.title}>Import stops</Text>
+        <Text style={s.title}>{eircodes?.length ? 'Add from photo' : 'Import stops'}</Text>
       </View>
 
       {phase.kind === 'pick' ? (
@@ -215,7 +233,7 @@ function ImportBody({ date, stops, near, onClose, onImported }: Omit<Props, 'vis
           <View style={s.summary}>
             <Summary icon="check-circle" tone={c.success} value={phase.added + fixedCount} label="added" />
             <Summary icon="alert-circle" tone={open ? c.warning : c.textSecondary} value={open} label={open === 1 ? 'needs a fix' : 'need a fix'} />
-            <Summary icon="file-document-outline" tone={c.textSecondary} value={phase.total} label="in the file" />
+            <Summary icon="file-document-outline" tone={c.textSecondary} value={phase.total} label={eircodes?.length ? 'picked' : 'in the file'} />
           </View>
           <LightError text={error} />
           {problems.length ? (

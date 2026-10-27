@@ -7,6 +7,7 @@ import { Screen } from '../components/Kit';
 import { type McName } from '../components/Premium';
 import { LightButton, LightError } from '../components/LightKit';
 import EircodeScanner from '../components/scan/EircodeScanner';
+import EircodeSheetScan from '../components/scan/EircodeSheetScan';
 import BarcodeSheet from '../components/scan/BarcodeSheet';
 import { DuplicatePrompt } from '../components/StopPrompts';
 import ConfirmStop from '../components/scan/ConfirmStop';
@@ -31,7 +32,7 @@ import { useNav } from '../lib/nav';
 import { light as c, lightRadius as lr } from '../lib/theme';
 
 type Point = { latitude: number; longitude: number };
-type Sheet = 'scan' | 'barcode' | 'pin' | 'import' | null;
+type Sheet = 'scan' | 'sheet' | 'barcode' | 'pin' | 'import' | null;
 
 const VoicePanel = loadVoicePanel();
 // Suggestions wait for a pause in typing and a few characters: every request is a billed lookup (P3.8).
@@ -64,6 +65,8 @@ export default function AddStops({ name, date, routeId }: { name: string; date: 
   const [error, setError] = useState('');
   const [sheet, setSheet] = useState<Sheet>(null);
   const [voice, setVoice] = useState(false);
+  // Eircodes picked from a photo of a sheet: Import checks and adds them (null when Import reads a file).
+  const [sheetCodes, setSheetCodes] = useState<string[] | null>(null);
   const searchId = useRef(0);
   // Which button opened the scanner. The scan icon in the address field only fills in the Eircode; the Scan button
   // (and Rescan / Scan next) opens Confirm stop for the Eircode it read, to add parcel after parcel.
@@ -385,7 +388,8 @@ export default function AddStops({ name, date, routeId }: { name: string; date: 
         <View style={s.modes}>
           <Mode icon="line-scan" label="Scan" onPress={() => openScanner('batch')} />
           <Mode icon="microphone-outline" label="Voice" active={voice} onPress={() => setVoice((v) => !v)} />
-          <Mode icon="file-download-outline" label="Import" onPress={() => setSheet('import')} />
+          <Mode icon="text-recognition" label="Sheet" onPress={() => setSheet('sheet')} />
+          <Mode icon="file-download-outline" label="Import" onPress={() => { setSheetCodes(null); setSheet('import'); }} />
         </View>
 
         {voice ? (
@@ -434,7 +438,9 @@ export default function AddStops({ name, date, routeId }: { name: string; date: 
       <BarcodeSheet visible={sheet === 'barcode'} onClose={() => setSheet(null)} onResult={(value) => { setSheet(null); setParcel(value); }} />
       <PinSheet visible={sheet === 'pin'} position={origin} center={picked || area} onClose={() => setSheet(null)} onPick={onPin} />
       {/* Stops come in while the import runs; the sheet stays open until the rider has dealt with the rows it could not add. */}
-      <ImportSheet visible={sheet === 'import'} date={date} stops={stops} near={origin || area} onClose={() => setSheet(null)}
+      <EircodeSheetScan visible={sheet === 'sheet'} onEircodes={(codes) => { setSheetCodes(codes); setSheet('import'); }}
+        onTypeInstead={typeInstead} onClose={() => setSheet(null)} />
+      <ImportSheet visible={sheet === 'import'} date={date} stops={stops} near={origin || area} eircodes={sheetCodes} onClose={() => { setSheet(null); setSheetCodes(null); }}
         onImported={(created) => setStops((list) => [...list, ...created])} />
     </Screen>
   );
