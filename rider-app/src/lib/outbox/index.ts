@@ -189,12 +189,27 @@ export function pendingStop(clientId: string, stop: NewStop): Delivery {
   };
 }
 
-/** Stops for `date` still waiting in the outbox (lists show them with the saved ones). */
+const pendingCreates = async (date: string) => (activeOwner ? (await active().list()) : [])
+  .filter((i) => i.kind === 'create' && (i.payload as NewStop).serviceDate === date);
+
+/** Stops for `date` still in the outbox (lists show them with the saved ones). One the server refused (e.g. no plan
+ * yet) is also flagged `sync_failed`: it is not waiting for a connection, it needs the rider. */
 export async function pendingStops(date: string): Promise<Delivery[]> {
-  if (!activeOwner) return [];
-  return (await active().list())
-    .filter((i) => i.kind === 'create' && (i.payload as NewStop).serviceDate === date)
-    .map((i) => pendingStop(i.key, i.payload as unknown as NewStop));
+  return (await pendingCreates(date)).map((i) => {
+    const stop = pendingStop(i.key, i.payload as unknown as NewStop);
+    return i.state === 'failed' ? { ...stop, flags: [...stop.flags, 'sync_failed'] } : stop;
+  });
+}
+
+/** Why the server refused the stops for `date`, if it did: the first rejection's message and code. */
+export async function refusedStops(date: string): Promise<{ error: string; code: string | null } | null> {
+  const failed = (await pendingCreates(date)).find((i) => i.state === 'failed');
+  return failed ? { error: failed.error || 'The server did not accept these stops.', code: failed.code } : null;
+}
+
+/** Sends the refused stops for `date` again (after the rider fixed the cause, e.g. started a plan). */
+export async function retryRefusedStops(date: string) {
+  for (const item of await pendingCreates(date)) if (item.state === 'failed') await active().retry(item.id);
 }
 
 /** Removes a stop that was never sent (the rider deleted it before it synced). */

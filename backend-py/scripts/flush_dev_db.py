@@ -1,4 +1,4 @@
-"""Empties every app table in the database from DATABASE_URL (.env). The schema and migrations stay.
+"""Empties every table in the database from DATABASE_URL (.env). The schema and migrations stay.
 
 Dev only: this deletes all users, routes, deliveries, plans and subscriptions and can't be undone
 (except with Neon's point-in-time restore). Run from backend-py:  .venv/bin/python -m scripts.flush_dev_db [--confirm <endpoint>]
@@ -16,15 +16,17 @@ load_dotenv(".env")
 from prisma import Prisma
 from scripts.db_guard import require_safe_database
 
-TABLES = ["users", "deliveries", "routes", "route_stops", "reports", "plans", "subscriptions", "payments", "refresh_tokens", "store_purchases", "password_resets", "audit_logs", "settings", "geocode_cache", "rate_limits"]
+# Every table in the schema except Prisma's migration history, so new tables are emptied too without editing this list.
+_TABLES_SQL = "select tablename from pg_tables where schemaname = 'public' and tablename <> '_prisma_migrations' order by 1"
 
 
 async def main() -> None:
     db = Prisma()
     await db.connect(timeout=timedelta(seconds=60))
     try:
-        await db.execute_raw("TRUNCATE TABLE " + ", ".join(f'"{t}"' for t in TABLES) + " RESTART IDENTITY CASCADE")
-        for t in TABLES:
+        tables = [row["tablename"] for row in await db.query_raw(_TABLES_SQL)]
+        await db.execute_raw("TRUNCATE TABLE " + ", ".join(f'"{t}"' for t in tables) + " RESTART IDENTITY CASCADE")
+        for t in tables:
             rows = await db.query_raw(f'select count(*)::int as n from "{t}"')
             print(f"{t}: {rows[0]['n']}")
     finally:

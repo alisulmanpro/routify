@@ -16,7 +16,7 @@ import StopLines from '../components/StopLines';
 import { get, del, ApiRequestError } from '../lib/api';
 import { getRouteOrigin } from '../lib/location';
 import { checkAddress, createStop, DuplicateStopError } from '../lib/stops';
-import { forgetPendingStop, outboxFor, pendingStops } from '../lib/outbox';
+import { forgetPendingStop, outboxFor, pendingStops, refusedStops, retryRefusedStops } from '../lib/outbox';
 import { findDuplicate, type Duplicate } from '../lib/duplicates';
 import { NATIVE_BUILD_HINT, loadVoicePanel } from '../lib/optionalNative';
 import { dayLabel, isOnlyEircode, normalizeEircodes } from '../lib/format';
@@ -71,6 +71,8 @@ export default function AddStops({ name, date, routeId }: { name: string; date: 
   // The rider chose "Add anyway" for the address now in the field (a second parcel for the same door).
   const [allowDuplicate, setAllowDuplicate] = useState(false);
   const [highlight, setHighlight] = useState<string | null>(null);
+  // The server refused stops added here (they stay on the phone): why, e.g. SUBSCRIPTION_REQUIRED without a plan.
+  const [refused, setRefused] = useState<{ error: string; code: string | null } | null>(null);
   const scrollRef = useRef<FlashListRef<Delivery>>(null);
 
   const area = user?.serviceArea ? { latitude: user.serviceArea.latitude, longitude: user.serviceArea.longitude } : null;
@@ -92,6 +94,7 @@ export default function AddStops({ name, date, routeId }: { name: string; date: 
       if (!(err instanceof TypeError)) setError(err instanceof ApiRequestError ? err.message : 'Could not load your stops');
     } finally {
       const waiting = await pendingStops(date).catch(() => []);
+      setRefused(await refusedStops(date).catch(() => null));
       setStops((list) => {
         const base = saved ?? list.filter((d) => !d.flags.includes('pending_sync'));
         const ids = new Set(base.map((d) => d.id));
@@ -113,7 +116,8 @@ export default function AddStops({ name, date, routeId }: { name: string; date: 
       });
     });
   }, [userId, load]);
-  useFocusEffect(useCallback(() => { void load(); void getRouteOrigin().then(setOrigin); }, [load]));
+  // Coming back (e.g. from starting a plan): stops the server refused are sent again, then the list reloads.
+  useFocusEffect(useCallback(() => { void retryRefusedStops(date).catch(() => {}).finally(() => { void load(); }); void getRouteOrigin().then(setOrigin); }, [load, date]));
 
   // Suggestions follow the typing, a moment after the rider pauses. They are hidden once a location is chosen.
   const query = address.trim();
@@ -265,7 +269,14 @@ export default function AddStops({ name, date, routeId }: { name: string; date: 
 
   const review = () => navigate('RoutePreview', { name, date, ids: stops.map((d) => d.id) });
   // Planning needs every stop on the server: stops still on the phone hold Review until they are sent.
-  const unsent = stops.filter((d) => d.flags.includes('pending_sync')).length;
+  const unsent = stops.filter((d) => d.flags.includes('pending_sync') && !d.flags.includes('sync_failed')).length;
+  const refusedCount = stops.filter((d) => d.flags.includes('sync_failed')).length;
+  const needsPlan = refused?.code === 'SUBSCRIPTION_REQUIRED';
+  const [retrying, setRetrying] = useState(false);
+  const retryRefused = async () => {
+    setRetrying(true);
+    try { await retryRefusedStops(date); } finally { setRetrying(false); void load(); }
+  };
 
   const located = !!picked && picked.label === address;
 
@@ -373,9 +384,18 @@ export default function AddStops({ name, date, routeId }: { name: string; date: 
       />
 
       <View style={s.footer}>
-        <LightButton
-          title={unsent ? `Saving ${unsent} stop${unsent === 1 ? '' : 's'}… (offline)` : stops.length ? `Review ${stops.length} stop${stops.length === 1 ? '' : 's'}` : 'Add a stop to continue'}
-          onPress={review} disabled={!stops.length || unsent > 0} />
+        {refused && refusedCount ? (
+          <>
+            {/* Refused by the server, not offline: say why and offer the fix. */}
+            <LightError text={`${refusedCount} stop${refusedCount === 1 ? ' was' : 's were'} not saved. ${refused.error}`} />
+            <LightButton title={needsPlan ? 'Start free trial' : 'Try again'} loading={retrying}
+              onPress={() => (needsPlan ? navigate('Paywall') : void retryRefused())} style={{ marginTop: 10 }} />
+          </>
+        ) : (
+          <LightButton
+            title={unsent ? `Saving ${unsent} stop${unsent === 1 ? '' : 's'}… (offline)` : stops.length ? `Review ${stops.length} stop${stops.length === 1 ? '' : 's'}` : 'Add a stop to continue'}
+            onPress={review} disabled={!stops.length || unsent > 0} />
+        )}
       </View>
 
       <EircodeScanner visible={sheet === 'scan'} onEircode={onScanned} onTypeInstead={typeInstead} onClose={() => setSheet(null)} />
