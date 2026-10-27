@@ -22,6 +22,8 @@ import { NATIVE_BUILD_HINT, loadVoicePanel } from '../lib/optionalNative';
 import { dayLabel, isOnlyEircode, normalizeEircodes } from '../lib/format';
 import type { Delivery } from '../lib/types';
 import { newPlaceSession, pickPlace, searchPlaces, type PlaceSuggestion } from '../lib/places';
+import { expandForSearch, issueText, rankSuggestions, suggestionIssues } from '../lib/scan/address';
+import type { PickedAddress } from '../lib/scan/photoLines';
 import { useAuth } from '../lib/auth';
 import { useFocusEffect } from '../lib/useFocusEffect';
 import { useNav } from '../lib/nav';
@@ -55,6 +57,8 @@ export default function AddStops({ name, date, routeId }: { name: string; date: 
   const [searching, setSearching] = useState(false);
   // Set when Add found no exact match: the rider picks a suggestion, pins it, or adds it anyway.
   const [unsure, setUnsure] = useState(false);
+  // With `unsure`: the address the map found when it is on a different street type or house number.
+  const [mapFound, setMapFound] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
   const [error, setError] = useState('');
   const [sheet, setSheet] = useState<Sheet>(null);
@@ -131,7 +135,8 @@ export default function AddStops({ name, date, routeId }: { name: string; date: 
       setSearching(true);
       const near = origin || area;
       // Places Autocomplete only (no Geocoding per keystroke, P5.2); the point is asked for once, on pick.
-      searchPlaces(query, placeSession.current, near, cancel.signal)
+      // Short forms are written out for the search ("cre" → "Crescent"): the field keeps what the rider typed.
+      searchPlaces(expandForSearch(query), placeSession.current, near, cancel.signal)
         .then((found) => { if (id === searchId.current) setSuggestions(found); })
         .catch(() => { if (id === searchId.current) setSuggestions([]); })
         .finally(() => { if (id === searchId.current) setSearching(false); });
@@ -140,7 +145,9 @@ export default function AddStops({ name, date, routeId }: { name: string; date: 
     // area is derived from the user; origin changes at most once.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [query, wantSuggestions, origin]);
-  const shownSuggestions = wantSuggestions ? suggestions : [];
+  // A suggestion on a different street type ("Park" for "Grove") or house number goes to the end, marked: the rider
+  // can still pick it (the label may be the one that is wrong), but never by tapping the top one without looking.
+  const shownSuggestions = wantSuggestions ? rankSuggestions(query, suggestions, (sug) => sug.label) : [];
 
   const typeAddress = (text: string) => {
     setAddress(text);
@@ -194,13 +201,17 @@ export default function AddStops({ name, date, routeId }: { name: string; date: 
       if (picked && picked.label === address) { await save(raw, picked, { normalized: picked.normalized, precise: !picked.approximate, duplicateOk }); return; }
       if (anyway) { await save(raw, null, { duplicateOk }); return; }
       const near = origin || area;
-      const check = await checkAddress(raw, near);
+      const check = await checkAddress(isOnlyEircode(raw) ? raw : expandForSearch(raw), near);
+      // The map found a different street type or house number ("26 Shanecastle Park" for "26 Shanecastle Grove"):
+      // not saved on its own, the rider picks a suggestion, drops a pin or adds it as typed.
+      const differs = !!check.normalized && suggestionIssues(raw, check.normalized).length > 0;
       // An Eircode on its own is one building: its point is used even when the map's match is not a rooftop one
       // (the stop then shows "Approximate location").
-      if (check.found && (!check.approximate || isOnlyEircode(raw)) && check.latitude != null && check.longitude != null) {
+      if (check.found && !differs && (!check.approximate || isOnlyEircode(raw)) && check.latitude != null && check.longitude != null) {
         await save(raw, { latitude: check.latitude, longitude: check.longitude }, { normalized: check.normalized, precise: !check.approximate, duplicateOk });
         return;
       }
+      setMapFound(differs ? check.normalized : null);
       setUnsure(true);
     } catch (err) {
       if (err instanceof DuplicateStopError) {
@@ -252,6 +263,15 @@ export default function AddStops({ name, date, routeId }: { name: string; date: 
     const found = findDuplicate({ eircode }, stops);
     if (found) setDuplicate({ found, addAnyway: () => { fill(); setAllowDuplicate(true); } });
     else fill();
+  };
+
+  // The Address scan: the lines the rider tapped. One Eircode among them goes the Eircode way (the surest point);
+  // otherwise the text fills the address field, where the suggestions and their street/number checks take over.
+  const onAddressScanned = (picked: PickedAddress) => {
+    if (picked.kind === 'eircode') { onScanned(picked.eircode); return; }
+    setSheet(null);
+    typeAddress(picked.text);
+    addressRef.current?.blur();
   };
 
   const typeInstead = () => {
@@ -319,10 +339,13 @@ export default function AddStops({ name, date, routeId }: { name: string; date: 
 
         {shownSuggestions.length ? (
           <View style={s.suggestions}>
-            {shownSuggestions.map((sug, i) => (
+            {shownSuggestions.map(({ item: sug, issues }, i) => (
               <Pressable key={sug.placeId ?? `${sug.latitude},${sug.longitude}`} onPress={() => void choose(sug)} style={({ pressed }) => [s.suggestion, i > 0 && s.divider, pressed && { backgroundColor: c.soft }]}>
-                <MaterialCommunityIcons name={sug.approximate ? 'map-marker-question-outline' : 'map-marker-check-outline'} size={20} color={sug.approximate ? c.warning : c.success} />
-                <Text style={{ flex: 1, color: c.text, fontSize: 15 }} numberOfLines={2}>{sug.label}</Text>
+                <MaterialCommunityIcons name={issues.length || sug.approximate ? 'map-marker-question-outline' : 'map-marker-check-outline'} size={20} color={issues.length || sug.approximate ? c.warning : c.success} />
+                <View style={{ flex: 1 }}>
+                  <Text style={{ color: issues.length ? c.textSecondary : c.text, fontSize: 15 }} numberOfLines={2}>{sug.label}</Text>
+                  {issues.length ? <Text style={{ color: c.warning, fontSize: 13, fontWeight: '600', marginTop: 2 }}>{issues.map(issueText).join(' · ')}</Text> : null}
+                </View>
               </Pressable>
             ))}
           </View>
@@ -332,7 +355,8 @@ export default function AddStops({ name, date, routeId }: { name: string; date: 
           <View style={s.unsure}>
             <MaterialCommunityIcons name="map-marker-alert-outline" size={20} color={c.warning} />
             <View style={{ flex: 1 }}>
-              <Text style={{ color: c.text, fontWeight: '600', fontSize: 15 }}>We couldn&apos;t pin this address exactly</Text>
+              <Text style={{ color: c.text, fontWeight: '600', fontSize: 15 }}>{mapFound ? 'The map found a different address' : 'We couldn\u2019t pin this address exactly'}</Text>
+              {mapFound ? <Text style={{ color: c.warning, fontSize: 14, marginTop: 2 }}>{mapFound}</Text> : null}
               <Text style={{ color: c.textSecondary, fontSize: 14, marginTop: 2 }}>Pick a suggestion above, drop a pin, or add it as typed.</Text>
               <View style={{ flexDirection: 'row', gap: 8, marginTop: 10 }}>
                 <SmallButton icon="map-marker-plus-outline" label="Drop pin" onPress={() => setSheet('pin')} />
@@ -398,7 +422,7 @@ export default function AddStops({ name, date, routeId }: { name: string; date: 
         )}
       </View>
 
-      <EircodeScanner visible={sheet === 'scan'} onEircode={onScanned} onTypeInstead={typeInstead} onClose={() => setSheet(null)} />
+      <EircodeScanner visible={sheet === 'scan'} onEircode={onScanned} onAddress={onAddressScanned} onTypeInstead={typeInstead} onClose={() => setSheet(null)} />
       <DuplicatePrompt duplicate={duplicate?.found ?? null} onView={() => duplicate && viewStop(duplicate.found.stop)}
         onAddAnyway={() => { const next = duplicate?.addAnyway; setDuplicate(null); next?.(); }} onCancel={() => setDuplicate(null)} />
       <ConfirmStop eircode={confirming} date={date} near={origin || area} existing={stops}

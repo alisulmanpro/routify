@@ -6,6 +6,8 @@ import { createSynchronizable, scheduleOnRN } from 'react-native-worklets';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { eircodesInText } from '../../lib/scan/eircode';
 import { createEircodeVote } from '../../lib/scan/eircodeVote';
+import type { PickedAddress } from '../../lib/scan/photoLines';
+import AddressScan from './AddressScan';
 import { premium as c, premiumRadius as r } from '../../lib/theme';
 import { PButton } from '../Premium';
 
@@ -66,7 +68,13 @@ type Props = {
   onEircode: (eircode: string) => void;
   onTypeInstead: () => void;
   onClose: () => void;
+  /** Given: the scanner also has an Address mode (a photo; the rider taps the lines of the address). */
+  onAddress?: (picked: PickedAddress) => void;
 };
+
+type Mode = 'eircode' | 'address';
+// The mode last used, so a rider scanning parcel after parcel without Eircodes is not switching every time.
+let lastMode: Mode = 'eircode';
 
 /**
  * Live Eircode scanner: no buttons to press. The camera reads the text in the box several times a second on the
@@ -75,13 +83,38 @@ type Props = {
 export default function EircodeScanner({ visible, ...props }: Props) {
   return (
     <Modal visible={visible} animationType="fade" onRequestClose={props.onClose}>
-      {visible ? <ScannerBody {...props} /> : null}
+      {visible ? <Scanner {...props} /> : null}
     </Modal>
   );
 }
 
+function Scanner({ onAddress, ...props }: Omit<Props, 'visible'>) {
+  const [mode, setModeState] = useState<Mode>(onAddress ? lastMode : 'eircode');
+  const setMode = (next: Mode) => { lastMode = next; setModeState(next); };
+  const modeSwitch = onAddress ? <ModeSwitch mode={mode} onChange={setMode} /> : null;
+  if (mode === 'address' && onAddress) {
+    return <AddressScan onPicked={onAddress} onTypeInstead={props.onTypeInstead} onClose={props.onClose} modeSwitch={modeSwitch} />;
+  }
+  return <ScannerBody {...props} modeSwitch={modeSwitch} onAddressMode={onAddress ? () => setMode('address') : undefined} />;
+}
+
+/** Eircode | Address, under the top bar. */
+function ModeSwitch({ mode, onChange }: { mode: Mode; onChange: (mode: Mode) => void }) {
+  return (
+    <View style={[s.switch, { top: Platform.OS === 'ios' ? 112 : 76 }]} accessibilityRole="tablist">
+      {(['eircode', 'address'] as const).map((m) => (
+        <Pressable key={m} onPress={() => onChange(m)} style={[s.switchItem, mode === m && s.switchOn]} accessibilityRole="tab" accessibilityState={{ selected: mode === m }}>
+          <Text style={{ color: mode === m ? '#050B18' : '#fff', fontWeight: '800', fontSize: 14 }}>{m === 'eircode' ? 'Eircode' : 'Address'}</Text>
+        </Pressable>
+      ))}
+    </View>
+  );
+}
+
 // Mounted fresh each time the scanner opens, so every scan starts with an empty vote.
-function ScannerBody({ onEircode, onTypeInstead, onClose }: Omit<Props, 'visible'>) {
+function ScannerBody({ onEircode, onTypeInstead, onClose, modeSwitch, onAddressMode }: Omit<Props, 'visible' | 'onAddress'> & {
+  modeSwitch: React.ReactNode; onAddressMode?: () => void;
+}) {
   const device = useCameraDevice('back');
   const { hasPermission, canRequestPermission, requestPermission, status } = useCameraPermission();
   const [torch, setTorch] = useState(false);
@@ -199,6 +232,7 @@ function ScannerBody({ onEircode, onTypeInstead, onClose }: Omit<Props, 'visible
         ) : null}
         <Pressable onPress={onClose} hitSlop={10} style={s.round} accessibilityLabel="Close"><Ionicons name="close" size={20} color="#fff" /></Pressable>
       </View>
+      {modeSwitch}
 
       {hasPermission && message ? (
         <View style={s.status}>
@@ -206,9 +240,16 @@ function ScannerBody({ onEircode, onTypeInstead, onClose }: Omit<Props, 'visible
           <View style={{ flex: 1 }}>
             <Text style={{ color: '#fff', fontSize: 13, fontWeight: '700', lineHeight: 18 }}>{message}</Text>
             {help && !locked ? (
-              <Pressable onPress={onTypeInstead} hitSlop={6} style={{ marginTop: 8 }}>
-                <Text style={{ color: '#FFFFFF', fontWeight: '800', fontSize: 13 }}>Type it instead</Text>
-              </Pressable>
+              <View style={{ flexDirection: 'row', gap: 18, marginTop: 8 }}>
+                {onAddressMode ? (
+                  <Pressable onPress={onAddressMode} hitSlop={6}>
+                    <Text style={{ color: '#FFFFFF', fontWeight: '800', fontSize: 13 }}>No Eircode? Scan the address</Text>
+                  </Pressable>
+                ) : null}
+                <Pressable onPress={onTypeInstead} hitSlop={6}>
+                  <Text style={{ color: '#FFFFFF', fontWeight: '800', fontSize: 13 }}>Type it instead</Text>
+                </Pressable>
+              </View>
             ) : null}
           </View>
         </View>
@@ -224,5 +265,8 @@ const s = StyleSheet.create({
   round: { width: 38, height: 38, borderRadius: 19, backgroundColor: 'rgba(5,11,24,0.7)', alignItems: 'center', justifyContent: 'center' },
   box: { position: 'absolute', top: `${BOX.top}%`, height: `${BOX.height}%`, left: `${BOX.side}%`, right: `${BOX.side}%`, borderWidth: 3, borderRadius: 14, alignItems: 'center', justifyContent: 'center' },
   hint: { position: 'absolute', top: `${BOX.top - 6}%`, left: 16, right: 16, textAlign: 'center', color: '#fff', fontSize: 15, fontWeight: '800', textShadowColor: '#000', textShadowRadius: 6 },
+  switch: { position: 'absolute', alignSelf: 'center', flexDirection: 'row', padding: 4, borderRadius: 999, backgroundColor: 'rgba(5,11,24,0.7)' },
+  switchItem: { paddingHorizontal: 18, paddingVertical: 8, borderRadius: 999 },
+  switchOn: { backgroundColor: '#FFFFFF' },
   status: { position: 'absolute', left: 16, right: 16, bottom: 48, flexDirection: 'row', gap: 10, padding: 14, borderRadius: r.medium, backgroundColor: 'rgba(13,22,41,0.92)', borderWidth: 1, borderColor: c.border },
 });
