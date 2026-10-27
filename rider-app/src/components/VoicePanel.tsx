@@ -2,13 +2,13 @@ import { useEffect, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { ExpoSpeechRecognitionModule, useSpeechRecognitionEvent } from 'expo-speech-recognition';
 import { Ionicons } from '@expo/vector-icons';
-import { premium as c } from '../lib/theme';
+import { light as lc, premium as c } from '../lib/theme';
 import type { VoicePanelProps } from '../lib/optionalNative';
 import { DARK_ON_PRIMARY, gradient } from './Premium';
 
 // Imported only through loadVoicePanel(), because importing expo-speech-recognition
 // crashes on builds without its native module (e.g. Expo Go).
-export default function VoicePanel({ onText, compact }: VoicePanelProps) {
+export default function VoicePanel({ onText, compact, light }: VoicePanelProps) {
   const [listening, setListening] = useState(false);
   const [live, setLive] = useState('');
   const [problem, setProblem] = useState('');
@@ -39,6 +39,8 @@ export default function VoicePanel({ onText, compact }: VoicePanelProps) {
   };
 
   const size = compact ? 72 : 112;
+  // On a light screen the dark theme's pale greys are unreadable; the light theme's colours are used instead.
+  const ink = light ? { text: lc.text, secondary: lc.textSecondary, active: lc.link, warning: lc.warning } : { text: c.text, secondary: c.textSecondary, active: c.primary, warning: c.warning };
   return (
     <View style={{ alignItems: 'center', paddingVertical: 8 }}>
       <Pressable onPress={toggle} style={({ pressed }) => [s.mic, { width: size, height: size, borderRadius: size / 2 }, listening && s.micOn, pressed && { opacity: 0.9 }]}>
@@ -46,9 +48,9 @@ export default function VoicePanel({ onText, compact }: VoicePanelProps) {
           <Ionicons name={listening ? 'stop' : 'mic'} size={compact ? 26 : 34} color={listening ? '#fff' : DARK_ON_PRIMARY} />
         </View>
       </Pressable>
-      <Text style={{ color: listening ? c.primary : c.textSecondary, fontWeight: '700', marginTop: 10 }}>{listening ? 'Listening… tap to stop' : 'Tap to speak'}</Text>
-      {live && listening ? <Text style={{ color: c.text, fontSize: 15, marginTop: 8, textAlign: 'center' }}>{live}</Text> : null}
-      {problem ? <Text style={{ color: c.warning, fontSize: 12, marginTop: 8, textAlign: 'center' }}>{problem}</Text> : null}
+      <Text style={{ color: listening ? ink.active : ink.secondary, fontWeight: '700', marginTop: 10 }}>{listening ? 'Listening… tap to stop' : 'Tap to speak'}</Text>
+      {live && listening ? <Text style={{ color: ink.text, fontSize: 15, marginTop: 8, textAlign: 'center' }}>{live}</Text> : null}
+      {problem ? <Text style={{ color: ink.warning, fontSize: 13, marginTop: 8, textAlign: 'center' }}>{problem}</Text> : null}
     </View>
   );
 }
